@@ -79,7 +79,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-_WYOMING_SERVICES = Path.home() / "Documents" / "wyoming-services"
+_WYOMING_SERVICES = Path.home() / "Documents" / "LyraOS" / "modules" / "wyoming"
 if str(_WYOMING_SERVICES) not in sys.path:
     sys.path.insert(0, str(_WYOMING_SERVICES))
 try:
