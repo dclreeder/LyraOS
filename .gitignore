@@ -1,5 +1,5 @@
 # LyraOS git scope: code, configs, units, docs. NOT data or secrets.
-data/
+/data/
 **/venv/
 **/__pycache__/
 **/build/
@@ -30,3 +30,7 @@ modules/tts/kokoro/server/token.txt
 firmware/sat/esp32/devices/sdkconfig.lyra-satlink*
 firmware/sat/esp32/devices/sdkconfig.lyra-satgadget
 dashboard/call_url.txt
+
+# Wake clip pool stays home (his voice + ledger); feature models are building blocks
+modules/wakeword/data/clips/
+!modules/wakeword/models/**/*.onnx.data
