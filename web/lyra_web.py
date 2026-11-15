@@ -5,6 +5,9 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.path.expanduser('~/Documents/LyraOS/web')
 TOKEN = open(os.path.expanduser('~/Documents/LyraOS/modules/tts/kokoro/server/token.txt')).read().strip()
 _lock = threading.Lock(); _counter = [0]
+try:
+    with open(os.path.join(ROOT, 'latest.json')) as _f: _counter[0] = int(json.load(_f).get('id') or 0)
+except Exception: pass
 BRIEF = ('You are Lyra, Daniel\'s local AI assistant, speaking aloud through a model on his TV. '
          'Reply in one or two short spoken sentences. Plain words only: no lists, no markdown, no numbers with symbols.')
 # Dashboard call (2026-11-15): the call page POSTs a WAV utterance to
@@ -54,12 +57,26 @@ def ask_9b(text):
     body = {'model': 'lyra-9b', 'temperature': 0.3, 'max_tokens': 140, 'messages': [{'role': 'system', 'content': BRIEF}, {'role': 'user', 'content': text}]}
     req = urllib.request.Request('http://127.0.0.1:8094/v1/chat/completions', data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'})
     with urllib.request.urlopen(req, timeout=120) as r: return json.loads(r.read())['choices'][0]['message']['content'].strip()
+def _write_job(wav, silent):
+    """One speech job = one file (2026-11-15): streamed replies land
+    as several jobs seconds apart and the page plays them from a
+    queue, so a job must never overwrite the previous one's file."""
+    _counter[0] += 1
+    name = 'jobs/job-%d.wav' % _counter[0]
+    with open(os.path.join(ROOT, name), 'wb') as f: f.write(wav)
+    job = {'id': _counter[0], 'file': name}
+    if silent: job['silent'] = True
+    with open(os.path.join(ROOT, 'latest.json'), 'w') as f: json.dump(job, f)
+    try:
+        for old in os.listdir(os.path.join(ROOT, 'jobs')):
+            if old.startswith('job-') and old.endswith('.wav') and int(old[4:-4]) < _counter[0] - 40:
+                os.remove(os.path.join(ROOT, 'jobs', old))
+    except Exception: pass
+
 def speak(text):
     text = ' '.join(text.split())[:420]
     wav = kokoro(text)
-    with open(os.path.join(ROOT, 'jobs', 'job.wav'), 'wb') as f: f.write(wav)
-    _counter[0] += 1
-    with open(os.path.join(ROOT, 'latest.json'), 'w') as f: json.dump({'id': _counter[0], 'file': 'jobs/job.wav'}, f)
+    _write_job(wav, False)
     return len(wav)
 class H(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw): super().__init__(*a, directory=ROOT, **kw)
@@ -95,9 +112,7 @@ class H(SimpleHTTPRequestHandler):
             try:
                 wav = self.rfile.read(int(self.headers.get('Content-Length') or 0))
                 if not wav: return self._json(400, {'error': 'empty'})
-                with open(os.path.join(ROOT, 'jobs', 'job.wav'), 'wb') as f: f.write(wav)
-                _counter[0] += 1
-                with open(os.path.join(ROOT, 'latest.json'), 'w') as f: json.dump({'id': _counter[0], 'file': 'jobs/job.wav', 'silent': True}, f)
+                _write_job(wav, True)
             except Exception as e: return self._json(500, {'error': str(e)})
             return self._json(200, {'ok': True})
         if self.path == '/dim':

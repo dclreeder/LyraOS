@@ -181,6 +181,103 @@ class FreeChatClient:
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise LlmError(f"chat call failed: {exc}") from exc
 
+    async def chat_stream(self, messages: list, tools, timeout_s: float, on_piece) -> dict:
+        """Streaming variant of chat(): content pieces go to the
+        async on_piece callback as they arrive; the assembled
+        message (same shape chat() returns) is the result. The
+        urllib read runs in a thread and hands pieces over through
+        a queue, mirroring _post's pattern."""
+        body = {
+            "model": self._model,
+            "temperature": 0.3,
+            "max_tokens": 300,
+            "messages": messages,
+            "stream": True,
+        }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def _pump() -> None:
+            try:
+                self._post_stream(
+                    body, max(1.0, timeout_s),
+                    lambda item: loop.call_soon_threadsafe(queue.put_nowait, item),
+                )
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", exc))
+
+        asyncio.ensure_future(asyncio.to_thread(_pump))
+        content_parts: list[str] = []
+        tool_calls: dict[int, dict] = {}
+        pieces = 0
+        while True:
+            kind, payload = await queue.get()
+            if kind == "done":
+                break
+            if kind == "error":
+                raise LlmError(f"chat stream failed: {payload}")
+            if kind == "content":
+                pieces += 1
+                content_parts.append(payload)
+                if on_piece is not None:
+                    await on_piece(payload)
+            elif kind == "tool":
+                idx, frag = payload
+                slot = tool_calls.setdefault(
+                    idx, {"id": "", "name": "", "arguments": ""})
+                if frag.get("id"):
+                    slot["id"] = frag["id"]
+                fn = frag.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["arguments"] += fn["arguments"]
+        message: dict = {"role": "assistant", "content": "".join(content_parts)}
+        if tool_calls:
+            message["tool_calls"] = [
+                {
+                    "id": slot["id"] or f"call-{i}",
+                    "type": "function",
+                    "function": {
+                        "name": slot["name"],
+                        "arguments": slot["arguments"],
+                    },
+                }
+                for i, slot in sorted(tool_calls.items())
+            ]
+        return message
+
+    def _post_stream(self, body: dict, timeout_s: float, emit) -> None:
+        req = urllib.request.Request(
+            self._endpoint,
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0].get("delta") or {}
+                    except (ValueError, KeyError, IndexError, TypeError):
+                        continue
+                    if delta.get("content"):
+                        emit(("content", delta["content"]))
+                    for frag in delta.get("tool_calls") or []:
+                        emit(("tool", (frag.get("index", 0), frag)))
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise LlmError(f"chat stream failed: {exc}") from exc
+        emit(("done", None))
+
 
 _WS = re.compile(r"\s+")
 
@@ -198,6 +295,91 @@ def sanitize_spoken(text: str) -> str:
 
 def _as_int(value) -> int:
     return int(round(float(value)))
+
+
+_SENTENCE_END = re.compile(r"[.!?\u2026]+[\"\)\]]*(?:\s+|$)")
+_ABBREV_TAILS = (
+    "p.m", "a.m", "e.g", "i.e", "mr", "mrs", "ms", "dr", "st", "vs",
+    "u.s", "u.s.a", "approx", "no",
+)
+
+
+class _SentenceSplitter:
+    """Splits streamed reply text into speakable sentences. A
+    candidate is released only once the NEXT candidate exists (or
+    the round ends tool-free and flush() is called), so a round
+    that turns out to be tool calls never gets its text spoken --
+    at most a genuine preamble sentence can precede a tool round,
+    which this model does not produce in practice."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self.pending: list[str] = []
+
+    def feed(self, piece: str) -> None:
+        self._buf += piece
+        start = 0
+        while True:
+            m = _SENTENCE_END.search(self._buf, start)
+            if not m:
+                break
+            sent = self._buf[:m.end()].strip()
+            tail = sent.rstrip('."\')\]').lower()
+            if len(sent) < 4 or any(tail.endswith(a) for a in _ABBREV_TAILS):
+                start = m.end()
+                continue
+            self.pending.append(sent)
+            self._buf = self._buf[m.end():]
+            start = 0
+        if len(self._buf) > 240:
+            cut = self._buf.rfind(", ", 40)
+            if cut > 0:
+                self.pending.append(self._buf[:cut + 1].strip())
+                self._buf = self._buf[cut + 2:]
+
+    def release_ready(self) -> list[str]:
+        if len(self.pending) <= 1:
+            return []
+        out, self.pending = self.pending[:-1], self.pending[-1:]
+        return out
+
+    def flush(self) -> list[str]:
+        out = list(self.pending)
+        self.pending = []
+        tail = self._buf.strip()
+        self._buf = ""
+        if tail:
+            out.append(tail)
+        return out
+
+
+async def _stream_round(client, messages, tools, timeout_s, on_sentence):
+    """One streamed completion round. Sentences are fed to
+    on_sentence as they complete; if the round ends in tool calls,
+    whatever is still buffered is dropped unspoken (the tool round's
+    text is not a reply, same as the non-streaming path)."""
+    splitter = _SentenceSplitter()
+    seen = {"content": False, "released": False}
+
+    async def _on_piece(piece: str) -> None:
+        seen["content"] = True
+        splitter.feed(piece)
+        for sent in splitter.release_ready():
+            seen["released"] = True
+            await on_sentence(sent)
+
+    try:
+        message = await client.chat_stream(messages, tools, timeout_s, _on_piece)
+    except LlmError:
+        if seen["content"] or seen["released"]:
+            raise
+        # Nothing arrived at all: fall back to the plain call.
+        return await client.chat(messages, tools, timeout_s)
+    if message.get("tool_calls"):
+        return message
+    for sent in splitter.flush():
+        await on_sentence(sent)
+    return message
 
 
 class FreeRouter:
@@ -242,7 +424,7 @@ class FreeRouter:
 
     # -- the hook ------------------------------------------------------
 
-    async def handle(self, command: str, verify=None) -> object:
+    async def handle(self, command: str, verify=None, on_sentence=None) -> object:
         normalized = normalize(command)
         if looks_garbled(normalized):
             _LOGGER.info("garbled command %r -> didn't catch", command)
@@ -259,7 +441,7 @@ class FreeRouter:
         turn_slice: list = []
         try:
             raw_final, calls, turn_slice = await asyncio.wait_for(
-                self._run_turn(command), timeout=FREE_DEADLINE_S
+                self._run_turn(command, on_sentence), timeout=FREE_DEADLINE_S
             )
         except asyncio.TimeoutError:
             _LOGGER.error(
@@ -321,7 +503,7 @@ class FreeRouter:
         while len(self._history) > 1 and _chars() > HISTORY_MAX_CHARS:
             self._history.pop(0)
 
-    async def _run_turn(self, command: str):
+    async def _run_turn(self, command: str, on_sentence=None):
         deadline = time.monotonic() + FREE_DEADLINE_S
         history = [m for turn in self._history for m in turn]
         messages = [
@@ -334,11 +516,20 @@ class FreeRouter:
         total_calls = 0
         for round_no in range(MAX_TOOL_ROUNDS + 1):
             last_round = round_no == MAX_TOOL_ROUNDS
-            message = await self._client.chat(
-                messages,
-                None if last_round else TOOL_SCHEMAS,
-                deadline - time.monotonic(),
-            )
+            if on_sentence is None:
+                message = await self._client.chat(
+                    messages,
+                    None if last_round else TOOL_SCHEMAS,
+                    deadline - time.monotonic(),
+                )
+            else:
+                message = await _stream_round(
+                    self._client,
+                    messages,
+                    None if last_round else TOOL_SCHEMAS,
+                    deadline - time.monotonic(),
+                    on_sentence,
+                )
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
                 return message.get("content") or "", calls_made, messages[slice_at:]

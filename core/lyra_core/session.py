@@ -57,6 +57,8 @@ from .audio_http import AudioHttpServer
 from .box_client import ERROR_STT_NO_TEXT, BoxClient
 from .config import CoreConfig
 from .endpointer import VAD_END, VAD_START, Endpointer
+import io
+import wave
 from .pipeline import PipelineDriver, PipelineError, silent_wav_like, speech_route
 from .wyoming_client import WyomingConnection, audio_chunk, audio_start, detect
 
@@ -78,6 +80,70 @@ EventHook = Callable[[str, dict], None]
 STATE_IDLE = "idle"
 STATE_CAPTURING = "capturing"
 STATE_PROCESSING = "processing"
+
+
+class _SentenceSpeaker:
+    """Streaming speech for one turn (2026-11-15): the router feeds
+    reply sentences while the rest of the reply is still generating;
+    each is synthesized in order -- synthesize_speech fires the TV
+    mirror per sentence -- so the first sentence is heard after
+    roughly one sentence of generation instead of the whole reply
+    plus the whole synthesis. Synthesis runs in a worker task so
+    TTS never blocks the token stream. The box still receives one
+    silent WAV of the reply's exact total length, as before."""
+
+    def __init__(self, driver) -> None:
+        self._driver = driver
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._worker: asyncio.Task | None = None
+        self.used = False
+        self.total_frames = 0
+        self.params = None
+
+    async def feed(self, sentence: str) -> None:
+        self.used = True
+        if self._worker is None:
+            self._worker = asyncio.ensure_future(self._run())
+        await self._queue.put(sentence)
+
+    async def _run(self) -> None:
+        while True:
+            sentence = await self._queue.get()
+            if sentence is None:
+                return
+            try:
+                wav_bytes, _r, _w, _c = await self._driver.synthesize_speech(sentence)
+            except Exception:
+                _LOGGER.exception(
+                    "streamed sentence synthesis failed: %r", sentence)
+                continue
+            try:
+                with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+                    self.total_frames += wf.getnframes()
+                    self.params = wf.getparams()
+            except Exception:
+                pass
+
+    async def drain(self) -> None:
+        if self._worker is not None:
+            await self._queue.put(None)
+            await self._worker
+            self._worker = None
+
+    def silence_wav(self) -> bytes | None:
+        """One silent WAV of the total spoken length (+ a small tail
+        pad), in the format of the synthesized sentences. None when
+        nothing was actually synthesized (caller falls back to the
+        whole-reply path)."""
+        if self.params is None or self.total_frames <= 0:
+            return None
+        frames = self.total_frames + int(self.params.framerate * 0.4)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setparams(self.params)
+            wf.writeframes(
+                b"\x00" * frames * self.params.sampwidth * self.params.nchannels)
+        return buf.getvalue()
 
 
 class VoiceSession:
@@ -385,6 +451,8 @@ class VoiceSession:
         try:
             transcript = ""
             reply_text = self._reply_text
+            speaker = _SentenceSpeaker(self._driver)
+            self._turn_speaker = speaker
             if self._verify_gate is not None:
                 outcome = await self._verify_stage(pcm, no_speech=no_speech)
                 if outcome is None:
@@ -413,9 +481,18 @@ class VoiceSession:
                 )
                 self._emit_box("intent_start", box.evt_intent_start)
                 self._emit_box("intent_end", box.evt_intent_end)
-            wav_bytes, _rate, _width, _ch = await self._driver.synthesize_speech(
-                reply_text
-            )
+            wav_bytes = None
+            if speaker.used:
+                await speaker.drain()
+                # Streamed route: the sentences already spoke on the
+                # TV via their mirrors; the box gets one silent WAV
+                # of the exact total length, exactly as the TV route
+                # below would build from a whole-reply synthesis.
+                wav_bytes = speaker.silence_wav()
+            if wav_bytes is None:
+                wav_bytes, _rate, _width, _ch = await self._driver.synthesize_speech(
+                    reply_text
+                )
             audio_id = self._http.store.put(wav_bytes)
             url = self._http.url_for(audio_id, self._cfg.http.public_host)
             self.last_tts_url = url
@@ -464,6 +541,10 @@ class VoiceSession:
                 )
                 self._emit_box("run_end", box.evt_run_end)
         finally:
+            _sp = getattr(self, "_turn_speaker", None)
+            if _sp is not None and _sp._worker is not None:
+                _sp._worker.cancel()
+                _sp._worker = None
             if self._box is not None:
                 self._set_state(STATE_IDLE)
 
@@ -538,7 +619,10 @@ class VoiceSession:
                 arity = len(inspect.signature(hook).parameters)
             except (TypeError, ValueError):
                 arity = 1
-            if arity >= 2:
+            speaker = getattr(self, "_turn_speaker", None)
+            if arity >= 3 and speaker is not None:
+                offered = hook(result.command or "", result, speaker.feed)
+            elif arity >= 2:
                 offered = hook(result.command or "", result)
             else:
                 offered = hook(result.command or "")
