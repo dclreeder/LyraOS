@@ -1,0 +1,311 @@
+{
+ "FileReferences": {
+  "DisplayInfo": "hiyori.cdi3.json",
+  "Moc": "hiyori.moc3",
+  "Physics": "hiyori.physics3.json",
+  "Textures": [
+   "hiyori.2048/texture_00.png",
+   "hiyori.2048/texture_01.png"
+  ],
+  "Motions": {
+   "m01": [
+    {
+     "File": "animations/hiyori_m01.motion3.json"
+    }
+   ],
+   "m02": [
+    {
+     "File": "animations/hiyori_m02.motion3.json"
+    }
+   ],
+   "m03": [
+    {
+     "File": "animations/hiyori_m03.motion3.json"
+    }
+   ],
+   "m04": [
+    {
+     "File": "animations/hiyori_m04.motion3.json"
+    }
+   ],
+   "m05": [
+    {
+     "File": "animations/hiyori_m05.motion3.json"
+    }
+   ],
+   "m06": [
+    {
+     "File": "animations/hiyori_m06.motion3.json"
+    }
+   ],
+   "m07": [
+    {
+     "File": "animations/hiyori_m07.motion3.json"
+    }
+   ],
+   "m08": [
+    {
+     "File": "animations/hiyori_m08.motion3.json"
+    }
+   ],
+   "m09": [
+    {
+     "File": "animations/hiyori_m09.motion3.json"
+    }
+   ],
+   "m10": [
+    {
+     "File": "animations/hiyori_m10.motion3.json"
+    }
+   ],
+   "haru_g_idle": [
+    {
+     "File": "animations/haru_g_idle.motion3.json"
+    }
+   ],
+   "haru_g_m01": [
+    {
+     "File": "animations/haru_g_m01.motion3.json"
+    }
+   ],
+   "haru_g_m02": [
+    {
+     "File": "animations/haru_g_m02.motion3.json"
+    }
+   ],
+   "haru_g_m03": [
+    {
+     "File": "animations/haru_g_m03.motion3.json"
+    }
+   ],
+   "haru_g_m04": [
+    {
+     "File": "animations/haru_g_m04.motion3.json"
+    }
+   ],
+   "haru_g_m05": [
+    {
+     "File": "animations/haru_g_m05.motion3.json"
+    }
+   ],
+   "haru_g_m06": [
+    {
+     "File": "animations/haru_g_m06.motion3.json"
+    }
+   ],
+   "haru_g_m07": [
+    {
+     "File": "animations/haru_g_m07.motion3.json"
+    }
+   ],
+   "haru_g_m08": [
+    {
+     "File": "animations/haru_g_m08.motion3.json"
+    }
+   ],
+   "haru_g_m09": [
+    {
+     "File": "animations/haru_g_m09.motion3.json"
+    }
+   ],
+   "haru_g_m10": [
+    {
+     "File": "animations/haru_g_m10.motion3.json"
+    }
+   ],
+   "haru_g_m11": [
+    {
+     "File": "animations/haru_g_m11.motion3.json"
+    }
+   ],
+   "haru_g_m12": [
+    {
+     "File": "animations/haru_g_m12.motion3.json"
+    }
+   ],
+   "haru_g_m13": [
+    {
+     "File": "animations/haru_g_m13.motion3.json"
+    }
+   ],
+   "haru_g_m14": [
+    {
+     "File": "animations/haru_g_m14.motion3.json"
+    }
+   ],
+   "haru_g_m15": [
+    {
+     "File": "animations/haru_g_m15.motion3.json"
+    }
+   ],
+   "haru_g_m16": [
+    {
+     "File": "animations/haru_g_m16.motion3.json"
+    }
+   ],
+   "haru_g_m17": [
+    {
+     "File": "animations/haru_g_m17.motion3.json"
+    }
+   ],
+   "haru_g_m18": [
+    {
+     "File": "animations/haru_g_m18.motion3.json"
+    }
+   ],
+   "haru_g_m19": [
+    {
+     "File": "animations/haru_g_m19.motion3.json"
+    }
+   ],
+   "haru_g_m20": [
+    {
+     "File": "animations/haru_g_m20.motion3.json"
+    }
+   ],
+   "haru_g_m21": [
+    {
+     "File": "animations/haru_g_m21.motion3.json"
+    }
+   ],
+   "haru_g_m22": [
+    {
+     "File": "animations/haru_g_m22.motion3.json"
+    }
+   ],
+   "haru_g_m23": [
+    {
+     "File": "animations/haru_g_m23.motion3.json"
+    }
+   ],
+   "haru_g_m24": [
+    {
+     "File": "animations/haru_g_m24.motion3.json"
+    }
+   ],
+   "haru_g_m25": [
+    {
+     "File": "animations/haru_g_m25.motion3.json"
+    }
+   ],
+   "haru_g_m26": [
+    {
+     "File": "animations/haru_g_m26.motion3.json"
+    }
+   ],
+   "ren_mtn_01": [
+    {
+     "File": "animations/ren_mtn_01.motion3.json"
+    }
+   ],
+   "ren_mtn_02": [
+    {
+     "File": "animations/ren_mtn_02.motion3.json"
+    }
+   ],
+   "ren_mtn_03": [
+    {
+     "File": "animations/ren_mtn_03.motion3.json"
+    }
+   ],
+   "mao_mtn_01": [
+    {
+     "File": "animations/mao_mtn_01.motion3.json"
+    }
+   ],
+   "mao_mtn_02": [
+    {
+     "File": "animations/mao_mtn_02.motion3.json"
+    }
+   ],
+   "mao_mtn_03": [
+    {
+     "File": "animations/mao_mtn_03.motion3.json"
+    }
+   ],
+   "mao_mtn_04": [
+    {
+     "File": "animations/mao_mtn_04.motion3.json"
+    }
+   ],
+   "mao_sample_01": [
+    {
+     "File": "animations/mao_sample_01.motion3.json"
+    }
+   ],
+   "mao_special_01": [
+    {
+     "File": "animations/mao_special_01.motion3.json"
+    }
+   ],
+   "mao_special_02": [
+    {
+     "File": "animations/mao_special_02.motion3.json"
+    }
+   ],
+   "mao_special_03": [
+    {
+     "File": "animations/mao_special_03.motion3.json"
+    }
+   ],
+   "natori_mtn_00": [
+    {
+     "File": "animations/natori_mtn_00.motion3.json"
+    }
+   ],
+   "natori_mtn_01": [
+    {
+     "File": "animations/natori_mtn_01.motion3.json"
+    }
+   ],
+   "natori_mtn_02": [
+    {
+     "File": "animations/natori_mtn_02.motion3.json"
+    }
+   ],
+   "natori_mtn_03": [
+    {
+     "File": "animations/natori_mtn_03.motion3.json"
+    }
+   ],
+   "natori_mtn_04": [
+    {
+     "File": "animations/natori_mtn_04.motion3.json"
+    }
+   ],
+   "natori_mtn_05": [
+    {
+     "File": "animations/natori_mtn_05.motion3.json"
+    }
+   ],
+   "natori_mtn_06": [
+    {
+     "File": "animations/natori_mtn_06.motion3.json"
+    }
+   ],
+   "natori_mtn_07": [
+    {
+     "File": "animations/natori_mtn_07.motion3.json"
+    }
+   ]
+  }
+ },
+ "Groups": [
+  {
+   "Ids": [
+    "ParamEyeLOpen",
+    "ParamEyeROpen"
+   ],
+   "Name": "EyeBlink",
+   "Target": "Parameter"
+  },
+  {
+   "Ids": [
+    "ParamMouthOpenY"
+   ],
+   "Name": "LipSync",
+   "Target": "Parameter"
+  }
+ ],
+ "Version": 3
+}

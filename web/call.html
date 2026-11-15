@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Call Lyra</title>
+<style>
+html,body{margin:0;padding:0;background:#05070f;overflow:hidden;height:100%;
+  font-family:system-ui,'Segoe UI',sans-serif;-webkit-user-select:none;user-select:none}
+canvas{display:block}
+#bgwrap{position:fixed;inset:0;overflow:hidden;z-index:0}
+.bgv{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#c{position:relative;z-index:1}
+#ui{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;flex-direction:column;
+  align-items:center;gap:10px;padding:14px 18px calc(20px + env(safe-area-inset-bottom));
+  background:linear-gradient(transparent, rgba(3,5,12,.72) 38%)}
+#caps{max-width:560px;width:100%;display:flex;flex-direction:column;gap:6px;pointer-events:none}
+.cap{align-self:flex-start;max-width:88%;padding:7px 12px;border-radius:14px;font-size:15px;
+  line-height:1.35;color:#fff;background:rgba(20,26,44,.66);backdrop-filter:blur(6px)}
+.cap.me{align-self:flex-end;background:rgba(64,84,140,.66)}
+.cap:empty{display:none}
+#status{color:#fff;font-size:16px;font-weight:600;letter-spacing:.01em;
+  text-shadow:0 1px 8px rgba(0,0,0,.6);min-height:20px;text-align:center}
+#callbtn{width:74px;height:74px;border-radius:50%;border:none;cursor:pointer;
+  background:#e58bb1;color:#fff;font-size:30px;line-height:1;
+  box-shadow:0 6px 22px rgba(0,0,0,.45);transition:background .2s, transform .1s}
+#callbtn:active{transform:scale(.94)}
+#callbtn.on{background:#d64545}
+#hint{color:rgba(255,255,255,.75);font-size:12.5px;text-align:center;max-width:420px}
+</style>
+<script src="libs/pixi.min.js"></script>
+<script src="libs/live2dcubismcore.min.js"></script>
+<script src="libs/cubism4.min.js"></script>
+</head><body>
+<div id="bgwrap"><video id="bgvid" class="bgv" src="assets/day-scene-loop.mp4" autoplay muted loop playsinline></video></div>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div id="caps"><div class="cap me" id="capme"></div><div class="cap" id="capher"></div></div>
+  <div id="status">Tap to call</div>
+  <button id="callbtn" aria-label="Call">&#128222;</button>
+  <div id="hint"></div>
+</div>
+<script>
+(async () => {
+  const app = new PIXI.Application({view: document.getElementById('c'), resizeTo: window, backgroundAlpha: 0, antialias: true});
+  const model = await PIXI.live2d.Live2DModel.from('models/hiyori_vts/hiyori.model3.json');
+  app.stage.addChild(model);
+  let natH = 0;
+  function fit() {
+    if (!natH) natH = model.height;
+    const s = (innerHeight / natH) * 1.85;
+    model.scale.set(s);
+    model.anchor.set(0.5, 0);
+    model.x = innerWidth / 2; model.y = innerHeight * 0.03;
+  }
+  fit(); addEventListener('resize', fit);
+  setInterval(() => { model.focus(innerWidth / 2 + (Math.random() - 0.5) * innerWidth * 0.5, innerHeight / 2 + (Math.random() - 0.5) * innerHeight * 0.3); }, 3600);
+  const groups = ["haru_g_idle", "haru_g_m01", "haru_g_m02", "haru_g_m03", "haru_g_m04", "haru_g_m05", "haru_g_m06", "haru_g_m07", "haru_g_m08", "haru_g_m09", "haru_g_m10", "haru_g_m11", "haru_g_m12", "haru_g_m13", "haru_g_m14", "haru_g_m15", "haru_g_m16", "haru_g_m17", "haru_g_m18", "haru_g_m19", "haru_g_m20", "haru_g_m21", "haru_g_m22", "haru_g_m23", "haru_g_m24", "haru_g_m25", "haru_g_m26", "m01", "m02", "m03", "m04", "m05", "m06", "m07", "m08", "m09", "m10", "mao_mtn_01", "mao_mtn_02", "mao_mtn_03", "mao_mtn_04", "mao_sample_01", "mao_special_01", "mao_special_02", "mao_special_03", "natori_mtn_00", "natori_mtn_01", "natori_mtn_02", "natori_mtn_03", "natori_mtn_04", "natori_mtn_05", "natori_mtn_06", "natori_mtn_07", "ren_mtn_01", "ren_mtn_02", "ren_mtn_03"];
+  let speaking = false, lastMotion = -1;
+  function motionPlaying() {
+    try { const mm = model.internalModel.motionManager;
+      if (mm && typeof mm.isFinished === 'function') return !mm.isFinished();
+      if (mm && typeof mm.playing === 'boolean') return mm.playing;
+    } catch (e) {}
+    return false;
+  }
+  function playRandomMotion() {
+    let i; do { i = Math.floor(Math.random() * groups.length); } while (i === lastMotion);
+    lastMotion = i;
+    try { model.motion(groups[i]); } catch (e) {}
+  }
+  setInterval(() => { if (!speaking && !motionPlaying()) playRandomMotion(); }, 900);
+  // --- speech playback: reply WAV through the analyser, mouth from live RMS ---
+  let actx = null, analyser = null, audioEl = null, mouth = 0;
+  function ensureAudio() {
+    if (actx) { actx.resume(); return; }
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    audioEl = new Audio();
+    const src = actx.createMediaElementSource(audioEl);
+    analyser = actx.createAnalyser(); analyser.fftSize = 512;
+    const gain = actx.createGain(); gain.gain.value = 1.0;
+    src.connect(analyser); analyser.connect(gain); gain.connect(actx.destination);
+    audioEl.addEventListener('ended', () => { speaking = false; onReplyEnded(); });
+  }
+  const buf = new Uint8Array(256);
+  app.ticker.add(() => {
+    let target = 0;
+    if (analyser && audioEl && !audioEl.paused) {
+      analyser.getByteTimeDomainData(buf);
+      let sum = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+      const rms = Math.sqrt(sum / buf.length);
+      target = Math.pow(Math.min(1, rms * 7.0), 0.75);
+      if (rms > 0.02) target = Math.max(target, 0.18);
+    }
+    mouth += (target - mouth) * (target > mouth ? 0.85 : 0.28);
+    try { model.internalModel.coreModel.setParameterValueById('ParamMouthOpenY', mouth); } catch (e) {}
+    try { const cm = model.internalModel.coreModel; cm.setPartOpacityById('PartArmB', 0); cm.setPartOpacityById('PartArmA', 1); } catch (e) {}
+    if (!motionPlaying()) {
+      try {
+        const cm = model.internalModel.coreModel, t = performance.now() / 1000;
+        cm.setParameterValueById('ParamBreath', 0.5 + 0.5 * Math.sin(t * 1.7));
+        cm.setParameterValueById('ParamBodyAngleX', 2.6 * Math.sin(t * 0.43));
+        cm.setParameterValueById('ParamBodyAngleZ', 1.4 * Math.sin(t * 0.31 + 1.7));
+        cm.setParameterValueById('ParamAngleZ', 1.8 * Math.sin(t * 0.37 + 0.6));
+        if (window._nextBlink === undefined) window._nextBlink = t + 2.4;
+        const bt = t - (window._blinkStart || -10);
+        let eye = 1;
+        if (bt >= 0 && bt < 0.22) eye = Math.abs(bt - 0.11) / 0.11;
+        else if (t >= window._nextBlink) { window._blinkStart = t; window._nextBlink = t + 2.4 + Math.random() * 3.2; }
+        cm.setParameterValueById('ParamEyeLOpen', eye);
+        cm.setParameterValueById('ParamEyeROpen', eye);
+      } catch (e) {}
+    }
+  }, null, PIXI.UPDATE_PRIORITY.LOW);
+
+  // ================= call machinery =================
+  const statusEl = document.getElementById('status');
+  const hintEl = document.getElementById('hint');
+  const btn = document.getElementById('callbtn');
+  const capMe = document.getElementById('capme'), capHer = document.getElementById('capher');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    hintEl.textContent = 'This page needs a secure (https) address for the microphone. Use the tailnet https link.';
+  }
+  let state = 'off';           // off | listening | recording | sending | speaking
+  let stream = null, micSrc = null, proc = null;
+  let preRoll = [], chunks = [], silenceS = 0, speechS = 0, utterS = 0;
+  const SR_OUT = 16000;
+
+  function setStatus(t) { statusEl.textContent = t; }
+  function downsample(f32, inRate) {
+    const ratio = inRate / SR_OUT, outLen = Math.floor(f32.length / ratio);
+    const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) out[i] = f32[Math.floor(i * ratio)];
+    return out;
+  }
+  function encodeWav(f32) {
+    const n = f32.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const ws = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    ws(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); ws(8, 'WAVEfmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, SR_OUT, true); v.setUint32(28, SR_OUT * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true); ws(36, 'data');
+    v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) {
+      const s = Math.max(-1, Math.min(1, f32[i]));
+      v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return new Blob([buf], {type: 'audio/wav'});
+  }
+  function onReplyEnded() {
+    if (state !== 'speaking') return;
+    setTimeout(() => { if (state === 'speaking') { state = 'listening'; setStatus('Listening…'); } }, 350);
+  }
+  async function sendUtterance() {
+    state = 'sending'; setStatus('Thinking…');
+    const all = new Float32Array(chunks.reduce((a, c) => a + c.length, 0));
+    let off = 0; for (const c of chunks) { all.set(c, off); off += c.length; }
+    chunks = [];
+    const wav = encodeWav(downsample(all, actx.sampleRate));
+    try {
+      const r = await fetch('/call/turn', {method: 'POST', body: wav, headers: {'Content-Type': 'audio/wav'}});
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'turn failed');
+      if (j.transcript) capMe.textContent = j.transcript;
+      if (j.reply) capHer.textContent = j.reply;
+      const bin = atob(j.wav_b64), bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      state = 'speaking'; setStatus('Lyra');
+      try { model.motion(groups[Math.floor(Math.random() * groups.length)]); } catch (e) {}
+      speaking = true;
+      audioEl.src = URL.createObjectURL(new Blob([bytes], {type: 'audio/wav'}));
+      await audioEl.play();
+    } catch (e) {
+      setStatus('That turn failed — listening again');
+      state = 'listening';
+      setTimeout(() => { if (state === 'listening') setStatus('Listening…'); }, 1600);
+    }
+  }
+  function handleAudio(e) {
+    if (state !== 'listening' && state !== 'recording') return;
+    const d = e.inputBuffer.getChannelData(0);
+    let sum = 0; for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+    const rms = Math.sqrt(sum / d.length), dur = d.length / actx.sampleRate;
+    if (state === 'listening') {
+      preRoll.push(new Float32Array(d));
+      while (preRoll.length > 8) preRoll.shift();
+      if (rms > 0.045) { speechS += dur; } else { speechS = 0; }
+      if (speechS > 0.12) {
+        state = 'recording'; setStatus('Listening…');
+        chunks = preRoll.slice(); preRoll = [];
+        silenceS = 0; utterS = 0;
+      }
+    } else {
+      chunks.push(new Float32Array(d)); utterS += dur;
+      if (rms < 0.022) { silenceS += dur; } else { silenceS = 0; }
+      if ((silenceS > 1.15 && utterS > 0.35) || utterS > 30) {
+        if (utterS > 0.35) { sendUtterance(); }
+        else { state = 'listening'; }
+      }
+    }
+  }
+  async function startCall() {
+    ensureAudio();
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
+    } catch (e) {
+      hintEl.textContent = 'Microphone was not allowed. Check the browser prompt, and use the https link.';
+      return;
+    }
+    micSrc = actx.createMediaStreamSource(stream);
+    proc = actx.createScriptProcessor(4096, 1, 1);
+    proc.onaudioprocess = handleAudio;
+    const mute = actx.createGain(); mute.gain.value = 0;
+    micSrc.connect(proc); proc.connect(mute); mute.connect(actx.destination);
+    // prime the reply element inside this tap so iOS lets it play later
+    try {
+      audioEl.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=';
+      audioEl.play().catch(() => {});
+    } catch (e) {}
+    state = 'listening'; setStatus('Listening…');
+    btn.classList.add('on'); btn.innerHTML = '&#128244;';
+    hintEl.textContent = 'Just talk — she answers when you pause. Her voice plays here, and on the TV too if it is on.';
+  }
+  function endCall() {
+    state = 'off';
+    if (proc) { proc.onaudioprocess = null; try { proc.disconnect(); } catch (e) {} proc = null; }
+    if (micSrc) { try { micSrc.disconnect(); } catch (e) {} micSrc = null; }
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    if (audioEl) { audioEl.pause(); speaking = false; }
+    setStatus('Tap to call');
+    btn.classList.remove('on'); btn.innerHTML = '&#128222;';
+  }
+  btn.addEventListener('click', () => { if (state === 'off') startCall(); else endCall(); });
+})();
+</script>
+</body></html>

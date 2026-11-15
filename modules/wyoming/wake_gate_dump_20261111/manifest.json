@@ -1,0 +1,445 @@
+{
+ "modules": {
+  "wake_gate": {
+   "file": "/home/dclreeder/Documents/Local Satellite/fedora/wake_gate.py",
+   "attrs": {
+    "__name__": {
+     "kind": "pickled",
+     "type": "str"
+    },
+    "__doc__": {
+     "kind": "pickled",
+     "type": "str"
+    },
+    "__package__": {
+     "kind": "pickled",
+     "type": "str"
+    },
+    "__loader__": {
+     "kind": "pickled",
+     "type": "SourceFileLoader"
+    },
+    "__spec__": {
+     "kind": "pickled",
+     "type": "ModuleSpec"
+    },
+    "__file__": {
+     "kind": "pickled",
+     "type": "str"
+    },
+    "__cached__": {
+     "kind": "pickled",
+     "type": "str"
+    },
+    "logging": {
+     "kind": "module",
+     "name": "logging"
+    },
+    "os": {
+     "kind": "module",
+     "name": "os"
+    },
+    "deque": {
+     "kind": "class",
+     "bases": [
+      [
+       "builtins",
+       "object"
+      ]
+     ],
+     "methods": {},
+     "class_attrs": {
+      "__new__": {
+       "kind": "pickled",
+       "type": "builtin_function_or_method"
+      },
+      "__repr__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__hash__": {
+       "kind": "pickled",
+       "type": "NoneType"
+      },
+      "__getattribute__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__lt__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__le__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__eq__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__ne__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__gt__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__ge__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__iter__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__init__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__len__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__add__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__mul__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__rmul__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__getitem__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__setitem__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__delitem__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__contains__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__iadd__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "__imul__": {
+       "kind": "pickled",
+       "type": "wrapper_descriptor"
+      },
+      "append": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "appendleft": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "clear": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "__copy__": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "copy": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "count": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "extend": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "extendleft": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "index": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "insert": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "pop": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "popleft": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "__reduce__": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "remove": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "__reversed__": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "reverse": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "rotate": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "__sizeof__": {
+       "kind": "pickled",
+       "type": "method_descriptor"
+      },
+      "__class_getitem__": {
+       "kind": "repr",
+       "type": "classmethod_descriptor",
+       "repr": "<method '__class_getitem__' of 'collections.deque' objects>"
+      },
+      "maxlen": {
+       "kind": "repr",
+       "type": "getset_descriptor",
+       "repr": "<attribute 'maxlen' of 'collections.deque' objects>"
+      }
+     }
+    },
+    "np": {
+     "kind": "module",
+     "name": "numpy"
+    },
+    "logger": {
+     "kind": "pickled",
+     "type": "Logger"
+    },
+    "_MODULE": {
+     "kind": "pickled",
+     "type": "str"
+    },
+    "WAKE_MODEL_PATH": {
+     "kind": "pickled",
+     "type": "str"
+    },
+    "MEL_MODEL_PATH": {
+     "kind": "pickled",
+     "type": "str"
+    },
+    "EMB_MODEL_PATH": {
+     "kind": "pickled",
+     "type": "str"
+    },
+    "CHUNK": {
+     "kind": "pickled",
+     "type": "int"
+    },
+    "EMB_WIN": {
+     "kind": "pickled",
+     "type": "int"
+    },
+    "EMB_FRAMES": {
+     "kind": "pickled",
+     "type": "int"
+    },
+    "MEL_MAX": {
+     "kind": "pickled",
+     "type": "int"
+    },
+    "FEAT_MAX": {
+     "kind": "pickled",
+     "type": "int"
+    },
+    "HeyLyraGate": {
+     "kind": "class",
+     "bases": [
+      [
+       "builtins",
+       "object"
+      ]
+     ],
+     "methods": {
+      "__init__": {
+       "kind": "plain",
+       "defaults": "pickled"
+      },
+      "reset": {
+       "kind": "plain"
+      },
+      "_melspec": {
+       "kind": "plain"
+      },
+      "_embeddings_of": {
+       "kind": "plain"
+      },
+      "predict": {
+       "kind": "plain"
+      },
+      "_score": {
+       "kind": "plain"
+      },
+      "triggered": {
+       "kind": "plain"
+      }
+     },
+     "class_attrs": {
+      "__firstlineno__": {
+       "kind": "pickled",
+       "type": "int"
+      },
+      "__static_attributes__": {
+       "kind": "pickled",
+       "type": "tuple"
+      }
+     }
+    }
+   }
+  }
+ },
+ "errors": [],
+ "target_modules": [
+  "wake_gate"
+ ],
+ "instances": [
+  {
+   "_mel": {
+    "kind": "onnx_session",
+    "inputs": [
+     [
+      "input",
+      [
+       "batch_size",
+       "samples"
+      ],
+      "tensor(float)"
+     ]
+    ],
+    "outputs": [
+     [
+      "output",
+      [
+       "time",
+       "1",
+       "Clipoutput_dim_2",
+       "32"
+      ],
+      "tensor(float)"
+     ]
+    ],
+    "providers": [
+     "CPUExecutionProvider"
+    ]
+   },
+   "_emb": {
+    "kind": "onnx_session",
+    "inputs": [
+     [
+      "input_1",
+      [
+       "unk__316",
+       "76",
+       "32",
+       "1"
+      ],
+      "tensor(float)"
+     ]
+    ],
+    "outputs": [
+     [
+      "conv2d_19",
+      [
+       "unk__317",
+       "1",
+       "1",
+       "96"
+      ],
+      "tensor(float)"
+     ]
+    ],
+    "providers": [
+     "CPUExecutionProvider"
+    ]
+   },
+   "_clf": {
+    "kind": "onnx_session",
+    "inputs": [
+     [
+      "x",
+      [
+       "1",
+       "16",
+       "96"
+      ],
+      "tensor(float)"
+     ]
+    ],
+    "outputs": [
+     [
+      "sigmoid",
+      [
+       "1",
+       "1"
+      ],
+      "tensor(float)"
+     ]
+    ],
+    "providers": [
+     "CPUExecutionProvider"
+    ]
+   },
+   "threshold": {
+    "kind": "pickled",
+    "type": "float"
+   },
+   "_raw": {
+    "kind": "pickled",
+    "type": "deque"
+   },
+   "_mel_buf": {
+    "kind": "ndarray",
+    "dtype": "float32",
+    "shape": [
+     970,
+     32
+    ],
+    "file": "arrays/inst._mel_buf.npy"
+   },
+   "_accum": {
+    "kind": "pickled",
+    "type": "int"
+   },
+   "_remainder": {
+    "kind": "ndarray",
+    "dtype": "int16",
+    "shape": [
+     0
+    ],
+    "file": "arrays/inst._remainder.npy"
+   },
+   "_feat": {
+    "kind": "ndarray",
+    "dtype": "float32",
+    "shape": [
+     120,
+     96
+    ],
+    "file": "arrays/inst._feat.npy"
+   }
+  }
+ ]
+}

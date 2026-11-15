@@ -1,0 +1,740 @@
+
+===== HeyLyraGate.__init__ =====
+ 53           RESUME                   0
+
+ 54           LOAD_SMALL_INT           0
+              LOAD_CONST               1 (None)
+              IMPORT_NAME              0 (onnxruntime)
+              STORE_FAST               3 (ort)
+
+ 55           LOAD_FAST_BORROW         3 (ort)
+              LOAD_ATTR                3 (SessionOptions + NULL|self)
+              CALL                     0
+              STORE_FAST               4 (opts)
+
+ 56           LOAD_SMALL_INT           1
+              LOAD_FAST_BORROW         4 (opts)
+              STORE_ATTR               2 (inter_op_num_threads)
+
+ 57           LOAD_SMALL_INT           2
+              LOAD_FAST_BORROW         4 (opts)
+              STORE_ATTR               3 (intra_op_num_threads)
+
+ 58           LOAD_FAST_BORROW         3 (ort)
+              LOAD_ATTR                9 (InferenceSession + NULL|self)
+
+ 59           LOAD_GLOBAL             10 (MEL_MODEL_PATH)
+              LOAD_FAST_BORROW         4 (opts)
+
+ 60           LOAD_CONST               2 ('CPUExecutionProvider')
+              BUILD_LIST               1
+
+ 58           LOAD_CONST               3 (('sess_options', 'providers'))
+              CALL_KW                  3
+              LOAD_FAST_BORROW         0 (self)
+              STORE_ATTR               6 (_mel)
+
+ 61           LOAD_FAST_BORROW         3 (ort)
+              LOAD_ATTR                9 (InferenceSession + NULL|self)
+
+ 62           LOAD_GLOBAL             14 (EMB_MODEL_PATH)
+              LOAD_FAST_BORROW         4 (opts)
+
+ 63           LOAD_CONST               2 ('CPUExecutionProvider')
+              BUILD_LIST               1
+
+ 61           LOAD_CONST               3 (('sess_options', 'providers'))
+              CALL_KW                  3
+              LOAD_FAST_BORROW         0 (self)
+              STORE_ATTR               8 (_emb)
+
+ 64           LOAD_FAST_BORROW         3 (ort)
+              LOAD_ATTR                9 (InferenceSession + NULL|self)
+
+ 65           LOAD_FAST_BORROW_LOAD_FAST_BORROW 20 (model_path, opts)
+
+ 66           LOAD_CONST               2 ('CPUExecutionProvider')
+              BUILD_LIST               1
+
+ 64           LOAD_CONST               3 (('sess_options', 'providers'))
+              CALL_KW                  3
+              LOAD_FAST_BORROW         0 (self)
+              STORE_ATTR               9 (_clf)
+
+ 67           LOAD_FAST_BORROW_LOAD_FAST_BORROW 32 (threshold, self)
+              STORE_ATTR              10 (threshold)
+
+ 68           LOAD_FAST_BORROW         0 (self)
+              LOAD_ATTR               23 (reset + NULL|self)
+              CALL                     0
+              POP_TOP
+
+ 69           LOAD_GLOBAL             24 (logger)
+              LOAD_ATTR               27 (info + NULL|self)
+              LOAD_CONST               4 ('HeyLyraGate loaded (threshold=')
+              LOAD_FAST_BORROW         2 (threshold)
+              FORMAT_SIMPLE
+              LOAD_CONST               5 (')')
+              BUILD_STRING             3
+              CALL                     1
+              POP_TOP
+              LOAD_CONST               1 (None)
+              RETURN_VALUE
+
+===== HeyLyraGate.reset =====
+ 72           RESUME                   0
+
+ 73           LOAD_GLOBAL              1 (deque + NULL)
+              LOAD_CONST               0 (160000)
+              LOAD_CONST               1 (('maxlen',))
+              CALL_KW                  1
+              LOAD_FAST_BORROW         0 (self)
+              STORE_ATTR               1 (_raw)
+
+ 74           LOAD_GLOBAL              4 (np)
+              LOAD_ATTR                6 (ones)
+              PUSH_NULL
+              LOAD_GLOBAL              8 (EMB_WIN)
+              LOAD_SMALL_INT          32
+              BUILD_TUPLE              2
+              LOAD_GLOBAL              4 (np)
+              LOAD_ATTR               10 (float32)
+              LOAD_CONST               2 (('dtype',))
+              CALL_KW                  2
+              LOAD_FAST_BORROW         0 (self)
+              STORE_ATTR               6 (_mel_buf)
+
+ 75           LOAD_SMALL_INT           0
+              LOAD_FAST_BORROW         0 (self)
+              STORE_ATTR               7 (_accum)
+
+ 76           LOAD_GLOBAL              4 (np)
+              LOAD_ATTR               16 (empty)
+              PUSH_NULL
+              LOAD_SMALL_INT           0
+              LOAD_GLOBAL              4 (np)
+              LOAD_ATTR               18 (int16)
+              LOAD_CONST               2 (('dtype',))
+              CALL_KW                  2
+              LOAD_FAST_BORROW         0 (self)
+              STORE_ATTR              10 (_remainder)
+
+ 77           LOAD_GLOBAL              4 (np)
+              LOAD_ATTR               22 (random)
+              LOAD_ATTR               25 (default_rng + NULL|self)
+              LOAD_CONST               3 (1234567)
+              CALL                     1
+              STORE_FAST               1 (rng)
+
+ 78           LOAD_FAST_BORROW         1 (rng)
+              LOAD_ATTR               27 (integers + NULL|self)
+              LOAD_CONST               6 (-1000)
+              LOAD_CONST               4 (1000)
+              LOAD_CONST               7 (64000)
+              CALL                     3
+              LOAD_ATTR               29 (astype + NULL|self)
+              LOAD_GLOBAL              4 (np)
+              LOAD_ATTR               18 (int16)
+              CALL                     1
+              STORE_FAST               2 (noise)
+
+ 79           LOAD_FAST_BORROW         0 (self)
+              LOAD_ATTR               31 (_embeddings_of + NULL|self)
+              LOAD_FAST_BORROW         2 (noise)
+              CALL                     1
+              LOAD_FAST_BORROW         0 (self)
+              STORE_ATTR              16 (_feat)
+              LOAD_CONST               5 (None)
+              RETURN_VALUE
+
+===== HeyLyraGate._melspec =====
+ 81           RESUME                   0
+
+ 82           LOAD_GLOBAL              0 (np)
+              LOAD_ATTR                2 (asarray)
+              PUSH_NULL
+              LOAD_FAST_BORROW         1 (samples_i16)
+              LOAD_GLOBAL              0 (np)
+              LOAD_ATTR                4 (float32)
+              LOAD_CONST               0 (('dtype',))
+              CALL_KW                  2
+              LOAD_ATTR                7 (reshape + NULL|self)
+              LOAD_SMALL_INT           1
+              LOAD_CONST               5 (-1)
+              CALL                     2
+              STORE_FAST               2 (x)
+
+ 83           LOAD_FAST_BORROW         0 (self)
+              LOAD_ATTR                8 (_mel)
+              LOAD_ATTR               11 (run + NULL|self)
+              LOAD_CONST               1 (None)
+              LOAD_CONST               2 ('input')
+              LOAD_FAST_BORROW         2 (x)
+              BUILD_MAP                1
+              CALL                     2
+              LOAD_SMALL_INT           0
+              BINARY_OP               26 ([])
+              STORE_FAST               3 (out)
+
+ 84           LOAD_FAST_BORROW         3 (out)
+              LOAD_CONST               6 ((0, 0))
+              BINARY_OP               26 ([])
+              LOAD_CONST               3 (10.0)
+              BINARY_OP               11 (/)
+              LOAD_CONST               4 (2.0)
+              BINARY_OP                0 (+)
+              RETURN_VALUE
+
+===== HeyLyraGate._embeddings_of =====
+ 86           RESUME                   0
+
+ 89           LOAD_FAST_BORROW         0 (self)
+              LOAD_ATTR                1 (_melspec + NULL|self)
+              LOAD_FAST_BORROW         1 (samples_i16)
+              CALL                     1
+              STORE_FAST               2 (spec)
+
+ 90           BUILD_LIST               0
+              STORE_FAST               3 (windows)
+
+ 91           LOAD_GLOBAL              3 (range + NULL)
+              LOAD_SMALL_INT           0
+              LOAD_GLOBAL              5 (len + NULL)
+              LOAD_FAST_BORROW         2 (spec)
+              CALL                     1
+              LOAD_SMALL_INT           8
+              CALL                     3
+              GET_ITER
+      L1:     FOR_ITER                57 (to L3)
+              STORE_FAST               4 (i)
+
+ 92           LOAD_FAST_BORROW_LOAD_FAST_BORROW 36 (spec, i)
+              LOAD_FAST_BORROW         4 (i)
+              LOAD_GLOBAL              6 (EMB_WIN)
+              BINARY_OP                0 (+)
+              BINARY_SLICE
+              STORE_FAST               5 (w)
+
+ 93           LOAD_GLOBAL              5 (len + NULL)
+              LOAD_FAST_BORROW         5 (w)
+              CALL                     1
+              LOAD_GLOBAL              6 (EMB_WIN)
+              COMPARE_OP              88 (bool(==))
+              POP_JUMP_IF_TRUE         3 (to L2)
+              NOT_TAKEN
+              JUMP_BACKWARD           40 (to L1)
+
+ 94   L2:     LOAD_FAST_BORROW         3 (windows)
+              LOAD_ATTR                9 (append + NULL|self)
+              LOAD_FAST_BORROW         5 (w)
+              CALL                     1
+              POP_TOP
+              JUMP_BACKWARD           59 (to L1)
+
+ 91   L3:     END_FOR
+              POP_ITER
+
+ 95           LOAD_FAST_BORROW         3 (windows)
+              TO_BOOL
+              POP_JUMP_IF_TRUE        39 (to L4)
+              NOT_TAKEN
+
+ 96           LOAD_GLOBAL             10 (np)
+              LOAD_ATTR               12 (zeros)
+              PUSH_NULL
+              LOAD_CONST               4 ((0, 96))
+              LOAD_GLOBAL             10 (np)
+              LOAD_ATTR               14 (float32)
+              LOAD_CONST               1 (('dtype',))
+              CALL_KW                  2
+              RETURN_VALUE
+
+ 97   L4:     LOAD_GLOBAL             10 (np)
+              LOAD_ATTR               16 (array)
+              PUSH_NULL
+              LOAD_FAST_BORROW         3 (windows)
+              LOAD_GLOBAL             10 (np)
+              LOAD_ATTR               14 (float32)
+              LOAD_CONST               1 (('dtype',))
+              CALL_KW                  2
+              LOAD_CONST               5 ((Ellipsis, None))
+              BINARY_OP               26 ([])
+              STORE_FAST               6 (batch)
+
+ 98           LOAD_FAST_BORROW         0 (self)
+              LOAD_ATTR               18 (_emb)
+              LOAD_ATTR               21 (run + NULL|self)
+              LOAD_CONST               2 (None)
+              LOAD_CONST               3 ('input_1')
+              LOAD_FAST_BORROW         6 (batch)
+              BUILD_MAP                1
+              CALL                     2
+              LOAD_SMALL_INT           0
+              BINARY_OP               26 ([])
+              STORE_FAST               7 (embs)
+
+ 99           LOAD_FAST_BORROW         7 (embs)
+              LOAD_ATTR               23 (reshape + NULL|self)
+              LOAD_GLOBAL              5 (len + NULL)
+              LOAD_FAST_BORROW         3 (windows)
+              CALL                     1
+              LOAD_CONST               6 (-1)
+              CALL                     2
+              LOAD_ATTR               25 (astype + NULL|self)
+              LOAD_GLOBAL             10 (np)
+              LOAD_ATTR               14 (float32)
+              CALL                     1
+              RETURN_VALUE
+
+===== HeyLyraGate.predict =====
+101            RESUME                   0
+
+104            LOAD_GLOBAL              0 (np)
+               LOAD_ATTR                2 (asarray)
+               PUSH_NULL
+               LOAD_FAST_BORROW         1 (x)
+               LOAD_GLOBAL              0 (np)
+               LOAD_ATTR                4 (int16)
+               LOAD_CONST               1 (('dtype',))
+               CALL_KW                  2
+               LOAD_ATTR                7 (reshape + NULL|self)
+               LOAD_CONST               5 (-1)
+               CALL                     1
+               STORE_FAST               1 (x)
+
+105            LOAD_GLOBAL              9 (len + NULL)
+               LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               10 (_remainder)
+               CALL                     1
+               TO_BOOL
+               POP_JUMP_IF_FALSE       78 (to L1)
+               NOT_TAKEN
+
+106            LOAD_GLOBAL              0 (np)
+               LOAD_ATTR               12 (concatenate)
+               PUSH_NULL
+               LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               10 (_remainder)
+               LOAD_FAST_BORROW         1 (x)
+               BUILD_LIST               2
+               CALL                     1
+               STORE_FAST               1 (x)
+
+107            LOAD_GLOBAL              0 (np)
+               LOAD_ATTR               14 (empty)
+               PUSH_NULL
+               LOAD_SMALL_INT           0
+               LOAD_GLOBAL              0 (np)
+               LOAD_ATTR                4 (int16)
+               LOAD_CONST               1 (('dtype',))
+               CALL_KW                  2
+               LOAD_FAST_BORROW         0 (self)
+               STORE_ATTR               5 (_remainder)
+
+108    L1:     LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               16 (_accum)
+               LOAD_GLOBAL              9 (len + NULL)
+               LOAD_FAST_BORROW         1 (x)
+               CALL                     1
+               BINARY_OP                0 (+)
+               LOAD_GLOBAL             18 (CHUNK)
+               COMPARE_OP             188 (bool(>=))
+               POP_JUMP_IF_FALSE      216 (to L3)
+               NOT_TAKEN
+
+109            LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               16 (_accum)
+               LOAD_GLOBAL              9 (len + NULL)
+               LOAD_FAST_BORROW         1 (x)
+               CALL                     1
+               BINARY_OP                0 (+)
+               LOAD_GLOBAL             18 (CHUNK)
+               BINARY_OP                6 (%)
+               STORE_FAST               2 (rem)
+
+110            LOAD_FAST_BORROW         2 (rem)
+               TO_BOOL
+               POP_JUMP_IF_FALSE       93 (to L2)
+               NOT_TAKEN
+
+111            LOAD_FAST_BORROW         1 (x)
+               LOAD_CONST               2 (None)
+               LOAD_FAST_BORROW         2 (rem)
+               UNARY_NEGATIVE
+               BINARY_SLICE
+               STORE_FAST               3 (even)
+
+112            LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               20 (_raw)
+               LOAD_ATTR               23 (extend + NULL|self)
+               LOAD_FAST_BORROW         3 (even)
+               LOAD_ATTR               25 (tolist + NULL|self)
+               CALL                     0
+               CALL                     1
+               POP_TOP
+
+113            LOAD_FAST_BORROW         0 (self)
+               COPY                     1
+               LOAD_ATTR               16 (_accum)
+               LOAD_GLOBAL              9 (len + NULL)
+               LOAD_FAST_BORROW         3 (even)
+               CALL                     1
+               BINARY_OP               13 (+=)
+               SWAP                     2
+               STORE_ATTR               8 (_accum)
+
+114            LOAD_FAST_BORROW_LOAD_FAST_BORROW 18 (x, rem)
+               UNARY_NEGATIVE
+               LOAD_CONST               2 (None)
+               BINARY_SLICE
+               LOAD_FAST_BORROW         0 (self)
+               STORE_ATTR               5 (_remainder)
+               JUMP_FORWARD           151 (to L4)
+
+116    L2:     LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               20 (_raw)
+               LOAD_ATTR               23 (extend + NULL|self)
+               LOAD_FAST_BORROW         1 (x)
+               LOAD_ATTR               25 (tolist + NULL|self)
+               CALL                     0
+               CALL                     1
+               POP_TOP
+
+117            LOAD_FAST_BORROW         0 (self)
+               COPY                     1
+               LOAD_ATTR               16 (_accum)
+               LOAD_GLOBAL              9 (len + NULL)
+               LOAD_FAST_BORROW         1 (x)
+               CALL                     1
+               BINARY_OP               13 (+=)
+               SWAP                     2
+               STORE_ATTR               8 (_accum)
+               JUMP_FORWARD            75 (to L4)
+
+119    L3:     LOAD_FAST_BORROW         0 (self)
+               COPY                     1
+               LOAD_ATTR               16 (_accum)
+               LOAD_GLOBAL              9 (len + NULL)
+               LOAD_FAST_BORROW         1 (x)
+               CALL                     1
+               BINARY_OP               13 (+=)
+               SWAP                     2
+               STORE_ATTR               8 (_accum)
+
+120            LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               20 (_raw)
+               LOAD_ATTR               23 (extend + NULL|self)
+               LOAD_FAST_BORROW         1 (x)
+               LOAD_ATTR               25 (tolist + NULL|self)
+               CALL                     0
+               CALL                     1
+               POP_TOP
+
+121    L4:     LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               16 (_accum)
+               LOAD_GLOBAL             18 (CHUNK)
+               COMPARE_OP             188 (bool(>=))
+               EXTENDED_ARG             2
+               POP_JUMP_IF_FALSE      543 (to L12)
+               NOT_TAKEN
+               LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               16 (_accum)
+               LOAD_GLOBAL             18 (CHUNK)
+               BINARY_OP                6 (%)
+               LOAD_SMALL_INT           0
+               COMPARE_OP              88 (bool(==))
+               EXTENDED_ARG             2
+               POP_JUMP_IF_FALSE      514 (to L12)
+               NOT_TAKEN
+
+122            LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               16 (_accum)
+               STORE_FAST               4 (n_new)
+
+123            LOAD_GLOBAL              0 (np)
+               LOAD_ATTR               26 (array)
+               PUSH_NULL
+               LOAD_GLOBAL             29 (list + NULL)
+               LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               20 (_raw)
+               CALL                     1
+               LOAD_GLOBAL              0 (np)
+               LOAD_ATTR                4 (int16)
+               LOAD_CONST               1 (('dtype',))
+               CALL_KW                  2
+               STORE_FAST               5 (raw)
+
+124            LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               31 (_melspec + NULL|self)
+               LOAD_FAST_BORROW_LOAD_FAST_BORROW 84 (raw, n_new)
+               LOAD_CONST               3 (480)
+               BINARY_OP                0 (+)
+               UNARY_NEGATIVE
+               LOAD_CONST               2 (None)
+               BINARY_SLICE
+               CALL                     1
+               STORE_FAST               6 (new_mel)
+
+125            LOAD_GLOBAL              0 (np)
+               LOAD_ATTR               32 (vstack)
+               PUSH_NULL
+               LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               34 (_mel_buf)
+               LOAD_FAST_BORROW         6 (new_mel)
+               BUILD_LIST               2
+               CALL                     1
+               LOAD_FAST_BORROW         0 (self)
+               STORE_ATTR              17 (_mel_buf)
+
+126            LOAD_GLOBAL              9 (len + NULL)
+               LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               34 (_mel_buf)
+               CALL                     1
+               LOAD_GLOBAL             36 (MEL_MAX)
+               COMPARE_OP             148 (bool(>))
+               POP_JUMP_IF_FALSE       26 (to L5)
+               NOT_TAKEN
+
+127            LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               34 (_mel_buf)
+               LOAD_GLOBAL             36 (MEL_MAX)
+               UNARY_NEGATIVE
+               LOAD_CONST               2 (None)
+               BINARY_SLICE
+               LOAD_FAST_BORROW         0 (self)
+               STORE_ATTR              17 (_mel_buf)
+
+128    L5:     LOAD_FAST_BORROW         4 (n_new)
+               LOAD_GLOBAL             18 (CHUNK)
+               BINARY_OP                2 (//)
+               STORE_FAST               7 (n_chunks)
+
+129            LOAD_GLOBAL             39 (range + NULL)
+               LOAD_FAST_BORROW         7 (n_chunks)
+               LOAD_SMALL_INT           1
+               BINARY_OP               10 (-)
+               LOAD_CONST               5 (-1)
+               LOAD_CONST               5 (-1)
+               CALL                     3
+               GET_ITER
+       L6:     FOR_ITER               224 (to L10)
+               STORE_FAST               8 (i)
+
+130            LOAD_CONST               6 (-8)
+               LOAD_FAST_BORROW         8 (i)
+               BINARY_OP                5 (*)
+               STORE_FAST               9 (ndx)
+
+131            LOAD_FAST_BORROW         9 (ndx)
+               LOAD_SMALL_INT           0
+               COMPARE_OP              88 (bool(==))
+               POP_JUMP_IF_FALSE       27 (to L7)
+               NOT_TAKEN
+               LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               34 (_mel_buf)
+               LOAD_FAST_BORROW         9 (ndx)
+               LOAD_GLOBAL             40 (EMB_WIN)
+               BINARY_OP               10 (-)
+               LOAD_CONST               2 (None)
+               BINARY_SLICE
+               JUMP_FORWARD            26 (to L8)
+
+132    L7:     LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               34 (_mel_buf)
+               LOAD_GLOBAL             40 (EMB_WIN)
+               UNARY_NEGATIVE
+               LOAD_FAST_BORROW         9 (ndx)
+               BINARY_OP                0 (+)
+               LOAD_FAST_BORROW         9 (ndx)
+               BINARY_SLICE
+
+131    L8:     STORE_FAST              10 (window)
+
+133            LOAD_GLOBAL              9 (len + NULL)
+               LOAD_FAST_BORROW        10 (window)
+               CALL                     1
+               LOAD_GLOBAL             40 (EMB_WIN)
+               COMPARE_OP              88 (bool(==))
+               POP_JUMP_IF_TRUE         3 (to L9)
+               NOT_TAKEN
+               JUMP_BACKWARD           94 (to L6)
+
+134    L9:     LOAD_FAST_BORROW        10 (window)
+               LOAD_ATTR               43 (astype + NULL|self)
+               LOAD_GLOBAL              0 (np)
+               LOAD_ATTR               44 (float32)
+               CALL                     1
+               LOAD_CONST               7 ((None, slice(None, None, None), slice(None, None, None), None))
+               BINARY_OP               26 ([])
+               STORE_FAST              11 (inp)
+
+135            LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               46 (_emb)
+               LOAD_ATTR               49 (run + NULL|self)
+               LOAD_CONST               2 (None)
+               LOAD_CONST               4 ('input_1')
+               LOAD_FAST_BORROW        11 (inp)
+               BUILD_MAP                1
+               CALL                     2
+               LOAD_SMALL_INT           0
+               BINARY_OP               26 ([])
+               STORE_FAST              12 (e)
+
+136            LOAD_GLOBAL              0 (np)
+               LOAD_ATTR               32 (vstack)
+               PUSH_NULL
+
+137            LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               50 (_feat)
+               LOAD_FAST_BORROW        12 (e)
+               LOAD_ATTR                7 (reshape + NULL|self)
+               LOAD_SMALL_INT           1
+               LOAD_CONST               5 (-1)
+               CALL                     2
+               BUILD_LIST               2
+
+136            CALL                     1
+               LOAD_FAST_BORROW         0 (self)
+               STORE_ATTR              25 (_feat)
+               JUMP_BACKWARD          226 (to L6)
+
+129   L10:     END_FOR
+               POP_ITER
+
+138            LOAD_GLOBAL              9 (len + NULL)
+               LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               50 (_feat)
+               CALL                     1
+               LOAD_GLOBAL             52 (FEAT_MAX)
+               COMPARE_OP             148 (bool(>))
+               POP_JUMP_IF_FALSE       26 (to L11)
+               NOT_TAKEN
+
+139            LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               50 (_feat)
+               LOAD_GLOBAL             52 (FEAT_MAX)
+               UNARY_NEGATIVE
+               LOAD_CONST               2 (None)
+               BINARY_SLICE
+               LOAD_FAST_BORROW         0 (self)
+               STORE_ATTR              25 (_feat)
+
+140   L11:     LOAD_SMALL_INT           0
+               LOAD_FAST_BORROW         0 (self)
+               STORE_ATTR               8 (_accum)
+
+141   L12:     LOAD_FAST_BORROW         0 (self)
+               LOAD_ATTR               55 (_score + NULL|self)
+               CALL                     0
+               RETURN_VALUE
+
+===== HeyLyraGate._score =====
+143           RESUME                   0
+
+144           LOAD_GLOBAL              1 (len + NULL)
+              LOAD_FAST_BORROW         0 (self)
+              LOAD_ATTR                2 (_feat)
+              CALL                     1
+              LOAD_GLOBAL              4 (EMB_FRAMES)
+              COMPARE_OP              18 (bool(<))
+              POP_JUMP_IF_FALSE        3 (to L1)
+              NOT_TAKEN
+
+145           LOAD_CONST               0 (0.0)
+              RETURN_VALUE
+
+146   L1:     LOAD_FAST_BORROW         0 (self)
+              LOAD_ATTR                2 (_feat)
+              LOAD_GLOBAL              4 (EMB_FRAMES)
+              UNARY_NEGATIVE
+              LOAD_CONST               1 (None)
+              BINARY_SLICE
+              LOAD_ATTR                7 (reshape + NULL|self)
+              LOAD_SMALL_INT           1
+              LOAD_GLOBAL              4 (EMB_FRAMES)
+              LOAD_SMALL_INT          96
+              CALL                     3
+              STORE_FAST               1 (x)
+
+147           LOAD_GLOBAL              9 (float + NULL)
+              LOAD_FAST_BORROW         0 (self)
+              LOAD_ATTR               10 (_clf)
+              LOAD_ATTR               13 (run + NULL|self)
+              LOAD_CONST               1 (None)
+              LOAD_CONST               2 ('x')
+              LOAD_FAST_BORROW         1 (x)
+              LOAD_ATTR               15 (astype + NULL|self)
+              LOAD_GLOBAL             16 (np)
+              LOAD_ATTR               18 (float32)
+              CALL                     1
+              BUILD_MAP                1
+              CALL                     2
+              LOAD_SMALL_INT           0
+              BINARY_OP               26 ([])
+
+148           LOAD_ATTR                7 (reshape + NULL|self)
+              LOAD_CONST               3 (-1)
+              CALL                     1
+              LOAD_SMALL_INT           0
+
+147           BINARY_OP               26 ([])
+              CALL                     1
+              RETURN_VALUE
+
+===== HeyLyraGate.triggered =====
+150           RESUME                   0
+
+153           LOAD_FAST_BORROW         0 (self)
+              LOAD_ATTR                1 (reset + NULL|self)
+              CALL                     0
+              POP_TOP
+
+154           LOAD_CONST               1 (0.0)
+              STORE_FAST               2 (best)
+
+155           LOAD_GLOBAL              2 (np)
+              LOAD_ATTR                4 (asarray)
+              PUSH_NULL
+              LOAD_FAST_BORROW         1 (audio_i16)
+              LOAD_GLOBAL              2 (np)
+              LOAD_ATTR                6 (int16)
+              LOAD_CONST               2 (('dtype',))
+              CALL_KW                  2
+              LOAD_ATTR                9 (reshape + NULL|self)
+              LOAD_CONST               3 (-1)
+              CALL                     1
+              STORE_FAST               3 (a)
+
+156           LOAD_GLOBAL             11 (range + NULL)
+              LOAD_SMALL_INT           0
+              LOAD_GLOBAL             13 (len + NULL)
+              LOAD_FAST_BORROW         3 (a)
+              CALL                     1
+              LOAD_GLOBAL             14 (CHUNK)
+              CALL                     3
+              GET_ITER
+      L1:     FOR_ITER                42 (to L2)
+              STORE_FAST               4 (off)
+
+157           LOAD_GLOBAL             17 (max + NULL)
+              LOAD_FAST_BORROW_LOAD_FAST_BORROW 32 (best, self)
+              LOAD_ATTR               19 (predict + NULL|self)
+              LOAD_FAST_BORROW_LOAD_FAST_BORROW 52 (a, off)
+              LOAD_FAST_BORROW         4 (off)
+              LOAD_GLOBAL             14 (CHUNK)
+              BINARY_OP                0 (+)
+              BINARY_SLICE
+              CALL                     1
+              CALL                     2
+              STORE_FAST               2 (best)
+              JUMP_BACKWARD           44 (to L1)
+
+156   L2:     END_FOR
+              POP_ITER
+
+158           LOAD_FAST_BORROW_LOAD_FAST_BORROW 32 (best, self)
+              LOAD_ATTR               20 (threshold)
+              COMPARE_OP             172 (>=)
+              LOAD_FAST_BORROW         2 (best)
+              BUILD_TUPLE              2
+              RETURN_VALUE

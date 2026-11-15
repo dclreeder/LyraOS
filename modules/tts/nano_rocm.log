@@ -1,0 +1,12 @@
+Using Python 3.12.12 environment at: chatterbox-nano
+Resolved 12 packages in 751ms
+Uninstalled 3 packages in 202ms
+Installed 4 packages in 486ms
+ + pytorch-triton-rocm==3.5.1
+ - sympy==1.13.1
+ + sympy==1.14.0
+ - torch==2.6.0
+ + torch==2.9.1+rocm6.4
+ - torchaudio==2.6.0
+ + torchaudio==2.9.1+rocm6.4
+GPU_CHAIN_DONE

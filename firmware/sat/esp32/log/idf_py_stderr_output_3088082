@@ -1,0 +1,1 @@
+Command: /home/dclreeder/.espressif/python_env/idf6.0_py3.14_env/bin/python -m espsecure generate-signing-key --version 2 dev_signing_key.pem

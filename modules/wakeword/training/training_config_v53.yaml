@@ -1,0 +1,26 @@
+augmentation_batch_size: 50
+augmentation_rounds: 3
+background_paths:
+- "/home/dclreeder/Documents/LyraOS/modules/wakeword/training/background"
+background_paths_duplication_rate:
+- 3
+batch_n_per_class: 50
+custom_negative_phrases: []
+feature_data_files:
+  adversarial_negative: negative_features_train.npy
+  positive: positive_features_train.npy
+layer_size: 128
+max_negative_weight: 2000
+model_name: hey_lyra_v53_oww
+model_type: dnn
+n_samples: 4000
+n_samples_val: 400
+output_dir: "/home/dclreeder/Documents/LyraOS/modules/wakeword/training/output"
+piper_sample_generator_path: "/home/dclreeder/Documents/LyraOS/modules/wakeword/training"
+rir_paths: []
+steps: 100000
+target_false_positives_per_hour: 0.1
+target_phrase:
+- hey Lyra
+tts_batch_size: 8
+false_positive_validation_data_path: "/home/dclreeder/Documents/LyraOS/modules/wakeword/training/output/hey_lyra_v3/fp_validation.npy"

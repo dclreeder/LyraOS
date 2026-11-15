@@ -1,0 +1,100 @@
+{
+ "holdout_positives": {
+  "stable_v1": {
+   "n": 39,
+   "fires>=0.8": 35,
+   "max": 0.9990882873535156,
+   "mean": 0.9274645783962348
+  },
+  "candidate": {
+   "n": 39,
+   "fires>=0.8": 37,
+   "max": 0.999424934387207,
+   "mean": 0.9455418418615292
+  }
+ },
+ "holdout_real_negatives": {
+  "stable_v1": {
+   "n": 9,
+   "fires>=0.8": 2,
+   "max": 0.9543597102165222,
+   "mean": 0.3012769685851203
+  },
+  "candidate": {
+   "n": 9,
+   "fires>=0.8": 0,
+   "max": 0.013542711734771729,
+   "mean": 0.004711965719858806
+  }
+ },
+ "suspect_positives": {
+  "stable_v1": {
+   "n": 0,
+   "fires>=0.8": 0,
+   "max": null,
+   "mean": null
+  },
+  "candidate": {
+   "n": 0,
+   "fires>=0.8": 0,
+   "max": null,
+   "mean": null
+  }
+ },
+ "train_negatives_sanity": {
+  "stable_v1": {
+   "n": 3,
+   "fires>=0.8": 3,
+   "max": 0.9950714707374573,
+   "mean": 0.9811970790227255
+  },
+  "candidate": {
+   "n": 3,
+   "fires>=0.8": 1,
+   "max": 0.9950908422470093,
+   "mean": 0.34797494610150653
+  }
+ },
+ "v52_holdout_pos": {
+  "stable_v1": {
+   "n": 11,
+   "fires>=0.8": 9,
+   "max": 0.9991646409034729,
+   "mean": 0.8161822990937666
+  },
+  "candidate": {
+   "n": 11,
+   "fires>=0.8": 8,
+   "max": 0.9994270205497742,
+   "mean": 0.7922634563662789
+  }
+ },
+ "v52_holdout_neg": {
+  "stable_v1": {
+   "n": 7,
+   "fires>=0.8": 0,
+   "max": 0.0004235804080963135,
+   "mean": 0.0004235804080963135
+  },
+  "candidate": {
+   "n": 7,
+   "fires>=0.8": 0,
+   "max": 0.00037488341331481934,
+   "mean": 0.00034242442675999233
+  }
+ },
+ "bench_fixture": {
+  "stable_v1": {
+   "padded_max": 0.9946,
+   "padded_first_cross": 0.9216,
+   "raw_max": 0.9946,
+   "raw_first_cross": 0.9216
+  },
+  "candidate": {
+   "padded_max": 0.9982,
+   "padded_first_cross": 0.9969,
+   "raw_max": 0.9982,
+   "raw_first_cross": 0.9969
+  }
+ }
+}

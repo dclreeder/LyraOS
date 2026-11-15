@@ -1,0 +1,1067 @@
+/* Lyra Sat Gadget -- on-device alarm + timer engine (sat4).
+ * See alerts.h for the design notes and threading rules. */
+#include "alerts.h"
+
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "esp_err.h"
+#include "esp_heap_caps.h"
+#include "esp_http_client.h"
+#include "esp_log.h"
+#include "esp_netif_sntp.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+
+#include "config_store.h"
+
+static const char *TAG = "alerts";
+
+#define ALARMS_KEY "alarms_v1" /* config_store key: JSON alarm table */
+#define ALERT_CAP_US 600000000LL      /* 10 min ring cap */
+#define SNOOZE_US 540000000LL         /* +9 min */
+#define DUCK_RESTORE_US 20000000LL    /* duck auto-restores after 20 s */
+#define RECENT_STOP_US 90000000LL     /* snooze-after-stop window: 90 s */
+#define ALERT_TZ "EST5EDT,M3.2.0/2,M11.1.0"
+
+enum { REPEAT_ONCE = 0, REPEAT_DAILY = 1, REPEAT_WEEKDAYS = 2 };
+
+typedef struct {
+    uint8_t id;
+    bool enabled;
+    uint8_t hour;
+    uint8_t minute;
+    uint8_t repeat;
+    int last_yday; /* fire dedupe: day-of-year + minute last fired */
+    int last_min;
+    char label[ALERTS_LABEL_MAX + 1];
+    /* sat6e: ceiling-light options (Shelly Dimmer Gen4 on the LAN).
+     * Pushed by the Fedora sidecar reconciler inside alarms_set;
+     * persisted in the same JSON document; absent in old documents
+     * means light off. The satellite fires the light itself so an
+     * alarm works with the Fedora down. */
+    bool light_on;
+    bool light_silent; /* light only, no sound; sound is the fail-safe
+                          when the light call does not succeed */
+    uint8_t light_bri; /* 1..100 */
+    uint8_t light_sun; /* sunrise ramp minutes: 0 = instant at fire */
+} alarm_rec_t;
+
+typedef struct {
+    uint8_t id;
+    int64_t end_us;
+    char label[ALERTS_LABEL_MAX + 1];
+} timer_rec_t;
+
+static SemaphoreHandle_t s_lock;
+static QueueHandle_t s_store_queue;
+
+static alarm_rec_t s_alarms[ALERTS_MAX_ALARMS];
+static int s_alarm_count;
+static uint32_t s_next_alarm_id = 1;
+static timer_rec_t s_timers[ALERTS_MAX_TIMERS];
+static int s_timer_count;
+static uint32_t s_next_timer_id = 1;
+
+static bool s_alert_active;
+static uint8_t s_alert_kind = ALERT_KIND_NONE;
+static uint8_t s_alert_id;
+static char s_alert_label[ALERTS_LABEL_MAX + 1];
+static int64_t s_alert_start_us;
+static bool s_alert_ducked;
+static int64_t s_duck_deadline_us;
+
+static uint8_t s_snooze_id;
+static char s_snooze_label[ALERTS_LABEL_MAX + 1];
+static int64_t s_snooze_due_us;
+
+/* Most recent alert dismissed via alert_stop: a snooze that arrives
+ * with nothing ringing (the gate-stop flow) applies to this record
+ * for RECENT_STOP_US. Alarms only. */
+static uint8_t s_recent_kind = ALERT_KIND_NONE;
+static uint8_t s_recent_id;
+static char s_recent_label[ALERTS_LABEL_MAX + 1];
+static int64_t s_recent_stop_us;
+
+static bool s_connected;
+static bool s_state_dirty = true; /* push one state after first connect */
+
+/* --- sat6e: ceiling light (Shelly) ---------------------------------------
+ * The tick and fire paths never do network I/O: they queue actions
+ * for the light task (internal stack), which performs the HTTP calls
+ * and reports results back under s_lock. Stopping an alert never
+ * touches the light (Daniel's rule: stop leaves the light on). */
+#define SHELLY_LIGHT_URL "http://192.168.12.204/rpc/Light.Set"
+#define LIGHT_WAIT_US 3000000LL     /* silent alarms give the light
+                                       call this long before the
+                                       fail-safe sound starts */
+#define ESCALATE_US 180000000LL     /* unstopped after 3 min: full */
+
+enum { LIGHT_ACT_ON = 1, LIGHT_ACT_RAMP = 2 };
+typedef struct {
+    uint8_t type;
+    uint8_t alarm_id;
+    uint8_t brightness;
+    uint16_t transition_sec;
+} light_action_t;
+static QueueHandle_t s_light_queue;
+static bool s_alert_light_ok;     /* light call succeeded for the
+                                     currently ringing firing */
+static bool s_alert_escalated;
+static uint8_t s_ramp_id;         /* ramp queued for this alarm id... */
+static int s_ramp_yday;           /* ...on this day-of-year */
+static int s_ramp_min;            /* ...for this fire minute */
+static uint8_t s_ramp_ok_id;      /* ramp completed for this alarm... */
+static int s_ramp_ok_yday;        /* ...on this day */
+
+static void light_queue(uint8_t type, uint8_t alarm_id, int brightness,
+                        int transition_sec)
+{
+    if (!s_light_queue) return;
+    light_action_t a;
+    a.type = type;
+    a.alarm_id = alarm_id;
+    a.brightness = (uint8_t)(brightness < 1 ? 1
+                             : brightness > 100 ? 100 : brightness);
+    a.transition_sec = (uint16_t)(transition_sec < 0 ? 0
+                                  : transition_sec);
+    if (xQueueSend(s_light_queue, &a, 0) != pdTRUE)
+        ESP_LOGW(TAG, "light queue full; action dropped");
+}
+
+static bool shelly_light_set(int brightness, int transition_sec)
+{
+    char body[128];
+    snprintf(body, sizeof(body),
+             "{\"id\":0,\"on\":true,\"brightness\":%d,"
+             "\"transition_duration\":%d}",
+             brightness, transition_sec);
+    esp_http_client_config_t cfg = {
+        .url = SHELLY_LIGHT_URL,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 3000,
+    };
+    esp_http_client_handle_t h = esp_http_client_init(&cfg);
+    if (!h) return false;
+    esp_http_client_set_header(h, "Content-Type", "application/json");
+    esp_http_client_set_post_field(h, body, (int)strlen(body));
+    esp_err_t e = esp_http_client_perform(h);
+    int status = (e == ESP_OK) ? esp_http_client_get_status_code(h) : 0;
+    esp_http_client_cleanup(h);
+    return e == ESP_OK && status == 200;
+}
+
+static void light_task(void *arg)
+{
+    (void)arg;
+    light_action_t a;
+    for (;;) {
+        if (xQueueReceive(s_light_queue, &a, portMAX_DELAY) != pdTRUE)
+            continue;
+        bool ok;
+        if (a.type == LIGHT_ACT_RAMP) {
+            /* Sunrise: drop to the floor, then one long transition
+             * up to the target over the ramp window. */
+            ok = shelly_light_set(1, 0);
+            if (ok)
+                ok = shelly_light_set(a.brightness, a.transition_sec);
+        } else {
+            ok = shelly_light_set(a.brightness, a.transition_sec);
+        }
+        ESP_LOGI(TAG, "light %s for alarm %u (bri %u): %s",
+                 a.type == LIGHT_ACT_RAMP ? "ramp" : "on",
+                 (unsigned)a.alarm_id, (unsigned)a.brightness,
+                 ok ? "ok" : "FAILED");
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        if (ok && a.type == LIGHT_ACT_RAMP) {
+            struct tm lt;
+            time_t tt = time(NULL);
+            localtime_r(&tt, &lt);
+            s_ramp_ok_id = a.alarm_id;
+            s_ramp_ok_yday = lt.tm_yday;
+        }
+        if (ok && s_alert_active && s_alert_kind == ALERT_KIND_ALARM &&
+            s_alert_id == a.alarm_id)
+            s_alert_light_ok = true;
+        xSemaphoreGive(s_lock);
+    }
+}
+
+static alerts_fire_hook_t s_fire_hook; /* sat6: see alerts.h */
+
+void alerts_set_fire_hook(alerts_fire_hook_t hook) { s_fire_hook = hook; }
+
+/* --- embedded alarm sound ------------------------------------------------ */
+extern const uint8_t _binary_alarm_wav_start[] asm("_binary_alarm_wav_start");
+extern const uint8_t _binary_alarm_wav_end[] asm("_binary_alarm_wav_end");
+
+static const uint8_t *s_wav_data; /* int16 samples, 16 kHz mono */
+static size_t s_wav_count;
+
+static bool wav_parse(void)
+{
+    const uint8_t *p = _binary_alarm_wav_start;
+    size_t total = (size_t)(_binary_alarm_wav_end - _binary_alarm_wav_start);
+    if (total < 44 || memcmp(p, "RIFF", 4) || memcmp(p + 8, "WAVE", 4))
+        return false;
+    uint16_t fmt = 0, chans = 0, bits = 0;
+    uint32_t rate = 0;
+    size_t off = 12;
+    while (off + 8 <= total) {
+        const uint8_t *hdr = p + off;
+        uint32_t clen = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8) |
+                        ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24);
+        if (!memcmp(hdr, "fmt ", 4) && clen >= 16 &&
+            off + 8 + clen <= total) {
+            const uint8_t *f = hdr + 8;
+            fmt = (uint16_t)(f[0] | (f[1] << 8));
+            chans = (uint16_t)(f[2] | (f[3] << 8));
+            rate = (uint32_t)f[4] | ((uint32_t)f[5] << 8) |
+                   ((uint32_t)f[6] << 16) | ((uint32_t)f[7] << 24);
+            bits = (uint16_t)(f[14] | (f[15] << 8));
+        } else if (!memcmp(hdr, "data", 4)) {
+            size_t avail = total - (off + 8);
+            if ((size_t)clen > avail) clen = (uint32_t)avail;
+            if (fmt != 1 || chans != 1 || bits != 16 || rate != 16000)
+                return false;
+            s_wav_data = p + off + 8;
+            s_wav_count = clen / 2;
+            return s_wav_count > 0;
+        }
+        off += 8 + (size_t)clen + (clen & 1);
+    }
+    return false;
+}
+
+static int16_t wav_sample(size_t idx)
+{
+    int16_t v;
+    memcpy(&v, s_wav_data + idx * 2, sizeof(v));
+    return v;
+}
+
+/* --- helpers -------------------------------------------------------------- */
+static void sanitize_label(const char *in, char *out)
+{
+    size_t n = 0;
+    if (in) {
+        for (const char *p = in; *p && n < ALERTS_LABEL_MAX; p++) {
+            unsigned char c = (unsigned char)*p;
+            out[n++] = (c < 0x20 || c == '"' || c == '\\') ? ' ' : (char)c;
+        }
+    }
+    out[n] = '\0';
+}
+
+static const char *repeat_name(uint8_t r)
+{
+    return r == REPEAT_DAILY ? "daily" : r == REPEAT_WEEKDAYS ? "weekdays"
+                                                              : "once";
+}
+
+static int repeat_parse(const char *s)
+{
+    if (!s || !strcmp(s, "once")) return REPEAT_ONCE;
+    if (!strcmp(s, "daily")) return REPEAT_DAILY;
+    if (!strcmp(s, "weekdays")) return REPEAT_WEEKDAYS;
+    return -1;
+}
+
+static alarm_rec_t *find_alarm(int id)
+{
+    for (int i = 0; i < s_alarm_count; i++)
+        if (s_alarms[i].id == id) return &s_alarms[i];
+    return NULL;
+}
+
+/* Fire or clear the alert. Caller holds s_lock. */
+static void fire_locked(uint8_t kind, uint8_t id, const char *label)
+{
+    s_alert_active = true;
+    s_alert_kind = kind;
+    s_alert_id = id;
+    s_alert_start_us = esp_timer_get_time();
+    s_alert_ducked = false;
+    s_alert_escalated = false;
+    s_alert_light_ok = false;
+    if (kind == ALERT_KIND_ALARM) {
+        /* sat6e: fire the ceiling light with the alarm. A completed
+         * sunrise ramp already did the job; otherwise switch on now
+         * (instant), even for ramp alarms whose window was missed. */
+        alarm_rec_t *a = find_alarm(id);
+        if (a && a->light_on) {
+            struct tm lt;
+            time_t tt = time(NULL);
+            localtime_r(&tt, &lt);
+            if (s_ramp_ok_id == id && s_ramp_ok_yday == lt.tm_yday)
+                s_alert_light_ok = true;
+            else
+                light_queue(LIGHT_ACT_ON, id, a->light_bri, 0);
+        }
+    }
+    sanitize_label(label, s_alert_label);
+    s_state_dirty = true;
+    ESP_LOGI(TAG, "ALERT: %s %u firing%s%s",
+             kind == ALERT_KIND_TIMER ? "timer" : "alarm", (unsigned)id,
+             s_alert_label[0] ? " - " : "", s_alert_label);
+    if (s_fire_hook) s_fire_hook(kind, id); /* sat6: alarm priority */
+}
+
+static void clear_alert_locked(void)
+{
+    s_alert_active = false;
+    s_alert_kind = ALERT_KIND_NONE;
+    s_alert_id = 0;
+    s_alert_ducked = false;
+    s_state_dirty = true;
+}
+
+/* --- persistence (config_store JSON document) ----------------------------- */
+/* Caller holds s_lock. cJSON allocations are heap, never flash -- safe
+ * to build on any stack; the flash write itself is what is gated. */
+static char *serialize_locked(void)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return NULL;
+    cJSON_AddNumberToObject(root, "next", (double)s_next_alarm_id);
+    cJSON *arr = cJSON_AddArrayToObject(root, "alarms");
+    if (arr) {
+        for (int i = 0; i < s_alarm_count; i++) {
+            const alarm_rec_t *a = &s_alarms[i];
+            cJSON *o = cJSON_CreateObject();
+            if (!o) continue;
+            cJSON_AddNumberToObject(o, "id", a->id);
+            cJSON_AddNumberToObject(o, "hour", a->hour);
+            cJSON_AddNumberToObject(o, "minute", a->minute);
+            cJSON_AddNumberToObject(o, "repeat", a->repeat);
+            cJSON_AddBoolToObject(o, "enabled", a->enabled);
+            cJSON_AddNumberToObject(o, "yday", a->last_yday);
+            cJSON_AddNumberToObject(o, "min", a->last_min);
+            cJSON_AddStringToObject(o, "label", a->label);
+            cJSON_AddBoolToObject(o, "lon", a->light_on);
+            cJSON_AddBoolToObject(o, "lsil", a->light_silent);
+            cJSON_AddNumberToObject(o, "lbri", a->light_bri);
+            cJSON_AddNumberToObject(o, "lsun", a->light_sun);
+            cJSON_AddItemToArray(arr, o);
+        }
+    }
+    char *s = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return s;
+}
+
+/* Direct write: net-task callers only (internal stack; the sat_local
+ * rule that the net task owns NVS writes). */
+static void save_now(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    char *s = serialize_locked();
+    xSemaphoreGive(s_lock);
+    if (s) {
+        if (!config_set_str(ALARMS_KEY, s))
+            ESP_LOGW(TAG, "alarm store write failed");
+        free(s);
+    }
+}
+
+/* Queued write: safe from the PSRAM tick -- the internal-stack store
+ * task performs the actual flash write. */
+static QueueHandle_t s_store_queue_fwd(void);
+static void save_async(void)
+{
+    QueueHandle_t q = s_store_queue_fwd();
+    if (!q) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    char *s = serialize_locked();
+    xSemaphoreGive(s_lock);
+    if (s && xQueueSend(q, &s, 0) != pdTRUE) {
+        free(s);
+        ESP_LOGW(TAG, "alarm store queue full; save dropped");
+    }
+}
+static QueueHandle_t s_store_queue_fwd(void) { return s_store_queue; }
+
+static void store_task(void *arg)
+{
+    (void)arg;
+    char *s;
+    for (;;) {
+        if (xQueueReceive(s_store_queue, &s, portMAX_DELAY) == pdTRUE) {
+            if (!config_set_str(ALARMS_KEY, s))
+                ESP_LOGW(TAG, "alarm store write failed");
+            free(s);
+        }
+    }
+}
+
+static void load_alarms(void)
+{
+    char buf[1024];
+    if (!config_get_str(ALARMS_KEY, buf, sizeof(buf)) || !buf[0]) {
+        ESP_LOGI(TAG, "no stored alarms yet");
+        return;
+    }
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) {
+        ESP_LOGW(TAG, "stored alarms unreadable; starting empty");
+        return;
+    }
+    const cJSON *nx = cJSON_GetObjectItem(root, "next");
+    if (cJSON_IsNumber(nx) && nx->valueint > 0)
+        s_next_alarm_id = (uint32_t)nx->valueint;
+    const cJSON *arr = cJSON_GetObjectItem(root, "alarms");
+    const cJSON *o;
+    cJSON_ArrayForEach(o, arr)
+    {
+        if (s_alarm_count >= ALERTS_MAX_ALARMS) break;
+        const cJSON *id = cJSON_GetObjectItem(o, "id");
+        const cJSON *hh = cJSON_GetObjectItem(o, "hour");
+        const cJSON *mm = cJSON_GetObjectItem(o, "minute");
+        const cJSON *rp = cJSON_GetObjectItem(o, "repeat");
+        if (!cJSON_IsNumber(id) || !cJSON_IsNumber(hh) ||
+            !cJSON_IsNumber(mm))
+            continue;
+        if (id->valueint < 1 || id->valueint > 255 || hh->valueint < 0 ||
+            hh->valueint > 23 || mm->valueint < 0 || mm->valueint > 59)
+            continue;
+        alarm_rec_t *a = &s_alarms[s_alarm_count];
+        memset(a, 0, sizeof(*a));
+        a->id = (uint8_t)id->valueint;
+        a->hour = (uint8_t)hh->valueint;
+        a->minute = (uint8_t)mm->valueint;
+        int rep = cJSON_IsNumber(rp) ? rp->valueint : REPEAT_ONCE;
+        a->repeat = (uint8_t)(rep < 0 || rep > 2 ? REPEAT_ONCE : rep);
+        const cJSON *en = cJSON_GetObjectItem(o, "enabled");
+        a->enabled = cJSON_IsBool(en) ? cJSON_IsTrue(en) : true;
+        const cJSON *yd = cJSON_GetObjectItem(o, "yday");
+        const cJSON *mn = cJSON_GetObjectItem(o, "min");
+        a->last_yday = cJSON_IsNumber(yd) ? yd->valueint : -1;
+        a->last_min = cJSON_IsNumber(mn) ? mn->valueint : -1;
+        const cJSON *lb = cJSON_GetObjectItem(o, "label");
+        sanitize_label(cJSON_IsString(lb) ? lb->valuestring : NULL,
+                       a->label);
+        const cJSON *lon = cJSON_GetObjectItem(o, "lon");
+        const cJSON *lsil = cJSON_GetObjectItem(o, "lsil");
+        const cJSON *lbri = cJSON_GetObjectItem(o, "lbri");
+        const cJSON *lsun = cJSON_GetObjectItem(o, "lsun");
+        a->light_on = cJSON_IsBool(lon) ? cJSON_IsTrue(lon) : false;
+        a->light_silent =
+            cJSON_IsBool(lsil) ? cJSON_IsTrue(lsil) : false;
+        a->light_bri = (uint8_t)(cJSON_IsNumber(lbri) &&
+                                         lbri->valueint >= 1 &&
+                                         lbri->valueint <= 100
+                                     ? lbri->valueint
+                                     : 100);
+        a->light_sun = (uint8_t)(cJSON_IsNumber(lsun) &&
+                                         lsun->valueint >= 0 &&
+                                         lsun->valueint <= 30
+                                     ? lsun->valueint
+                                     : 0);
+        s_alarm_count++;
+    }
+    cJSON_Delete(root);
+    ESP_LOGI(TAG, "loaded %d stored alarm(s)", s_alarm_count);
+}
+
+/* --- tick (PSRAM stack: RAM state only, persistence via store task) ------- */
+static bool day_matches(uint8_t repeat, const struct tm *lt)
+{
+    if (repeat == REPEAT_WEEKDAYS) return lt->tm_wday >= 1 && lt->tm_wday <= 5;
+    return true; /* once + daily */
+}
+
+static void tick_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        bool need_save = false;
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        int64_t now = esp_timer_get_time();
+        /* A ducked alarm must never get stuck quiet. */
+        if (s_alert_ducked &&
+            (!s_connected || now >= s_duck_deadline_us)) {
+            s_alert_ducked = false;
+            ESP_LOGI(TAG, "alert duck auto-restored (%s)",
+                     s_connected ? "20 s timeout" : "link down");
+        }
+        if (s_alert_active && now - s_alert_start_us >= ALERT_CAP_US) {
+            ESP_LOGI(TAG, "alert hit the 10 min cap; stopping");
+            clear_alert_locked();
+        }
+        /* sat6e escalation: a light alarm left ringing for 3 min
+         * drives the light to full brightness. */
+        if (s_alert_active && s_alert_kind == ALERT_KIND_ALARM &&
+            !s_alert_escalated &&
+            now - s_alert_start_us >= ESCALATE_US) {
+            alarm_rec_t *ea = find_alarm(s_alert_id);
+            s_alert_escalated = true;
+            if (ea && ea->light_on)
+                light_queue(LIGHT_ACT_ON, s_alert_id, 100, 0);
+        }
+        /* sat6e sunrise ramp: queue the ramp once when the fire
+         * time enters the ramp window (light-only; runs even while
+         * another alert owns the speaker). */
+        {
+            time_t tt = time(NULL);
+            struct tm lt;
+            localtime_r(&tt, &lt);
+            if (lt.tm_year >= 125) {
+                int now_min = lt.tm_hour * 60 + lt.tm_min;
+                for (int i = 0; i < s_alarm_count; i++) {
+                    alarm_rec_t *a = &s_alarms[i];
+                    if (!a->enabled || !a->light_on || !a->light_sun)
+                        continue;
+                    if (!day_matches(a->repeat, &lt)) continue;
+                    int fire_min = a->hour * 60 + a->minute;
+                    int until = fire_min - now_min;
+                    if (until < 1 || until > a->light_sun) continue;
+                    if (s_ramp_id == a->id &&
+                        s_ramp_yday == lt.tm_yday &&
+                        s_ramp_min == fire_min)
+                        continue;
+                    s_ramp_id = a->id;
+                    s_ramp_yday = lt.tm_yday;
+                    s_ramp_min = fire_min;
+                    light_queue(LIGHT_ACT_RAMP, a->id, a->light_bri,
+                                a->light_sun * 60);
+                }
+            }
+        }
+        if (!s_alert_active && s_snooze_id && now >= s_snooze_due_us) {
+            uint8_t id = s_snooze_id;
+            char lab[ALERTS_LABEL_MAX + 1];
+            memcpy(lab, s_snooze_label, sizeof(lab));
+            s_snooze_id = 0;
+            fire_locked(ALERT_KIND_ALARM, id, lab);
+        }
+        if (!s_alert_active) {
+            for (int i = 0; i < s_timer_count; i++) {
+                if (now < s_timers[i].end_us) continue;
+                uint8_t id = s_timers[i].id;
+                char lab[ALERTS_LABEL_MAX + 1];
+                memcpy(lab, s_timers[i].label, sizeof(lab));
+                memmove(&s_timers[i], &s_timers[i + 1],
+                        (size_t)(s_timer_count - i - 1) * sizeof(timer_rec_t));
+                s_timer_count--;
+                fire_locked(ALERT_KIND_TIMER, id, lab);
+                break;
+            }
+        }
+        if (!s_alert_active) {
+            time_t tt = time(NULL);
+            struct tm lt;
+            localtime_r(&tt, &lt);
+            if (lt.tm_year >= 125) { /* clock set (SNTP): year >= 2025 */
+                for (int i = 0; i < s_alarm_count; i++) {
+                    alarm_rec_t *a = &s_alarms[i];
+                    if (!a->enabled || a->hour != lt.tm_hour ||
+                        a->minute != lt.tm_min)
+                        continue;
+                    if (a->last_yday == lt.tm_yday &&
+                        a->last_min == lt.tm_min)
+                        continue;
+                    if (!day_matches(a->repeat, &lt)) continue;
+                    a->last_yday = lt.tm_yday;
+                    a->last_min = lt.tm_min;
+                    if (a->repeat == REPEAT_ONCE) a->enabled = false;
+                    need_save = true;
+                    fire_locked(ALERT_KIND_ALARM, a->id, a->label);
+                    break;
+                }
+            }
+        }
+        xSemaphoreGive(s_lock);
+        if (need_save) save_async();
+    }
+}
+
+/* --- CTRL verbs (net task) -------------------------------------------------- */
+bool alerts_cmd_set_alarm(const cJSON *root)
+{
+    const cJSON *id_it = cJSON_GetObjectItem(root, "id");
+    const cJSON *hh = cJSON_GetObjectItem(root, "hour");
+    const cJSON *mm = cJSON_GetObjectItem(root, "minute");
+    const cJSON *rp = cJSON_GetObjectItem(root, "repeat");
+    const cJSON *en = cJSON_GetObjectItem(root, "enabled");
+    const cJSON *lb = cJSON_GetObjectItem(root, "label");
+    /* sat6e: optional light object {on, brightness, sunrise_min,
+     * silent}; parsed strictly, applied on create and edit alike. */
+    const cJSON *lo = cJSON_GetObjectItem(root, "light");
+    bool has_light = cJSON_IsObject(lo);
+    bool l_on = false, l_silent = false;
+    int l_bri = 100, l_sun = 0;
+    if (has_light) {
+        const cJSON *lon = cJSON_GetObjectItem(lo, "on");
+        const cJSON *lsil = cJSON_GetObjectItem(lo, "silent");
+        const cJSON *lbri = cJSON_GetObjectItem(lo, "brightness");
+        const cJSON *lsun = cJSON_GetObjectItem(lo, "sunrise_min");
+        if (cJSON_IsBool(lon)) l_on = cJSON_IsTrue(lon);
+        if (cJSON_IsBool(lsil)) l_silent = cJSON_IsTrue(lsil);
+        if (cJSON_IsNumber(lsun) && lsun->valueint >= 0 &&
+            lsun->valueint <= 30)
+            l_sun = lsun->valueint;
+        if (cJSON_IsNumber(lsun) &&
+            (lsun->valueint < 0 || lsun->valueint > 30)) {
+            ESP_LOGW(TAG, "alarms_set bad sunrise_min");
+            return false;
+        }
+        if (cJSON_IsNumber(lbri)) {
+            if (lbri->valueint < 1 || lbri->valueint > 100) {
+                ESP_LOGW(TAG, "alarms_set bad light brightness");
+                return false;
+            }
+            l_bri = lbri->valueint;
+        }
+    }
+    int want_id = cJSON_IsNumber(id_it) ? id_it->valueint : 0;
+    if (want_id <= 0) {
+        /* Create: hour + minute are required. */
+        if (!cJSON_IsNumber(hh) || !cJSON_IsNumber(mm)) {
+            ESP_LOGW(TAG, "alarms_set create needs numeric hour/minute");
+            return false;
+        }
+    }
+    if ((cJSON_IsNumber(hh) && (hh->valueint < 0 || hh->valueint > 23)) ||
+        (cJSON_IsNumber(mm) && (mm->valueint < 0 || mm->valueint > 59))) {
+        ESP_LOGW(TAG, "alarms_set time out of range");
+        return false;
+    }
+    int repeat = -1;
+    if (cJSON_IsString(rp)) {
+        repeat = repeat_parse(rp->valuestring);
+        if (repeat < 0) {
+            ESP_LOGW(TAG, "alarms_set bad repeat '%s'", rp->valuestring);
+            return false;
+        }
+    }
+    bool ok = false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (want_id > 0) {
+        alarm_rec_t *a = find_alarm(want_id);
+        if (!a) {
+            ESP_LOGW(TAG, "alarms_set: no alarm %d to update", want_id);
+        } else {
+            /* sat6e: only a real time/repeat change clears the fire
+             * dedupe -- a light-only push must never re-arm an alarm
+             * that already fired today. */
+            bool schedule_changed =
+                (cJSON_IsNumber(hh) && hh->valueint != a->hour) ||
+                (cJSON_IsNumber(mm) && mm->valueint != a->minute) ||
+                (repeat >= 0 && repeat != a->repeat);
+            if (cJSON_IsNumber(hh)) a->hour = (uint8_t)hh->valueint;
+            if (cJSON_IsNumber(mm)) a->minute = (uint8_t)mm->valueint;
+            if (repeat >= 0) a->repeat = (uint8_t)repeat;
+            if (cJSON_IsBool(en)) a->enabled = cJSON_IsTrue(en);
+            if (cJSON_IsString(lb)) sanitize_label(lb->valuestring, a->label);
+            if (has_light) {
+                a->light_on = l_on;
+                a->light_silent = l_silent;
+                a->light_bri = (uint8_t)l_bri;
+                a->light_sun = (uint8_t)l_sun;
+            }
+            if (schedule_changed) {
+                a->last_yday = -1;
+                a->last_min = -1;
+            }
+            s_state_dirty = true;
+            ok = true;
+            ESP_LOGI(TAG, "alarm %u updated: %02u:%02u %s %s", (unsigned)a->id,
+                     a->hour, a->minute, repeat_name(a->repeat),
+                     a->enabled ? "on" : "off");
+        }
+    } else if (s_alarm_count >= ALERTS_MAX_ALARMS) {
+        ESP_LOGW(TAG, "alarms_set: alarm table full (%d)", ALERTS_MAX_ALARMS);
+    } else {
+        alarm_rec_t *a = &s_alarms[s_alarm_count];
+        memset(a, 0, sizeof(*a));
+        uint32_t nid = s_next_alarm_id++;
+        if ((nid & 0xFF) == 0) nid = s_next_alarm_id++;
+        a->id = (uint8_t)(nid & 0xFF);
+        a->hour = (uint8_t)hh->valueint;
+        a->minute = (uint8_t)mm->valueint;
+        a->repeat = (uint8_t)(repeat >= 0 ? repeat : REPEAT_ONCE);
+        a->enabled = cJSON_IsBool(en) ? cJSON_IsTrue(en) : true;
+        a->last_yday = -1;
+        a->last_min = -1;
+        sanitize_label(cJSON_IsString(lb) ? lb->valuestring : NULL, a->label);
+        if (has_light) {
+            a->light_on = l_on;
+            a->light_silent = l_silent;
+            a->light_bri = (uint8_t)l_bri;
+            a->light_sun = (uint8_t)l_sun;
+        }
+        s_alarm_count++;
+        s_state_dirty = true;
+        ok = true;
+        ESP_LOGI(TAG, "alarm %u created: %02u:%02u %s %s%s%s",
+                 (unsigned)a->id, a->hour, a->minute,
+                 repeat_name(a->repeat), a->enabled ? "on" : "off",
+                 a->label[0] ? " - " : "", a->label);
+    }
+    xSemaphoreGive(s_lock);
+    if (ok) save_now();
+    return ok;
+}
+
+bool alerts_cmd_delete_alarm(int id)
+{
+    bool ok = false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int i = 0; i < s_alarm_count; i++) {
+        if (s_alarms[i].id != id) continue;
+        memmove(&s_alarms[i], &s_alarms[i + 1],
+                (size_t)(s_alarm_count - i - 1) * sizeof(alarm_rec_t));
+        s_alarm_count--;
+        if (s_snooze_id == id) s_snooze_id = 0;
+        if (s_recent_kind == ALERT_KIND_ALARM && s_recent_id == id)
+            s_recent_kind = ALERT_KIND_NONE, s_recent_id = 0;
+        s_state_dirty = true;
+        ok = true;
+        ESP_LOGI(TAG, "alarm %d deleted", id);
+        break;
+    }
+    xSemaphoreGive(s_lock);
+    if (ok) save_now();
+    return ok;
+}
+
+bool alerts_cmd_enable_alarm(int id, bool enabled)
+{
+    bool ok = false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    alarm_rec_t *a = find_alarm(id);
+    if (a) {
+        a->enabled = enabled;
+        s_state_dirty = true;
+        ok = true;
+        ESP_LOGI(TAG, "alarm %d %s", id, enabled ? "enabled" : "disabled");
+    }
+    xSemaphoreGive(s_lock);
+    if (ok) save_now();
+    return ok;
+}
+
+bool alerts_cmd_set_timer(const cJSON *root)
+{
+    const cJSON *sec = cJSON_GetObjectItem(root, "seconds");
+    if (!cJSON_IsNumber(sec) || sec->valuedouble < 1 ||
+        sec->valuedouble > 604800) {
+        ESP_LOGW(TAG, "timers_set needs seconds in 1..604800");
+        return false;
+    }
+    const cJSON *lb = cJSON_GetObjectItem(root, "label");
+    bool ok = false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_timer_count >= ALERTS_MAX_TIMERS) {
+        ESP_LOGW(TAG, "timers_set: timer table full (%d)", ALERTS_MAX_TIMERS);
+    } else {
+        timer_rec_t *t = &s_timers[s_timer_count];
+        uint32_t nid = s_next_timer_id++;
+        if ((nid & 0xFF) == 0) nid = s_next_timer_id++;
+        t->id = (uint8_t)(nid & 0xFF);
+        t->end_us = esp_timer_get_time() +
+                    (int64_t)(sec->valuedouble * 1000000.0);
+        sanitize_label(cJSON_IsString(lb) ? lb->valuestring : NULL, t->label);
+        s_timer_count++;
+        s_state_dirty = true;
+        ok = true;
+        ESP_LOGI(TAG, "timer %u set: %d s%s%s", (unsigned)t->id,
+                 (int)sec->valuedouble, t->label[0] ? " - " : "", t->label);
+    }
+    xSemaphoreGive(s_lock);
+    return ok;
+}
+
+bool alerts_cmd_cancel_timer(int id)
+{
+    bool ok = false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (int i = 0; i < s_timer_count; i++) {
+        if (s_timers[i].id != id) continue;
+        memmove(&s_timers[i], &s_timers[i + 1],
+                (size_t)(s_timer_count - i - 1) * sizeof(timer_rec_t));
+        s_timer_count--;
+        s_state_dirty = true;
+        ok = true;
+        ESP_LOGI(TAG, "timer %d cancelled", id);
+        break;
+    }
+    xSemaphoreGive(s_lock);
+    return ok;
+}
+
+void alerts_cmd_stop(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_alert_active) {
+        s_recent_kind = s_alert_kind;
+        s_recent_id = s_alert_id;
+        memcpy(s_recent_label, s_alert_label, sizeof(s_recent_label));
+        s_recent_stop_us = esp_timer_get_time();
+        ESP_LOGI(TAG, "alert stopped (%s %u)",
+                 s_alert_kind == ALERT_KIND_TIMER ? "timer" : "alarm",
+                 (unsigned)s_alert_id);
+        clear_alert_locked();
+    } else {
+        ESP_LOGI(TAG, "alert_stop: nothing alerting");
+    }
+    xSemaphoreGive(s_lock);
+}
+
+void alerts_cmd_snooze(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int64_t now = esp_timer_get_time();
+    if (s_alert_active && s_alert_kind == ALERT_KIND_ALARM) {
+        s_snooze_id = s_alert_id;
+        memcpy(s_snooze_label, s_alert_label, sizeof(s_snooze_label));
+        s_snooze_due_us = now + SNOOZE_US;
+        ESP_LOGI(TAG, "alarm %u snoozed (+9 min)", (unsigned)s_alert_id);
+        clear_alert_locked();
+    } else if (s_alert_active) {
+        ESP_LOGI(TAG, "alert_snooze ignored: timers cannot snooze");
+    } else if (s_recent_kind == ALERT_KIND_ALARM && s_recent_id &&
+               now - s_recent_stop_us <= RECENT_STOP_US) {
+        s_snooze_id = s_recent_id;
+        memcpy(s_snooze_label, s_recent_label, sizeof(s_snooze_label));
+        s_snooze_due_us = now + SNOOZE_US;
+        ESP_LOGI(TAG, "snooze applied to recently stopped alarm %u (+9 min)",
+                 (unsigned)s_recent_id);
+        s_recent_kind = ALERT_KIND_NONE;
+        s_recent_id = 0;
+    } else {
+        ESP_LOGI(TAG, "alert_snooze ignored: no active/recent alarm");
+    }
+    xSemaphoreGive(s_lock);
+}
+
+bool alerts_cmd_duck(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool active = s_alert_active;
+    if (active && !s_alert_ducked) {
+        s_alert_ducked = true;
+        s_duck_deadline_us = esp_timer_get_time() + DUCK_RESTORE_US;
+        ESP_LOGI(TAG, "alert ducked to 25%% of alarm volume");
+    }
+    xSemaphoreGive(s_lock);
+    return active;
+}
+
+void alerts_cmd_duck_end(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_alert_ducked) {
+        s_alert_ducked = false;
+        ESP_LOGI(TAG, "alert duck ended; full alarm volume");
+    }
+    xSemaphoreGive(s_lock);
+}
+
+void alerts_set_connected(bool connected)
+{
+    if (!s_lock) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_connected = connected;
+    if (!connected && s_alert_ducked) {
+        s_alert_ducked = false;
+        ESP_LOGI(TAG, "alert duck restored (link down)");
+    }
+    xSemaphoreGive(s_lock);
+}
+
+/* --- state ------------------------------------------------------------------ */
+bool alerts_take_state_dirty(void)
+{
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool d = s_state_dirty;
+    s_state_dirty = false;
+    xSemaphoreGive(s_lock);
+    return d;
+}
+
+bool alerts_build_state_json(char *out, size_t cap)
+{
+    if (!out || cap < 64 || !s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int64_t now = esp_timer_get_time();
+    cJSON *root = cJSON_CreateObject();
+    bool ok = false;
+    if (root) {
+        cJSON_AddStringToObject(root, "cmd", "alerts_state");
+        cJSON *arr = cJSON_AddArrayToObject(root, "alarms");
+        if (arr) {
+            for (int i = 0; i < s_alarm_count; i++) {
+                const alarm_rec_t *a = &s_alarms[i];
+                cJSON *o = cJSON_CreateObject();
+                if (!o) continue;
+                cJSON_AddNumberToObject(o, "id", a->id);
+                cJSON_AddNumberToObject(o, "hour", a->hour);
+                cJSON_AddNumberToObject(o, "minute", a->minute);
+                cJSON_AddStringToObject(o, "repeat", repeat_name(a->repeat));
+                cJSON_AddBoolToObject(o, "enabled", a->enabled);
+                cJSON_AddStringToObject(o, "label", a->label);
+                cJSON *li = cJSON_AddObjectToObject(o, "light");
+                if (li) {
+                    cJSON_AddBoolToObject(li, "on", a->light_on);
+                    cJSON_AddNumberToObject(li, "brightness",
+                                            a->light_bri);
+                    cJSON_AddNumberToObject(li, "sunrise_min",
+                                            a->light_sun);
+                    cJSON_AddBoolToObject(li, "silent",
+                                          a->light_silent);
+                }
+                cJSON_AddItemToArray(arr, o);
+            }
+        }
+        cJSON *tarr = cJSON_AddArrayToObject(root, "timers");
+        if (tarr) {
+            for (int i = 0; i < s_timer_count; i++) {
+                const timer_rec_t *t = &s_timers[i];
+                cJSON *o = cJSON_CreateObject();
+                if (!o) continue;
+                int64_t rem = (t->end_us - now) / 1000000;
+                cJSON_AddNumberToObject(o, "id", t->id);
+                cJSON_AddNumberToObject(o, "remaining_sec",
+                                        (double)(rem > 0 ? rem : 0));
+                cJSON_AddStringToObject(o, "label", t->label);
+                cJSON_AddItemToArray(tarr, o);
+            }
+        }
+        if (s_alert_active) {
+            cJSON *al = cJSON_AddObjectToObject(root, "alerting");
+            if (al) {
+                cJSON_AddStringToObject(
+                    al, "kind",
+                    s_alert_kind == ALERT_KIND_TIMER ? "timer" : "alarm");
+                cJSON_AddNumberToObject(al, "id", s_alert_id);
+            }
+        } else {
+            cJSON_AddNullToObject(root, "alerting");
+        }
+        ok = cJSON_PrintPreallocated(root, out, (int)cap, false);
+        cJSON_Delete(root);
+    }
+    xSemaphoreGive(s_lock);
+    if (!ok) out[0] = '\0';
+    return ok;
+}
+
+/* --- playback (speaker task only) -------------------------------------------- */
+alerts_pb_t alerts_playback_snapshot(void)
+{
+    alerts_pb_t pb;
+    memset(&pb, 0, sizeof(pb));
+    if (!s_lock) return pb;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    pb.active = s_alert_active;
+    if (s_alert_active && s_alert_kind == ALERT_KIND_ALARM) {
+        /* sat6e: a silent (light-only) alarm makes no sound while
+         * the light call is in flight or has succeeded; if the
+         * light never answers, the sound fires as the fail-safe. */
+        alarm_rec_t *a = find_alarm(s_alert_id);
+        if (a && a->light_on && a->light_silent &&
+            (s_alert_light_ok ||
+             esp_timer_get_time() - s_alert_start_us < LIGHT_WAIT_US))
+            pb.active = false;
+    }
+    pb.ducked = s_alert_ducked;
+    pb.kind = s_alert_kind;
+    pb.id = s_alert_id;
+    pb.start_us = s_alert_start_us;
+    xSemaphoreGive(s_lock);
+    return pb;
+}
+
+static uint32_t s_render_cursor;
+static int64_t s_render_for = -1;
+
+bool alerts_render_frame(int16_t *out, size_t frames, int gain_pct)
+{
+    if (!out || !s_wav_data || !s_wav_count) return false;
+    {
+        static bool diag_logged;
+        if (!diag_logged) {
+            diag_logged = true;
+            ESP_LOGI(TAG, "alert diag 3: render first call, wav_count=%u gain=%d",
+                     (unsigned)s_wav_count, gain_pct);
+        }
+    }
+    alerts_pb_t pb = alerts_playback_snapshot();
+    if (!pb.active) return false;
+    if (pb.start_us != s_render_for) {
+        s_render_for = pb.start_us;
+        s_render_cursor = 0;
+    }
+    if (gain_pct < 0) gain_pct = 0;
+    if (gain_pct > 100) gain_pct = 100;
+    for (size_t i = 0; i < frames; i++) {
+        uint32_t pos = s_render_cursor++;
+        size_t src = (pos / 3) % s_wav_count;
+        size_t nxt = (src + 1) % s_wav_count;
+        int frac = (int)(pos % 3);
+        int32_t a = wav_sample(src);
+        int32_t b = wav_sample(nxt);
+        int32_t v = a + (b - a) * frac / 3;      /* 16k -> 48k lerp */
+        v = v * gain_pct / 100;
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        out[i] = (int16_t)v;
+    }
+    return true;
+}
+
+/* --- lifecycle ----------------------------------------------------------------- */
+void alerts_time_sync_start(void)
+{
+    static bool started;
+    if (started) return;
+    started = true;
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_err_t e = esp_netif_sntp_init(&cfg);
+    if (e == ESP_OK)
+        ESP_LOGI(TAG, "SNTP sync started (pool.ntp.org), TZ %s", ALERT_TZ);
+    else
+        ESP_LOGW(TAG, "SNTP init failed: %s", esp_err_to_name(e));
+}
+
+void alerts_start(void)
+{
+    static bool started;
+    if (started) return;
+    started = true;
+    setenv("TZ", ALERT_TZ, 1);
+    tzset();
+    s_lock = xSemaphoreCreateMutex();
+    if (!s_lock) {
+        ESP_LOGE(TAG, "no memory for alerts lock");
+        return;
+    }
+    if (wav_parse())
+        ESP_LOGI(TAG, "alarm sound ready: %u samples @16k (HomePod chime)",
+                 (unsigned)s_wav_count);
+    else
+        ESP_LOGE(TAG, "alarm WAV embed unusable; alerts would be silent");
+    load_alarms();
+    s_store_queue = xQueueCreate(4, sizeof(char *));
+    if (!s_store_queue ||
+        xTaskCreate(store_task, "alerts_store", 3072, NULL, 4, NULL) != pdPASS)
+        ESP_LOGE(TAG, "failed to start alerts_store");
+    if (xTaskCreateWithCaps(tick_task, "alerts_tick", 4096, NULL, 5, NULL,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
+        ESP_LOGE(TAG, "failed to start alerts_tick");
+    s_light_queue = xQueueCreate(4, sizeof(light_action_t));
+    if (!s_light_queue ||
+        xTaskCreate(light_task, "alerts_light", 4096, NULL, 4, NULL) !=
+            pdPASS)
+        ESP_LOGE(TAG, "failed to start alerts_light");
+    ESP_LOGI(TAG, "alarm/timer engine up: %d alarm(s), %d timer slot(s)",
+             s_alarm_count, ALERTS_MAX_TIMERS);
+}

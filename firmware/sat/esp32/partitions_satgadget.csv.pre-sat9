@@ -1,0 +1,12 @@
+# Lyra Sat Gadget partition table, XIAO ESP32S3 8 MB flash.
+# Table offset 0x10000 (sdkconfig.defaults). SINGLE-APP since sat1
+# (Daniel, 2026-10-30): OTA is REMOVED -- updates are USB flashes (the
+# assembled box keeps USB accessible, and the device stays lean). One
+# large factory app fills the space the two OTA slots used; no otadata,
+# no frames partition (no display); the alarm sound is embedded in the
+# app binary. coredump is kept for headless crash forensics.
+# Name,    Type, SubType, Offset,   Size,     Flags
+nvs,       data, nvs,     0x11000,  0xC000,
+phy_init,  data, phy,     0x1D000,  0x1000,
+factory,   app,  factory, 0x20000,  0x7C0000,
+coredump,  data, coredump,0x7E0000, 0x20000,

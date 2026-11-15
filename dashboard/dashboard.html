@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background:#0d1117; color:#e6edf3; font-family: system-ui, sans-serif;
+         max-width: 560px; margin: 0 auto; padding: 16px 14px 40px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 6px 2px 14px; }
+  .card { background:#161b22; border:1px solid #2a313a; border-radius:16px;
+          padding:16px; margin-bottom:12px; }
+  .label { font-size:12px; letter-spacing:.12em; text-transform:uppercase;
+           color:#8b949e; margin-bottom:8px; }
+  .alarm-time { font-size:56px; font-weight:700; line-height:1; }
+  .row { display:flex; align-items:center; gap:10px; }
+  .spread { justify-content: space-between; }
+  .badge { font-size:12px; padding:3px 10px; border-radius:99px;
+           background:#123524; color:#3fb950; border:1px solid #1d5c38; }
+  .badge.off { background:#3a2a12; color:#d29922; border-color:#5c451d; }
+  .badge.ringing { background:#4a1620; color:#ff7b72; border-color:#7a2432;
+                   animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity:.55; } }
+  .sub { color:#8b949e; font-size:13px; margin-top:6px; }
+  button { font: inherit; cursor: pointer; border-radius:10px;
+           border:1px solid #2a313a; background:#21262d; color:#e6edf3;
+           padding:10px 18px; }
+  button:active { transform: scale(.97); }
+  button.kill { background:#5c1a1a; border-color:#8a2a2a; }
+  button:disabled { opacity:.45; cursor:default; }
+  .switch { width:56px; height:32px; border-radius:99px; position:relative;
+            background:#30363d; border:1px solid #444c56; flex:none; padding:0; }
+  .switch::after { content:""; position:absolute; top:3px; left:3px; width:24px;
+                   height:24px; border-radius:50%; background:#e6edf3;
+                   transition:left .15s; }
+  .switch.on { background:#1d5c38; border-color:#2ea043; }
+  .switch.on::after { left:27px; }
+  input[type=range] { width:100%; accent-color:#2ea043; margin-top:10px; }
+  .tile-name { font-size:17px; font-weight:600; }
+  .poster { width:54px; height:80px; object-fit:cover; border-radius:8px;
+            background:#21262d; flex:none; }
+  .progress { height:5px; background:#30363d; border-radius:99px; margin-top:8px; }
+  .progress > div { height:100%; background:#2ea043; border-radius:99px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .grid2 .card { margin-bottom:0; }
+  .wrap { margin-bottom:12px; }
+  #toast { position:fixed; left:50%; bottom:22px; transform:translateX(-50%);
+           background:#21262d; border:1px solid #444c56; color:#e6edf3;
+           padding:10px 16px; border-radius:99px; font-size:14px;
+           opacity:0; pointer-events:none; transition:opacity .25s;
+           max-width:90vw; text-align:center; }
+  #toast.show { opacity:1; }
+  .dim { color:#8b949e; }
+  .note { font-style: italic; color:#d29922; margin-top:8px; font-size:14px; }
+</style>
+</head>
+<body>
+<h1>Home</h1>
+
+<div class="card" id="alarmCard">
+  <div class="row spread">
+    <div class="label">Alarm</div>
+    <span class="badge" id="alarmBadge">...</span>
+  </div>
+  <div class="row spread">
+    <div class="alarm-time" id="alarmTime">--:--</div>
+    <button class="switch" id="alarmToggle" aria-label="Enable or disable alarm"></button>
+  </div>
+  <div class="sub" id="alarmSub">Loading...</div>
+  <div class="note" id="alarmNote" hidden></div>
+  <div class="row" style="margin-top:14px; gap:10px;">
+    <button class="kill" id="killBtn">Kill</button>
+    <button id="snoozeBtn">Snooze</button>
+  </div>
+  <div style="margin-top:14px;">
+    <div class="label">Ring volume <span id="ringVolVal" class="dim"></span></div>
+    <input type="range" id="ringVol" min="0" max="100" step="5">
+  </div>
+</div>
+
+<div class="card">
+  <div class="row spread">
+    <div>
+      <div class="label">Bedroom</div>
+      <div class="tile-name">Ceiling Light</div>
+      <div class="sub" id="lightSub">...</div>
+    </div>
+    <button class="switch" id="lightToggle" aria-label="Toggle ceiling light"></button>
+  </div>
+  <input type="range" id="lightBri" min="0" max="100" step="1">
+</div>
+
+<div class="card">
+  <div class="label">Lyra Flex</div>
+  <div class="row spread">
+    <div class="tile-name">Speaker Box</div>
+    <span class="badge" id="coreBadge">...</span>
+  </div>
+  <div style="margin-top:12px;">
+    <div class="label">Speaking volume <span id="volVal" class="dim"></span></div>
+    <input type="range" id="vol" min="0" max="100" step="5">
+  </div>
+</div>
+
+<div class="card">
+  <div class="label">Jellyfin</div>
+  <div id="jfBody"><div class="sub">Loading...</div></div>
+</div>
+
+<div class="wrap grid2">
+  <div class="card">
+    <div class="label">TV</div>
+    <div class="tile-name">Lyra TV</div>
+    <div class="sub" id="tvSub">...</div>
+    <div class="row spread" style="margin-top:12px;">
+      <div class="tile-name" style="font-size:15px;">Display</div>
+      <button class="switch" id="displayToggle" aria-label="Toggle Lyra display"></button>
+    </div>
+    <div style="margin-top:12px;">
+      <div class="label">Screen brightness <span id="tvVal" class="dim"></span></div>
+      <input type="range" id="tvBri" min="0" max="100" step="5">
+    </div>
+    <div style="margin-top:12px;">
+      <div class="label">TV volume <span id="tvVolVal" class="dim"></span></div>
+      <input type="range" id="tvVol" min="0" max="100" step="5">
+    </div>
+    <div class="row" style="margin-top:12px; gap:10px;">
+      <button id="tvDimBtn">Dim</button>
+      <button id="tvFullBtn">Full</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">Utilities</div>
+    <div class="row spread" style="margin-bottom:12px;">
+      <div class="tile-name" style="font-size:15px;">PC Monitor</div>
+      <button class="switch" id="monitorToggle" aria-label="Toggle PC monitor"></button>
+    </div>
+    <div class="row spread">
+      <div class="tile-name" style="font-size:15px;">Mic Mute</div>
+      <button class="switch" id="micToggle" aria-label="Toggle mic mute"></button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="label">Call</div>
+  <div class="row spread">
+    <div>
+      <div class="tile-name">Lyra</div>
+      <div class="sub">Talk to her from anywhere — her voice and face, no TV needed.</div>
+    </div>
+    <a href="{{CALL_URL}}" style="font:inherit; text-decoration:none; border-radius:10px; border:1px solid #8a4a68; background:#5c2a44; color:#fff; padding:12px 20px; white-space:nowrap;">&#128222; Call</a>
+  </div>
+</div>
+
+<div class="sub" style="text-align:center;" id="foot">Served by the Fedora - lyra-core :8099</div>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let S = null;
+let toastTimer = null;
+function toast(msg) {
+  if (!msg) return;
+  $('toast').textContent = msg;
+  $('toast').classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $('toast').classList.remove('show'), 2600);
+}
+async function act(tool, action, args = {}) {
+  try {
+    const r = await fetch('/api/action', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({tool, action, args}) });
+    const j = await r.json();
+    toast(j.confirmation || (j.ok ? 'Done' : (j.error || 'Failed')));
+  } catch (e) { toast('Request failed'); }
+  refresh();
+}
+function onOf(state) {
+  if (!state) return null;
+  if (typeof state.on === 'boolean') return state.on;
+  if (typeof state.is_on === 'boolean') return state.is_on;
+  if (typeof state.power === 'boolean') return state.power;
+  if (typeof state.state === 'string') return state.state === 'on';
+  if (typeof state.monitor === 'string') return state.monitor === 'on';
+  return null;
+}
+function pctOf(v) {
+  if (v === null || v === undefined) return null;
+  return v <= 1 ? Math.round(v * 100) : Math.round(v);
+}
+function setSwitch(el, val) {
+  el.classList.toggle('on', val === true);
+  el.disabled = val === null;
+}
+async function refresh() {
+  let j;
+  try { j = await (await fetch('/api/state')).json(); } catch (e) { return; }
+  S = j;
+  const a = (j.alarm && j.alarm.state) || {};
+  $('alarmTime').textContent = a.time || '--:--';
+  const badge = $('alarmBadge');
+  if (a.ringing) { badge.textContent = 'RINGING'; badge.className = 'badge ringing'; }
+  else if (a.enabled) { badge.textContent = 'Enabled'; badge.className = 'badge'; }
+  else { badge.textContent = 'Disabled'; badge.className = 'badge off'; }
+  setSwitch($('alarmToggle'), a.enabled === undefined ? null : !!a.enabled);
+  let sub = (a.repeat || '') + ' - ring volume ' + (pctOf(a.ring_volume) ?? '?') + '%';
+  if (a.snooze_until) sub += ' - snoozed until ' + a.snooze_until;
+  if (a.ringing) sub += ' - ringing now';
+  if (a.next_fire) { const d = new Date(a.next_fire);
+    sub += ' - next ' + d.toLocaleDateString('en-US', {timeZone:'America/New_York', weekday:'short', month:'short', day:'numeric'}) + ' ' + d.toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', minute:'2-digit'}); }
+  $('alarmSub').textContent = sub;
+  const rv = pctOf(a.ring_volume);
+  if (rv !== null && document.activeElement !== $('ringVol')) {
+    $('ringVol').value = rv; $('ringVolVal').textContent = rv + '%';
+  }
+  const note = a.morning_note;
+  $('alarmNote').hidden = !note;
+  if (note) $('alarmNote').textContent = 'Morning note: ' + note;
+  const l = (j.light && j.light.state) || {};
+  const lon = onOf(l);
+  setSwitch($('lightToggle'), lon);
+  const lb = pctOf(l.brightness);
+  $('lightSub').textContent =
+    (lon === null ? '' : (lon ? 'On' : 'Off')) + (lb !== null ? ' - ' + lb + '%' : '');
+  if (lb !== null && document.activeElement !== $('lightBri')) $('lightBri').value = lb;
+  $('coreBadge').textContent = j.core_online ? 'Core online' : 'Core offline';
+  $('coreBadge').className = 'badge' + (j.core_online ? '' : ' off');
+  const v = (j.volume && j.volume.state) || {};
+  const vv = pctOf(v.volume !== undefined ? v.volume : v.percent);
+  if (vv !== null && document.activeElement !== $('vol')) {
+    $('vol').value = vv; $('volVal').textContent = vv + '%';
+  }
+  const t = (j.tv && j.tv.state) || {};
+  const tb = pctOf(t.brightness);
+  $('tvSub').textContent = tb !== null ? 'Brightness ' + tb + '%' : 'Viewer unreachable';
+  setSwitch($('displayToggle'), j.display && j.display.ok ? !!j.display.active : null);
+  if (j.display && j.display.ok) {
+    $('tvSub').textContent += ' - voice on TV';
+  }
+  if (tb !== null && document.activeElement !== $('tvBri')) {
+    $('tvBri').value = tb; $('tvVal').textContent = tb + '%';
+  }
+  const tvv = (j.tv_volume && j.tv_volume.state) || {};
+  const tvo = pctOf(tvv.volume !== undefined ? tvv.volume : tvv.percent);
+  if (tvo !== null && document.activeElement !== $('tvVol')) {
+    $('tvVol').value = tvo; $('tvVolVal').textContent = tvo + '%';
+  }
+  const mon = onOf((j.monitor && j.monitor.state) || {});
+  setSwitch($('monitorToggle'), mon);
+  setSwitch($('micToggle'), j.mic && j.mic.ok ? !!j.mic.muted : null);
+  const jfErr = j.jellyfin && j.jellyfin.ok === false;
+  const np = (j.jellyfin && j.jellyfin.now_playing) || [];
+  if (jfErr) {
+    $('jfBody').innerHTML = '<div class="sub">Jellyfin rejected the stored API key - it needs a fresh one (Jellyfin &gt; Dashboard &gt; API Keys), then update JELLYFIN_API_KEY in APIKeys/.env.</div>';
+  } else if (!np.length) {
+    $('jfBody').innerHTML = '<div class="sub">Nothing playing</div>';
+  } else {
+    $('jfBody').innerHTML = np.map(x => `
+      <div class="row" style="align-items:flex-start;">
+        <img class="poster" src="/api/poster/${x.image_id}" alt="">
+        <div style="flex:1; min-width:0;">
+          <div class="tile-name" style="font-size:15px;">${x.title}</div>
+          <div class="sub">${x.user} - ${x.client} - ${x.device}${x.paused ? ' - paused' : ''}</div>
+          <div class="progress"><div style="width:${x.pct}%"></div></div>
+        </div>
+      </div>`).join('');
+  }
+}
+$('killBtn').onclick = () => act('alarm', 'kill');
+$('snoozeBtn').onclick = () => act('alarm', 'snooze');
+$('alarmToggle').onclick = () => {
+  const a = (S.alarm && S.alarm.state) || {};
+  act('alarm', a.enabled ? 'disable' : 'enable');
+};
+$('ringVol').onchange = e => act('alarm', 'ring_volume_set', {percent: +e.target.value});
+$('ringVol').oninput = e => $('ringVolVal').textContent = e.target.value + '%';
+$('lightToggle').onclick = () => {
+  const lon = onOf((S.light && S.light.state) || {});
+  act('light', lon ? 'off' : 'on');
+};
+$('lightBri').onchange = e => act('light', 'set_brightness', {percent: +e.target.value});
+$('vol').onchange = e => act('media_volume', 'set', {percent: +e.target.value});
+$('vol').oninput = e => $('volVal').textContent = e.target.value + '%';
+$('tvBri').onchange = e => act('tv', 'set', {percent: +e.target.value});
+$('tvBri').oninput = e => $('tvVal').textContent = e.target.value + '%';
+$('tvVol').onchange = e => act('tv_volume', 'set', {percent: +e.target.value});
+$('tvVol').oninput = e => $('tvVolVal').textContent = e.target.value + '%';
+$('tvDimBtn').onclick = () => act('tv', 'set', {percent: 30});
+$('tvFullBtn').onclick = () => act('tv', 'set', {percent: 100});
+$('monitorToggle').onclick = () => {
+  const mon = onOf((S.monitor && S.monitor.state) || {});
+  act('monitor', mon ? 'off' : 'on');
+};
+$('displayToggle').onclick = async () => {
+  const on = !(S.display && S.display.active);
+  try {
+    await fetch('/api/display', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({on}) });
+    toast(on ? 'Display on' : 'Display off - Lyra is silent');
+  } catch (e) { toast('Display request failed'); }
+  refresh();
+};
+$('micToggle').onclick = async () => {
+  const muted = !(S.mic && S.mic.muted);
+  try {
+    await fetch('/api/mic', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({muted}) });
+    toast(muted ? 'Mic muted' : 'Mic live');
+  } catch (e) { toast('Mic request failed'); }
+  refresh();
+};
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
