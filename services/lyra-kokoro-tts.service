@@ -1,0 +1,11 @@
+[Unit]
+Description=Lyra local TTS (Kokoro) for the gadget
+After=network.target
+
+[Service]
+ExecStart=/home/dclreeder/Documents/LyraOS/modules/wakeword/training/venv/bin/python "/home/dclreeder/Documents/LyraOS/modules/tts/kokoro/server/kokoro_server.py"
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

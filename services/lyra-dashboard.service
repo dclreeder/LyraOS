@@ -1,0 +1,11 @@
+[Unit]
+Description=Lyra home dashboard (live, via lyra-core /tool)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/dclreeder/Documents/LyraOS/dashboard/dashboard.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

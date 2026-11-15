@@ -1,0 +1,8 @@
+[Unit]
+Description=Lyra web viewer + speech server
+After=network.target
+[Service]
+ExecStart=/usr/bin/python3 /home/dclreeder/Documents/LyraOS/web/lyra_web.py
+Restart=on-failure
+[Install]
+WantedBy=default.target

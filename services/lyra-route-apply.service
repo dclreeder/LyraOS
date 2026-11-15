@@ -1,0 +1,10 @@
+[Unit]
+Description=Apply Lyra display state (kiosk + voice route)
+After=lyra-core.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/dclreeder/Documents/LyraOS/web/route_apply.py
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Lyra TTS Wyoming bridge to Kokoro (Fedora)
+After=network.target lyra-kokoro-tts.service
+Wants=lyra-kokoro-tts.service
+
+[Service]
+ExecStart=/home/dclreeder/Documents/LyraOS/modules/wyoming/venv/bin/python /home/dclreeder/Documents/LyraOS/modules/wyoming/tts_server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

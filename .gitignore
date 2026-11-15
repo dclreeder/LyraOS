@@ -1,0 +1,32 @@
+# LyraOS git scope: code, configs, units, docs. NOT data or secrets.
+data/
+**/venv/
+**/__pycache__/
+**/build/
+*.gguf
+*.bin
+*.npy
+**/jobs/
+**/collector_spool/
+*secrets*
+.env
+alarm_state.json
+display_state.json
+tv_route_state.json
+ring_state.json
+dim.json
+latest.json
+*.bak-*
+*.wav
+*.mp3
+*.opus
+*.flac
+*.onnx.data
+modules/tts/kokoro/kokoro-v1.0.onnx
+
+# Local secrets -- never track (files stay on disk for builds/runtime)
+modules/tts/kokoro/server/token.txt
+*.pem
+firmware/sat/esp32/devices/sdkconfig.lyra-satlink*
+firmware/sat/esp32/devices/sdkconfig.lyra-satgadget
+dashboard/call_url.txt

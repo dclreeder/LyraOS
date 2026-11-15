@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch Lyra display state file
+
+[Path]
+PathChanged=/home/dclreeder/Documents/LyraOS/web/display_state.json
+Unit=lyra-route-apply.service
+
+[Install]
+WantedBy=default.target
