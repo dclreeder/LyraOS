@@ -80,7 +80,7 @@ canvas{display:block}
     analyser = actx.createAnalyser(); analyser.fftSize = 512;
     const gain = actx.createGain(); gain.gain.value = 1.0;
     src.connect(analyser); analyser.connect(gain); gain.connect(actx.destination);
-    audioEl.addEventListener('ended', () => { speaking = false; onReplyEnded(); });
+    audioEl.addEventListener('ended', () => { playingNow = false; playNext(); });
   }
   const buf = new Uint8Array(256);
   app.ticker.add(() => {
@@ -151,29 +151,73 @@ canvas{display:block}
     if (state !== 'speaking') return;
     setTimeout(() => { if (state === 'speaking') { state = 'listening'; setStatus('Listening…'); } }, 350);
   }
+  // --- streamed reply playback (2026-11-15): /call/start returns as
+  // soon as the utterance is transcribed; the core then synthesizes
+  // the reply sentence by sentence and this page polls /call/poll and
+  // plays each sentence as it lands, so she starts talking after
+  // about one sentence instead of the whole reply.
+  let playQ = [], playingNow = false, streamDone = false, turnReply = '';
+  let curCall = null, nextIdx = 0, pollTimer = null, turnGen = 0;
+  function b64ToBlobUrl(b64) {
+    const bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], {type: 'audio/wav'}));
+  }
+  function playNext() {
+    if (state === 'off' || playingNow) return;
+    if (playQ.length) {
+      playingNow = true; speaking = true;
+      audioEl.src = playQ.shift();
+      audioEl.play().catch(() => { playingNow = false; setTimeout(playNext, 60); });
+    } else if (streamDone) {
+      speaking = false;
+      if (turnReply) capHer.textContent = turnReply;
+      onReplyEnded();
+    }
+  }
+  function failTurn() {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    playQ = []; playingNow = false; speaking = false;
+    setStatus('That turn failed — listening again');
+    state = 'listening';
+    setTimeout(() => { if (state === 'listening') setStatus('Listening…'); }, 1600);
+  }
+  async function pollCall(gen) {
+    if (gen !== turnGen || state === 'off') return;
+    try {
+      const r = await fetch('/call/poll?call=' + curCall + '&after=' + nextIdx, {cache: 'no-store'});
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'poll failed');
+      for (const s64 of j.sentences) playQ.push(b64ToBlobUrl(s64));
+      nextIdx = j.next;
+      if (j.reply) turnReply = j.reply;
+      if (j.error) { failTurn(); return; }
+      if (j.done) { streamDone = true; playNext(); return; }
+      if (!playingNow && playQ.length) playNext();
+    } catch (e) { /* transient -- keep polling */ }
+    pollTimer = setTimeout(() => pollCall(gen), 250);
+  }
   async function sendUtterance() {
-    state = 'sending'; setStatus('Thinking…');
+    state = 'sending'; setStatus('Thinking...');
     const all = new Float32Array(chunks.reduce((a, c) => a + c.length, 0));
     let off = 0; for (const c of chunks) { all.set(c, off); off += c.length; }
     chunks = [];
     const wav = encodeWav(downsample(all, actx.sampleRate));
+    const gen = ++turnGen;
     try {
-      const r = await fetch('/call/turn', {method: 'POST', body: wav, headers: {'Content-Type': 'audio/wav'}});
+      const r = await fetch('/call/start', {method: 'POST', body: wav, headers: {'Content-Type': 'audio/wav'}});
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'turn failed');
       if (j.transcript) capMe.textContent = j.transcript;
-      if (j.reply) capHer.textContent = j.reply;
-      const bin = atob(j.wav_b64), bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      capHer.textContent = '';
+      curCall = j.call_id; nextIdx = 0; playQ = []; playingNow = false;
+      streamDone = false; turnReply = '';
       state = 'speaking'; setStatus('Lyra');
       try { model.motion(idleGroups[Math.floor(Math.random() * idleGroups.length)]); } catch (e) {}
       speaking = true;
-      audioEl.src = URL.createObjectURL(new Blob([bytes], {type: 'audio/wav'}));
-      await audioEl.play();
+      pollCall(gen);
     } catch (e) {
-      setStatus('That turn failed — listening again');
-      state = 'listening';
-      setTimeout(() => { if (state === 'listening') setStatus('Listening…'); }, 1600);
+      failTurn();
     }
   }
   function handleAudio(e) {
@@ -223,6 +267,9 @@ canvas{display:block}
   }
   function endCall() {
     state = 'off';
+    turnGen++;
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    playQ = []; playingNow = false; streamDone = false;
     if (proc) { proc.onaudioprocess = null; try { proc.disconnect(); } catch (e) {} proc = null; }
     if (micSrc) { try { micSrc.disconnect(); } catch (e) {} micSrc = null; }
     if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }

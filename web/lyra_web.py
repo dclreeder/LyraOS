@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Lyra web viewer server: static pages, /mirror speech jobs, /ring, /dim, and the /call/turn proxy to the core."""
-import base64, json, os, threading, time, urllib.request, urllib.error
+"""Lyra web viewer server: static pages, /mirror speech jobs, /ring, /dim, and the streamed /call proxy to the core."""
+import base64, json, os, threading, time, urllib.request, urllib.error, urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.path.expanduser('~/Documents/LyraOS/web')
 _lock = threading.Lock(); _counter = [0]
@@ -8,16 +8,22 @@ try:
     with open(os.path.join(ROOT, 'latest.json')) as _f: _counter[0] = int(json.load(_f).get('id') or 0)
 except Exception: pass
 # Dashboard call (2026-11-15): the call page POSTs a WAV utterance to
-# /call/turn here; this server relays it to the core's /call/turn with
-# the shared token read server-side (same secrets file the dashboard
-# reads), and relays the JSON reply {transcript, reply, wav_b64}.
+# /call/start here; this server relays it to the core's /call/start
+# with the shared token read server-side (same secrets file the
+# dashboard reads). The core transcribes and returns a call id at
+# once; the reply is then synthesized sentence by sentence and the
+# page polls /call/poll for the sentences as they land.
 def core_token():
     with open(os.path.expanduser('~/Documents/LyraOS/core/alarm_secrets.json')) as f:
         return json.load(f)['kill_token']
-def call_turn(wav):
-    req = urllib.request.Request('http://127.0.0.1:8099/call/turn?t=' + core_token(),
+def call_start(wav):
+    req = urllib.request.Request('http://127.0.0.1:8099/call/start?t=' + core_token(),
                                  data=wav, headers={'Content-Type': 'audio/wav'})
-    with urllib.request.urlopen(req, timeout=200) as r:
+    with urllib.request.urlopen(req, timeout=90) as r:
+        return r.status, json.loads(r.read())
+def call_poll(call_id, after):
+    q = urllib.parse.urlencode({'t': core_token(), 'call': call_id, 'after': after})
+    with urllib.request.urlopen('http://127.0.0.1:8099/call/poll?' + q, timeout=15) as r:
         return r.status, json.loads(r.read())
 DIM_PATH = os.path.join(ROOT, 'dim.json')
 def get_dim():
@@ -70,16 +76,29 @@ class H(SimpleHTTPRequestHandler):
         data = json.dumps(obj).encode()
         self.send_response(code); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
     def do_GET(self):
-        if self.path == '/dim': return self._json(200, {'brightness': get_dim()})
-        if self.path == '/ring': return self._json(200, get_ring())
+        u = urllib.parse.urlparse(self.path)
+        if u.path == '/call/poll':
+            try:
+                q = urllib.parse.parse_qs(u.query)
+                call_id = (q.get('call') or [''])[0]
+                if not call_id: return self._json(400, {'error': 'call id required'})
+                after = int((q.get('after') or ['0'])[0])
+                code, obj = call_poll(call_id, after)
+                return self._json(code, obj)
+            except urllib.error.HTTPError as e:
+                try: return self._json(e.code, json.loads(e.read()))
+                except Exception: return self._json(e.code, {'error': 'core error'})
+            except Exception as e: return self._json(502, {'error': str(e)})
+        if u.path == '/dim': return self._json(200, {'brightness': get_dim()})
+        if u.path == '/ring': return self._json(200, get_ring())
         return super().do_GET()
     def do_POST(self):
-        if self.path == '/call/turn':
+        if self.path == '/call/start':
             try:
                 n = int(self.headers.get('Content-Length') or 0)
                 if n <= 0 or n > 8 * 1024 * 1024: return self._json(413, {'error': 'bad size'})
                 wav = self.rfile.read(n)
-                code, obj = call_turn(wav)
+                code, obj = call_start(wav)
                 return self._json(code, obj)
             except urllib.error.HTTPError as e:
                 try: return self._json(e.code, json.loads(e.read()))
