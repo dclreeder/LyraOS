@@ -15,10 +15,30 @@ _Written 2026-11-15 (Daniel + Lyra, main chat). Canonical copy: `~/Documents/Lyr
 - **L0 — Inbox (the record).** Code appends every turn to a per-day JSONL log: timestamp, speaker, transcript, tool calls and their results, alarm/device events, and her memory proposals (see below). Immutable once written. This is the raw floor everything else traces back to — no fact exists only as a summary.
 - **L1 — Claims (durable facts).** The sleep model extracts discrete claims: subject entity, relation, object, the source quote with a pointer into the L0 log, date learned, confidence, salience, and optional validity window (some facts expire). A correction creates a new claim that *supersedes* the old one; the chain is preserved, never edited away.
 - **L2 — Entities.** People, places, and things get pages (plain markdown, portable — same rule as the second brain). Facts hang off entities; this is where cross-fact connections live (the two-hop problem: Daniel → works at → Stuart Jones Electric → located in → Jacksonville). Entity resolution — noticing two mentions are the same thing — is an explicit, named job of the sleep model.
-- **L3 — State card (her view).** A compact digest the sleep model maintains: current standing facts, open threads, near-term context. Fixed token budget (target ≤ ~800 tokens). The core injects it into her live prompt; her rolling 12-turn window stays for conversational flow. She wakes each morning to a fresh card.
+- **L3 — State card (her view).** A compact digest the sleep model maintains: current standing facts, open threads, near-term context. Fixed token budget (target ≤ ~800 tokens). The core injects it into her live prompt; her rolling 12-turn window stays for conversational flow. She wakes each morning to a fresh card. In plain terms: it is the sticky note she reads before every turn — not the memory itself, just the distilled "here's where things stand" she works from, the same role Muse's injected MEMORY.md plays in the main chat. Example shape:
+
+  ```
+  STATE CARD — updated 2026-11-16 04:10 by curator
+  Daniel: home Jacksonville (Pickettville Rd); work Corporate Square; alarm 06:00
+  weekdays, leaves ~06:00, at work ~06:45. Cat: Gisele.
+  Standing: probation to 2028-01-04, monthly check-ins. PO Alex — DOC
+  recommendation request sent 2026-11-13, reply pending.
+  Open threads: Kate Mesic consult (retry Mon); Jellyfin key needs recreating.
+  Yesterday: unused models removed; sleep animation reserved for this cycle.
+  ```
 - **L4 — Runtime state.** Commitments (alarm, notes, reminders) stay in code-owned state files, exactly as the alarm does today. Prose memory never becomes load-bearing for an action.
 
 **Her proposal queue.** During the day she may flag a moment as worth remembering (a router tool, e.g. `memory_flag`). The flag lands in the L0 inbox marked as *her proposal*. The sleep model judges it like everything else. She gets a voice in her own memory without holding the pen.
+
+## Working memory: the turn limit and compaction
+
+Three mechanisms cover three timescales, and they must not bleed into each other:
+
+- **Turns (seconds–minutes).** The rolling 12-turn window, as today. On its own it is amnesia with a hard edge: turn 13 pushes turn 1 out mid-conversation.
+- **Compaction (within one conversation).** When the window fills, the oldest turns fold into a running session summary instead of vanishing; the live context becomes summary + most recent turns, so a long conversation can run indefinitely. The 9B writes the summary at fold time — cheap and immediate, and allowed to be imperfect, because of the rule below. The summary dies at the 30-minute idle clear, exactly like the window does today.
+- **State card (across days).** Nightly and curated — see L3. It cannot carry intra-day continuity; that is compaction's job.
+
+**The artifact rule (Daniel, 2026-11-15) — this is what makes compaction safe.** A compaction summary is a *working artifact*, never evidence. Inbox entries are typed (`turn`, `event`, `proposal`, `compaction_artifact`), the raw turns are logged by code regardless of what the live context does, and the curation spec forbids citing an artifact as the source of a claim — claims cite raw turns and events only. Durable facts are minted in exactly one place: the curator, working from the full raw log. So a summary can be wrong without consequence beyond the conversation it serves, and the leak Daniel foresaw — a live-model summary hardening into a durable "fact" — is closed by construction, not by trusting the summary to be accurate. (This is also why the curator needs the full log rather than summaries: on the durable side, summaries simply do not exist.)
 
 ## The sleep cycle
 
