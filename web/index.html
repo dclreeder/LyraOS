@@ -234,9 +234,6 @@ setInterval(pollRing, 700); pollRing();
       var j = await (await fetch('/roomstate', {cache: 'no-store'})).json();
       set(off, !!(j.light && j.light.on === false));
       set(pg, !!j.call_active);
-      var sleeping = (j.display_on === false) && !!window._isNight;
-      set(slp, sleeping);
-      if (cv) cv.style.opacity = sleeping ? '0' : '1';
     } catch (e) {}
   }
   setInterval(tick, 1200); tick();
