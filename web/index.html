@@ -16,15 +16,14 @@
 #c{transition:opacity 1.2s ease}
 .roomlayer{position:absolute;pointer-events:none;transition:opacity .8s ease}
 #daywin{left:26%;top:3%;width:41.5%;height:72%;background:radial-gradient(circle at 72% 20%, rgba(255,244,190,.95), rgba(255,244,190,0) 42%),linear-gradient(180deg,#79bfe8 0%,#cfeafb 58%,#a9cba0 100%);opacity:0;transition:opacity 1.5s ease}
-#tvoff{left:84.6%;top:29.8%;width:11.8%;height:31%;background:linear-gradient(155deg,#262b33 0%,#0a0c10 62%,#12151b 100%);clip-path:polygon(2% 4%,98% 0%,98% 96%,2% 100%);opacity:0}
-#tvinfo{position:absolute;left:84.9%;top:30.6%;width:11.3%;height:29.2%;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(7,17,40,.48);clip-path:polygon(1% 3%,99% 0%,99% 97%,1% 100%);color:#d8efff;font-family:system-ui,sans-serif;text-align:center;pointer-events:none}
-#tvinfo .tt{font-size:2.4vw;font-weight:600;line-height:1;text-shadow:0 0 12px rgba(90,170,255,.8)}
-#tvinfo .ta{font-size:1vw;font-weight:500;opacity:.9;margin-top:.45em}
 @keyframes sgpulse{0%,100%{opacity:.45}50%{opacity:1}}
 #phonedelta{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s ease}
+#tvstage{position:absolute;left:0;top:0;width:800px;height:450px;transform-origin:0 0;background:radial-gradient(120% 95% at 50% 38%,#16355f 0%,#0a1c3a 58%,#060f24 100%);color:#d8efff;font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;overflow:hidden}
+#tvstage .tt{font-size:118px;font-weight:600;line-height:1;text-shadow:0 0 22px rgba(90,170,255,.75)}
+#tvstage .ta{font-size:45px;font-weight:500;opacity:.92;margin-top:26px}
 </style>
 <div id="bgwrap"><img id="roombg" src="assets/room2-base.webp" alt=""><img id="roombg-off" src="assets/room2-lightoff.webp" alt=""><img id="roombg-sleep" src="assets/room2-sleep.webp" alt="">
-<div id="daywin"></div><div id="tvinfo"><div class="tt"></div><div class="ta"></div></div><div id="tvoff" class="roomlayer"></div>
+<div id="daywin"></div><div id="tvstage"><div class="tt"></div><div class="ta"></div></div>
 
 <img id="phonedelta" src="assets/room2-phonedelta.webp" alt=""></div>
 <canvas id="c"></canvas>
@@ -222,14 +221,13 @@ setInterval(pollRing, 700); pollRing();
 // pulses the speaker's glow (window._speaking, set by the job
 // player).
 (function(){
-  var tv=document.getElementById('tvoff'), off=document.getElementById('roombg-off'),
+  var off=document.getElementById('roombg-off'),
       slp=document.getElementById('roombg-sleep'), pg=document.getElementById('phonedelta'),
       cv=document.getElementById('c');
   function set(el, on){ if (el) el.style.opacity = on ? '1' : '0'; }
   async function tick(){
     try {
       var j = await (await fetch('/roomstate', {cache: 'no-store'})).json();
-      set(tv, j.display_on === false);
       set(off, !!(j.light && j.light.on === false));
       set(pg, !!j.call_active);
       var sleeping = (j.display_on === false) && !!window._isNight;
@@ -241,14 +239,53 @@ setInterval(pollRing, 700); pollRing();
 })();
 </script>
 <script>
-// Painted-TV info (2026-11-15, room v2): the TV in her room carries
-// the time and the next alarm on its screen -- big 12-hour time,
-// alarm line under it (Today / Tomorrow / weekday). The TV-off
-// layer sits above it, so display-off darkens the digits too.
+// Painted-TV viewport (2026-11-15, room v2): her TV is a real
+// window, not a sticker -- a stage element perspective-warped
+// (matrix3d homography, recomputed on resize) onto the screen
+// quad measured from the paintings own bezel pixels, so whatever
+// the stage shows sits IN the screen at its exact slant. It no
+// longer tracks the real display state: if the display is off,
+// the room is not visible anyway. Default content: the clock
+// screensaver -- big 12-hour time + next-alarm line. Anything
+// else can be dropped into #tvstage later.
 (function(){
-  var tt = document.querySelector('#tvinfo .tt'), ta = document.querySelector('#tvinfo .ta');
-  if (!tt) return;
-  function tick(){ tt.textContent = new Date().toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'}); }
+  var stage = document.getElementById('tvstage');
+  if (!stage) return;
+  var QUAD = [[0.8509, 0.3349], [0.9575, 0.3151], [0.9587, 0.5973], [0.8522, 0.5921]];
+  var SW = 800, SH = 450;
+  function solve(A, b) {
+    var n = b.length;
+    for (var i = 0; i < n; i++) {
+      var piv = i;
+      for (var r = i + 1; r < n; r++) if (Math.abs(A[r][i]) > Math.abs(A[piv][i])) piv = r;
+      var tmp = A[i]; A[i] = A[piv]; A[piv] = tmp;
+      var tb = b[i]; b[i] = b[piv]; b[piv] = tb;
+      for (var r2 = 0; r2 < n; r2++) {
+        if (r2 === i) continue;
+        var f = A[r2][i] / A[i][i];
+        for (var c = i; c < n; c++) A[r2][c] -= f * A[i][c];
+        b[r2] -= f * b[i];
+      }
+    }
+    var x = [];
+    for (var i2 = 0; i2 < n; i2++) x[i2] = b[i2] / A[i2][i2];
+    return x;
+  }
+  function fit() {
+    var w = innerWidth, h = innerHeight;
+    var src = [[0, 0], [SW, 0], [SW, SH], [0, SH]];
+    var dst = QUAD.map(function(q) { return [q[0] * w, q[1] * h]; });
+    var A = [], b = [];
+    for (var i = 0; i < 4; i++) {
+      A.push([src[i][0], src[i][1], 1, 0, 0, 0, -dst[i][0] * src[i][0], -dst[i][0] * src[i][1]]); b.push(dst[i][0]);
+      A.push([0, 0, 0, src[i][0], src[i][1], 1, -dst[i][1] * src[i][0], -dst[i][1] * src[i][1]]); b.push(dst[i][1]);
+    }
+    var H = solve(A, b);
+    stage.style.transform = 'matrix3d(' + [H[0], H[3], 0, H[6], H[1], H[4], 0, H[7], 0, 0, 1, 0, H[2], H[5], 0, 1].join(',') + ')';
+  }
+  fit(); addEventListener('resize', fit);
+  var tt = stage.querySelector('.tt'), ta = stage.querySelector('.ta');
+  function tick() { tt.textContent = new Date().toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'}); }
   tick(); setInterval(tick, 5000);
   function fmt(j) {
     if (j.ringing) return '⏰ now';
@@ -259,7 +296,7 @@ setInterval(pollRing, 700); pollRing();
     var day = nf.toDateString() === now.toDateString() ? 'Today' : (nf.toDateString() === tmr.toDateString() ? 'Tomorrow' : nf.toLocaleDateString('en-US', {weekday: 'short'}));
     return '⏰ ' + day + ' ' + time;
   }
-  async function ap(){ try { var j = await (await fetch('/alarm', {cache: 'no-store'})).json(); ta.textContent = fmt(j); } catch (e) {} }
+  async function ap() { try { var j = await (await fetch('/alarm', {cache: 'no-store'})).json(); ta.textContent = fmt(j); } catch (e) {} }
   ap(); setInterval(ap, 30000);
 })();
 </script>
