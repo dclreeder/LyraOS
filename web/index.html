@@ -11,6 +11,19 @@
 </head><body>
 <div id="bgwrap"><video id="bgvid" class="bgv" src="assets/day-scene-loop.mp4" autoplay muted loop playsinline></video></div>
 <canvas id="c"></canvas>
+<div id="callphone" style="position:fixed;left:60%;top:37%;width:8.5vmin;z-index:5;pointer-events:none;opacity:0;transition:opacity .35s ease;transform:translate(-50%,-50%) rotate(-10deg)">
+<svg viewBox="0 0 90 180" width="100%" xmlns="http://www.w3.org/2000/svg">
+  <rect x="3" y="3" width="84" height="174" rx="13" fill="#14161f" stroke="#3a3f52" stroke-width="2"/>
+  <rect x="9" y="12" width="72" height="156" rx="8" fill="#a8c6e8"/>
+  <rect x="9" y="12" width="72" height="156" rx="8" fill="url(#scg)"/>
+  <defs><linearGradient id="scg" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#cfe4fb"/><stop offset="1" stop-color="#7ea6d8"/>
+  </linearGradient></defs>
+  <circle cx="45" cy="74" r="17" fill="#5b7ba6"/>
+  <path d="M18 156 q27 -34 54 0 z" fill="#5b7ba6"/>
+  <circle cx="45" cy="7.5" r="2.2" fill="#3a3f52"/>
+</svg>
+</div>
 <script>
 (async () => {
   const app = new PIXI.Application({view: document.getElementById('c'), resizeTo: window, backgroundAlpha: 0, antialias: true});
@@ -81,7 +94,7 @@
     }
     mouth += (target - mouth) * (target > mouth ? 0.85 : 0.28);
     try { model.internalModel.coreModel.setParameterValueById('ParamMouthOpenY', mouth); } catch (e) {}
-    try { const cm = model.internalModel.coreModel; cm.setPartOpacityById('PartArmB', 0); cm.setPartOpacityById('PartArmA', 1); } catch (e) {}
+    try { const tgt = window._callArm ? 1 : 0, cur = window._armFade || 0, stp = 1 / 18; window._armFade = Math.abs(tgt - cur) < stp ? tgt : cur + Math.sign(tgt - cur) * stp; const cm = model.internalModel.coreModel; cm.setPartOpacityById('PartArmB', window._armFade); cm.setPartOpacityById('PartArmA', 1 - window._armFade); } catch (e) {}
     // life layer: breathing, sway and blinks fill the gaps between motions
     if (!motionPlaying()) {
       try {
@@ -211,6 +224,23 @@ setInterval(pollRing, 700); pollRing();
   }
   apply(true);
   setInterval(function(){ apply(false); },60000);
+})();
+</script>
+<script>
+// Video-call pose (2026-11-15): while the call page reports a live
+// call, Lyra holds her phone up -- Arm B (both fists raised) fades in
+// via window._callArm and the phone prop shows at her raised hand.
+(function(){
+  var prop = document.getElementById('callphone');
+  async function tick(){
+    try {
+      var r = await fetch('/callstate', {cache: 'no-store'});
+      var j = await r.json();
+      window._callArm = !!j.active;
+      if (prop) prop.style.opacity = j.active ? '1' : '0';
+    } catch (e) {}
+  }
+  tick(); setInterval(tick, 2000);
 })();
 </script>
 </body></html>

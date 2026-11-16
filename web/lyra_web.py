@@ -40,6 +40,25 @@ def set_dim(b):
 # ring from a dead page. State persists across a lyra-web restart, but a
 # ring older than 20 min is stale (the core's hard stop is 15) and is
 # dropped on read.
+# Call state (2026-11-15): the call page posts {active: true} when a
+# call starts and re-posts it every 10 s as a heartbeat; the TV page
+# polls GET /callstate and, while a call is live, flips Lyra to her
+# Arm B pose (both fists up) with a phone prop at her hand -- she is
+# on a video call, holding her phone up. A heartbeat older than 25 s
+# reads as no call, so a crashed call page cannot strand the pose.
+CALL_STATE_PATH = os.path.join(ROOT, 'call_state.json')
+_call_hb = [0.0]
+def get_call_state():
+    try:
+        with open(CALL_STATE_PATH) as f: st = json.load(f)
+    except Exception: st = {'active': False}
+    age = (time.time() - _call_hb[0]) if _call_hb[0] else None
+    active = bool(st.get('active')) and age is not None and age < 25
+    return {'active': active, 'hb_age_s': age}
+def set_call_state(on):
+    with open(CALL_STATE_PATH, 'w') as f: json.dump({'active': bool(on)}, f)
+    _call_hb[0] = time.time()
+    return get_call_state()
 RING_PATH = os.path.join(ROOT, 'ring_state.json')
 _last_ack = [0.0]
 def get_ring():
@@ -89,6 +108,7 @@ class H(SimpleHTTPRequestHandler):
                 try: return self._json(e.code, json.loads(e.read()))
                 except Exception: return self._json(e.code, {'error': 'core error'})
             except Exception as e: return self._json(502, {'error': str(e)})
+        if u.path == '/callstate': return self._json(200, get_call_state())
         if u.path == '/dim': return self._json(200, {'brightness': get_dim()})
         if u.path == '/ring': return self._json(200, get_ring())
         return super().do_GET()
@@ -104,6 +124,11 @@ class H(SimpleHTTPRequestHandler):
                 try: return self._json(e.code, json.loads(e.read()))
                 except Exception: return self._json(e.code, {'error': 'core error'})
             except Exception as e: return self._json(502, {'error': str(e)})
+        if self.path == '/callstate':
+            try:
+                req = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
+                return self._json(200, {'ok': True, **set_call_state(bool(req.get('active')))})
+            except Exception as e: return self._json(500, {'error': str(e)})
         if self.path == '/ring/ack':
             _last_ack[0] = time.time()
             return self._json(200, {'ok': True})

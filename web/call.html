@@ -243,8 +243,15 @@ canvas{display:block}
       }
     }
   }
+  let callHb = null;
+  function postCallState(on) {
+    try { fetch('/callstate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({active: on})}); } catch (e) {}
+  }
   async function startCall() {
     ensureAudio();
+    postCallState(true);
+    if (callHb) clearInterval(callHb);
+    callHb = setInterval(() => postCallState(true), 10000);
     try {
       stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
     } catch (e) {
@@ -267,6 +274,8 @@ canvas{display:block}
   }
   function endCall() {
     state = 'off';
+    if (callHb) { clearInterval(callHb); callHb = null; }
+    postCallState(false);
     turnGen++;
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     playQ = []; playingNow = false; streamDone = false;
