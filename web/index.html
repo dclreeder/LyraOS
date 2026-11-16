@@ -121,7 +121,8 @@
   text-shadow: 0 1px 10px rgba(0,0,0,.45), 0 0 2px rgba(0,0,0,.35); pointer-events: none; }
 #clock .t { font-size: 54px; font-weight: 600; letter-spacing: .01em; line-height: 1; }
 #clock .d { font-size: 19px; font-weight: 500; opacity: .85; margin-top: 5px; }
-</style><div id="clock"><div class="t"></div><div class="d"></div></div><div id="dimveil"></div><script>
+#clock .a { font-size: 19px; font-weight: 500; opacity: .85; margin-top: 5px; }
+</style><div id="clock"><div class="t"></div><div class="d"></div><div class="a"></div></div><div id="dimveil"></div><script>
 // TV brightness: lyra-web /dim is the single source of truth (voice tool + dashboard write it)
 async function pollDim(){ try{ const j = await (await fetch('/dim')).json(); document.getElementById('dimveil').style.opacity = (1 - j.brightness).toFixed(3); }catch(e){} }
 setInterval(pollDim, 1200); pollDim();
@@ -166,6 +167,35 @@ setInterval(pollRing, 700); pollRing();
     }
   }
   setInterval(tick, 1000); tick();
+})();
+</script>
+<script>
+// Next alarm under the clock (2026-11-15, Daniel's ask): polls
+// lyra-web's /alarm (the core's alarm summary) every 30 s and shows
+// the next fire -- Today / Tomorrow / weekday + 12-hour time.
+(function(){
+  const aEl = document.querySelector('#clock .a');
+  if (!aEl) return;
+  function fmt(j) {
+    if (j.ringing) return '🚨 Now';
+    if (!j.enabled || !j.next_fire) return '';
+    const nf = new Date(j.next_fire), now = new Date();
+    const time = nf.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
+    const sameDay = nf.toDateString() === now.toDateString();
+    const tmr = new Date(now); tmr.setDate(tmr.getDate() + 1);
+    const day = sameDay ? 'Today' : (nf.toDateString() === tmr.toDateString() ? 'Tomorrow'
+      : nf.toLocaleDateString('en-US', {weekday: 'short'}));
+    return '🚨 ' + day + ' ' + time;
+  }
+  async function tick() {
+    try {
+      const r = await fetch('/alarm', {cache: 'no-store'});
+      const j = await r.json();
+      aEl.textContent = fmt(j);
+      aEl.style.display = aEl.textContent ? '' : 'none';
+    } catch (e) { /* keep the last shown value */ }
+  }
+  setInterval(tick, 30000); tick();
 })();
 </script>
 <script>

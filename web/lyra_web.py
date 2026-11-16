@@ -21,6 +21,19 @@ def call_start(wav):
                                  data=wav, headers={'Content-Type': 'audio/wav'})
     with urllib.request.urlopen(req, timeout=90) as r:
         return r.status, json.loads(r.read())
+# Next-alarm line for the TV clock (2026-11-15): the core's alarm
+# tool summary, relayed server-side like the call proxy. The TV page
+# polls GET /alarm and renders the next fire under the clock.
+def alarm_summary():
+    body = json.dumps({'tool': 'alarm', 'action': 'summary', 'args': {}}).encode()
+    req = urllib.request.Request('http://127.0.0.1:8099/tool?t=' + core_token(),
+                                 data=body, headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        obj = json.loads(r.read())
+    st = obj.get('state') or {}
+    return {'enabled': st.get('enabled'), 'time': st.get('time'),
+            'next_fire': st.get('next_fire'), 'ringing': st.get('ringing'),
+            'snooze_until': st.get('snooze_until')}
 def call_poll(call_id, after):
     q = urllib.parse.urlencode({'t': core_token(), 'call': call_id, 'after': after})
     with urllib.request.urlopen('http://127.0.0.1:8099/call/poll?' + q, timeout=15) as r:
@@ -109,6 +122,9 @@ class H(SimpleHTTPRequestHandler):
                 except Exception: return self._json(e.code, {'error': 'core error'})
             except Exception as e: return self._json(502, {'error': str(e)})
         if u.path == '/callstate': return self._json(200, get_call_state())
+        if u.path == '/alarm':
+            try: return self._json(200, alarm_summary())
+            except Exception as e: return self._json(502, {'error': str(e)})
         if u.path == '/dim': return self._json(200, {'brightness': get_dim()})
         if u.path == '/ring': return self._json(200, get_ring())
         return super().do_GET()
