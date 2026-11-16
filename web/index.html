@@ -166,4 +166,51 @@ setInterval(pollRing, 700); pollRing();
   setInterval(tick, 1000); tick();
 })();
 </script>
+<script>
+// Day/night background rotation: day scene between sunrise and sunset,
+// night sky otherwise. Times computed in-page for Jacksonville, FL;
+// re-checked every minute, swap fades through black.
+(function(){
+  var LAT=30.3322, LON=-81.6557;
+  var DAY='assets/day-scene-loop.mp4', NIGHT='assets/night-sky-loop.mp4';
+  var vid=document.getElementById('bgvid');
+  if(!vid) return;
+  var rad=Math.PI/180, dayMs=864e5, J1970=2440588, J2000=2451545, e=rad*23.4397;
+  function toJulian(d){return d.valueOf()/dayMs-0.5+J1970;}
+  function fromJulian(j){return new Date((j+0.5-J1970)*dayMs);}
+  function solarMeanAnomaly(d){return rad*(357.5291+0.98560028*d);}
+  function eclipticLongitude(M){var C=rad*(1.9148*Math.sin(M)+0.02*Math.sin(2*M)+0.0003*Math.sin(3*M));var P=rad*102.9372;return M+C+P+Math.PI;}
+  function approxTransit(x,lw,n){return 0.0009+(x+lw)/(2*Math.PI)+n;}
+  function solarTransitJ(ds,M,L){return J2000+ds+0.0053*Math.sin(M)-0.0069*Math.sin(2*L);}
+  function getSunTimes(date){
+    var lw=rad*-LON, phi=rad*LAT;
+    var d=toJulian(date)-J2000;
+    var n=Math.round(d-0.0009-lw/(2*Math.PI));
+    var ds=approxTransit(0,lw,n);
+    var M=solarMeanAnomaly(ds), L=eclipticLongitude(M);
+    var dec=Math.asin(Math.sin(L)*Math.sin(e));
+    var Jnoon=solarTransitJ(ds,M,L);
+    var cosH=(Math.sin(rad*-0.833)-Math.sin(phi)*Math.sin(dec))/(Math.cos(phi)*Math.cos(dec));
+    var w=Math.acos(Math.max(-1,Math.min(1,cosH)));
+    var Jset=solarTransitJ(approxTransit(w,lw,n),M,L);
+    var Jrise=Jnoon-(Jset-Jnoon);
+    return {sunrise:fromJulian(Jrise), sunset:fromJulian(Jset)};
+  }
+  var cur=DAY;
+  function desired(){ var n=new Date(), t=getSunTimes(n); return (n>t.sunrise&&n<t.sunset)?DAY:NIGHT; }
+  function play(){ var p=vid.play(); if(p&&p.catch) p.catch(function(){}); }
+  function apply(first){
+    var want=desired();
+    if(want===cur) return;
+    cur=want;
+    if(first){ vid.src=want; play(); return; }
+    vid.style.transition='opacity 1.5s ease';
+    vid.style.opacity='0';
+    setTimeout(function(){ vid.src=want; play(); vid.style.opacity='1'; },1500);
+  }
+  apply(true);
+  setInterval(function(){ apply(false); },60000);
+})();
+</script>
 </body></html>
+
