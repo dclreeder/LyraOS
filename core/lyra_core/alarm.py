@@ -595,6 +595,9 @@ class Alarm:
         # TV sounder (2026-11-15): wired by the composition via
         # set_tv_ringer; None keeps the historical box-only rings.
         self._ringer = None
+        # Phase 0 inbox (memory build): wired by the composition
+        # (production_main); None = event logging off.
+        self._inbox = None
         self._ring_via_tv = False
         self._tv_ack_seen = False
         self._ring_watchdog_task: asyncio.Task | None = None
@@ -900,10 +903,17 @@ class Alarm:
 
     # -- firing -------------------------------------------------------------------
 
+    def _note(self, event: str, **fields) -> None:
+        """Phase 0 inbox: record an alarm event (fire/kill/snooze)
+        in the daily log. Optional; unset inbox = no-op."""
+        if self._inbox is not None:
+            self._inbox.log({"type": "event", "event": event, **fields})
+
     async def fire(self, *, reason: str) -> bool:
         st = self._state
         if st.ringing:
             return False
+        self._note("alarm_fire", reason=reason)
         now = self._now()
         self._recover_pending = False  # a fresh ring supersedes recovery
         self._ring_box_lost = False
@@ -1218,6 +1228,7 @@ class Alarm:
         st = self._state
         if st.ringing:
             await self._end_ring("kill")
+            self._note("alarm_kill", was_ringing=True)
             _LOGGER.info("alarm kill: ring stopped")
             note = self._deliver_morning_note()
             return {
@@ -1227,6 +1238,7 @@ class Alarm:
         if st.snooze_until is not None:
             st.snooze_until = None
             self._save_state()
+            self._note("alarm_kill", snooze_cleared=True)
             _LOGGER.info("alarm kill: pending snooze refire cancelled")
             note = self._deliver_morning_note()
             return {
@@ -1332,6 +1344,7 @@ class Alarm:
         st = self._state
         if not st.ringing:
             return {"ok": False, "reason": "not ringing"}
+        self._note("alarm_snooze")
         st.ringing = False
         task = self._hard_stop_task
         if task is not None:

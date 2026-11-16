@@ -34,3 +34,7 @@ dashboard/call_url.txt
 # Wake clip pool stays home (his voice + ledger); feature models are building blocks
 modules/wakeword/data/clips/
 !modules/wakeword/models/**/*.onnx.data
+
+# Memory build Phase 0: conversation inbox logs are private (Daniels
+# conversations) -- like the wake clip pool, they never enter the repo.
+memory/inbox/

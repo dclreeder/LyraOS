@@ -75,6 +75,7 @@ from .pipeline import PipelineDriver, speech_route
 from .free_router import FreeRouter
 from .satlink import SatBoxClient
 from .session import VoiceSession
+from .inbox import InboxLog
 from .tv_ring import TvRinger
 from .tools import (
     AlarmTool,
@@ -166,6 +167,7 @@ async def amain() -> int:
     http.start()
     driver = PipelineDriver(cfg)
     gate = VerifyGate(dry_run=False)
+    inbox = InboxLog()
     session = VoiceSession(cfg, driver, http, verify_gate=gate, on_event=_event_hook)
     # OTA busy gate for the satlink client: the factory below only
     # runs under the supervisor, after the whole composition
@@ -206,6 +208,7 @@ async def amain() -> int:
     else:
         raise ValueError(f"unknown box transport {cfg.transport!r}")
     alarm = Alarm(cfg, box_getter=lambda: session._box, http=http)
+    alarm._inbox = inbox
     # TV sounder (2026-11-15): the alarm rings through the TV; the
     # box path remains as the alarm's own fallback.
     alarm.set_tv_ringer(TvRinger())
@@ -251,6 +254,7 @@ async def amain() -> int:
         weather=weather_tool,
         tv=tv_tool,
         tv_volume=tv_volume_tool,
+        inbox=inbox,
     )
     session._on_command = router.handle
     _LOGGER.info("FREE MODE live: %s", router.describe())
@@ -296,7 +300,7 @@ async def amain() -> int:
             pcm, rate=rate, width=width, channels=channels
         )
         if transcript:
-            reply_text = str(await router.handle(transcript))
+            reply_text = str(await router.handle(transcript, via="call"))
         else:
             reply_text = "didn't catch that."
         wav, _rate, _width, _ch = await driver.synthesize_speech(reply_text)

@@ -399,6 +399,7 @@ class FreeRouter:
         weather,
         tv=None,
         tv_volume=None,
+        inbox=None,
         client=None,
     ) -> None:
         self._cfg = cfg
@@ -412,6 +413,8 @@ class FreeRouter:
         self._tv_volume = tv_volume
         self._client = client or FreeChatClient(cfg.llm_url, cfg.llm_model)
         self._history: list[list[dict]] = []
+        self._inbox = inbox
+        self._last_slice: list = []
         self._last_turn_at: float | None = None
 
     def describe(self) -> str:
@@ -423,7 +426,46 @@ class FreeRouter:
 
     # -- the hook ------------------------------------------------------
 
-    async def handle(self, command: str, verify=None, on_sentence=None) -> object:
+    async def handle(self, command: str, verify=None, on_sentence=None, via: str = "box") -> object:
+        reply = await self._handle_impl(command, verify=verify, on_sentence=on_sentence)
+        self._log_turn(command, reply, via)
+        return reply
+
+    def _log_turn(self, command: str, reply: object, via: str) -> None:
+        """Phase 0 inbox (memory build): one entry per completed
+        turn, with the turn's tool calls and their results lifted
+        from the turn slice. Written by code from what actually
+        happened; never raises."""
+        if self._inbox is None:
+            return
+        slice_, self._last_slice = self._last_slice, []
+        tools: list = []
+        pending: list = []
+        for msg in slice_:
+            if msg.get("role") == "assistant":
+                for call in msg.get("tool_calls") or []:
+                    fn = call.get("function") or {}
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except (ValueError, TypeError):
+                        args = {"_raw": fn.get("arguments")}
+                    pending.append({"name": fn.get("name") or "?", "args": args})
+            elif msg.get("role") == "tool" and pending:
+                entry = pending.pop(0)
+                try:
+                    feedback = json.loads(msg.get("content") or "{}")
+                except (ValueError, TypeError):
+                    feedback = {}
+                entry["ok"] = bool(feedback.get("ok"))
+                entry["result"] = str(feedback.get("result") or "")
+                tools.append(entry)
+        tools.extend(pending)
+        self._inbox.log({
+            "type": "turn", "via": via, "user": command,
+            "reply": str(reply), "tools": tools,
+        })
+
+    async def _handle_impl(self, command: str, verify=None, on_sentence=None) -> object:
         normalized = normalize(command)
         if looks_garbled(normalized):
             _LOGGER.info("garbled command %r -> didn't catch", command)
@@ -438,6 +480,7 @@ class FreeRouter:
         started = time.monotonic()
         raw_final = None
         turn_slice: list = []
+        self._last_slice = []
         try:
             raw_final, calls, turn_slice = await asyncio.wait_for(
                 self._run_turn(command, on_sentence), timeout=FREE_DEADLINE_S
@@ -455,6 +498,7 @@ class FreeRouter:
             )
             self._remember(command, "Sorry, something went wrong.")
             return "Sorry, something went wrong."
+        self._last_slice = turn_slice
         text = sanitize_spoken(raw_final or "")
         if not text:
             _LOGGER.error(
