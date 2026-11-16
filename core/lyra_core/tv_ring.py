@@ -72,6 +72,22 @@ class TvRinger:
     # -- TV over ADB (mirrors TvVolumeTool) -----------------------------
 
     def _adb(self, *args: str) -> str | None:
+        out = self._adb_once(*args)
+        if out is None:
+            # Same self-heal as TvVolumeTool: reconnect once and
+            # retry, so a dropped adb connection cannot silently
+            # cost a morning ring its TV.
+            try:
+                subprocess.run(
+                    ["adb", "connect", self.ADB_TARGET],
+                    capture_output=True, text=True, timeout=8,
+                )
+            except Exception:
+                pass
+            out = self._adb_once(*args)
+        return out
+
+    def _adb_once(self, *args: str) -> str | None:
         try:
             done = subprocess.run(
                 ["adb", "-s", self.ADB_TARGET, "shell", *args],

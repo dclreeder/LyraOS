@@ -297,6 +297,24 @@ class TvVolumeTool:
     ADB_TARGET = "192.168.12.132:5555"
 
     def _adb(self, *args: str) -> str | None:
+        out = self._adb_once(*args)
+        if out is None:
+            # The adb server loses the TV connection across host
+            # reboots and adbd restarts, and nothing else ever
+            # reconnects it -- the dashboard sat at "TV unreachable"
+            # after the 2026-11-15 consolidation reboot for exactly
+            # this reason. Self-heal: connect once, retry once.
+            try:
+                subprocess.run(
+                    ["adb", "connect", self.ADB_TARGET],
+                    capture_output=True, text=True, timeout=8,
+                )
+            except Exception:
+                pass
+            out = self._adb_once(*args)
+        return out
+
+    def _adb_once(self, *args: str) -> str | None:
         try:
             done = subprocess.run(
                 ["adb", "-s", self.ADB_TARGET, "shell", *args],
