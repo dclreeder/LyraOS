@@ -12,19 +12,16 @@
 <style>
 #roombg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .roomlayer{position:absolute;pointer-events:none;transition:opacity .8s ease}
-#roomdim{inset:0;background:radial-gradient(ellipse at 50% 38%, rgba(10,14,34,.16), rgba(5,7,22,.45));opacity:0}
 #daywin{left:88.35%;top:2.8%;width:9.5%;height:56.8%;background:radial-gradient(circle at 72% 20%, rgba(255,244,190,.95), rgba(255,244,190,0) 42%),linear-gradient(180deg,#79bfe8 0%,#cfeafb 58%,#a9cba0 100%);opacity:0;transition:opacity 1.5s ease}
 #tvoff{left:2.9%;top:18.6%;width:16.6%;height:34.2%;background:linear-gradient(155deg,#262b33 0%,#0a0c10 62%,#12151b 100%);clip-path:polygon(9% 9%,93% 14%,93% 87%,9% 93%);opacity:0}
-#pendpatch{left:41.5%;top:-1%;width:17%;height:15.5%;border-radius:50%;background:rgba(58,60,72,.38);backdrop-filter:saturate(.35) brightness(.72);opacity:0}
-#lamppatch{left:70.5%;top:37%;width:17.5%;height:27%;border-radius:50%;background:rgba(58,60,72,.34);backdrop-filter:saturate(.35) brightness(.74);opacity:0}
 #speakglow{left:81.15%;top:56.3%;width:4.9%;aspect-ratio:1;border-radius:50%;background:radial-gradient(circle,rgba(130,205,255,.6) 0%,rgba(130,205,255,0) 68%);opacity:0}
 #speakglow.on{animation:sgpulse 1.15s ease-in-out infinite}
 @keyframes sgpulse{0%,100%{opacity:.45}50%{opacity:1}}
 #phoneglow{left:85.8%;top:65%;width:3.6%;height:2.5%;border-radius:18%;background:#d8efff;box-shadow:0 0 18px 6px rgba(170,220,255,.75);opacity:0}
 </style>
 <div id="bgwrap"><img id="roombg" src="assets/room-bg.webp" alt="">
-<div id="roomdim" class="roomlayer"></div><div id="daywin"></div><div id="tvoff" class="roomlayer"></div>
-<div id="pendpatch" class="roomlayer"></div><div id="lamppatch" class="roomlayer"></div>
+<div id="daywin"></div><div id="tvoff" class="roomlayer"></div>
+
 <div id="speakglow"></div><div id="phoneglow" class="roomlayer"></div></div>
 <canvas id="c"></canvas>
 
@@ -276,15 +273,12 @@ setInterval(pollRing, 700); pollRing();
 // pulses the speaker's glow (window._speaking, set by the job
 // player).
 (function(){
-  var dim=document.getElementById('roomdim'), tv=document.getElementById('tvoff'),
-      pp=document.getElementById('pendpatch'), lp=document.getElementById('lamppatch'),
+  var tv=document.getElementById('tvoff'),
       sg=document.getElementById('speakglow'), pg=document.getElementById('phoneglow');
   function set(el, on){ if (el) el.style.opacity = on ? '1' : '0'; }
   async function tick(){
     try {
       var j = await (await fetch('/roomstate', {cache: 'no-store'})).json();
-      var lightOff = !!(j.light && j.light.on === false);
-      set(dim, lightOff); set(pp, lightOff); set(lp, lightOff);
       set(tv, j.display_on === false);
       set(pg, !!j.call_active);
     } catch (e) {}
