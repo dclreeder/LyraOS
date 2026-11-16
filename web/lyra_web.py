@@ -34,6 +34,35 @@ def alarm_summary():
     return {'enabled': st.get('enabled'), 'time': st.get('time'),
             'next_fire': st.get('next_fire'), 'ringing': st.get('ringing'),
             'snooze_until': st.get('snooze_until')}
+# Room state for the TV page's painted room (2026-11-15): the room
+# background mirrors the real room -- ceiling light (via the core's
+# light tool, cached 4 s), display state (the local state file) and
+# whether a call is live (the call heartbeat above).
+_light_cache = [0.0, None]
+def _light_state():
+    now = time.time()
+    if _light_cache[1] is not None and now - _light_cache[0] < 4:
+        return _light_cache[1]
+    try:
+        body = json.dumps({'tool': 'light', 'action': 'state', 'args': {}}).encode()
+        req = urllib.request.Request('http://127.0.0.1:8099/tool?t=' + core_token(),
+                                     data=body, headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            obj = json.loads(r.read())
+        st = obj.get('state') or {}
+        val = {'on': st.get('on'), 'brightness': st.get('brightness')}
+    except Exception:
+        val = {'on': None, 'brightness': None}
+    _light_cache[0] = now; _light_cache[1] = val
+    return val
+def room_state():
+    try:
+        with open(os.path.join(ROOT, 'display_state.json')) as f:
+            display_on = bool(json.load(f).get('display_on'))
+    except Exception:
+        display_on = True
+    return {'light': _light_state(), 'display_on': display_on,
+            'call_active': get_call_state()['active']}
 def call_poll(call_id, after):
     q = urllib.parse.urlencode({'t': core_token(), 'call': call_id, 'after': after})
     with urllib.request.urlopen('http://127.0.0.1:8099/call/poll?' + q, timeout=15) as r:
@@ -122,6 +151,7 @@ class H(SimpleHTTPRequestHandler):
                 except Exception: return self._json(e.code, {'error': 'core error'})
             except Exception as e: return self._json(502, {'error': str(e)})
         if u.path == '/callstate': return self._json(200, get_call_state())
+        if u.path == '/roomstate': return self._json(200, room_state())
         if u.path == '/alarm':
             try: return self._json(200, alarm_summary())
             except Exception as e: return self._json(502, {'error': str(e)})
