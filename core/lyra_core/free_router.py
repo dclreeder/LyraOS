@@ -81,7 +81,6 @@ def load_soul() -> str:
     return text or _FALLBACK_BRIEF
 
 
-SYSTEM_BRIEF = load_soul()
 
 
 def _fn(name: str, description: str, properties: dict, required: list) -> dict:

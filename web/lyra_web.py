@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""Lyra web viewer server: static page + /say + /ask (local 9B -> Kokoro -> WAV job the page plays with lip-sync)."""
+"""Lyra web viewer server: static pages, /mirror speech jobs, /ring, /dim, and the /call/turn proxy to the core."""
 import base64, json, os, threading, time, urllib.request, urllib.error
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.path.expanduser('~/Documents/LyraOS/web')
-TOKEN = open(os.path.expanduser('~/Documents/LyraOS/modules/tts/kokoro/server/token.txt')).read().strip()
 _lock = threading.Lock(); _counter = [0]
 try:
     with open(os.path.join(ROOT, 'latest.json')) as _f: _counter[0] = int(json.load(_f).get('id') or 0)
 except Exception: pass
-BRIEF = ('You are Lyra, Daniel\'s local AI assistant, speaking aloud through a model on his TV. '
-         'Reply in one or two short spoken sentences. Plain words only: no lists, no markdown, no numbers with symbols.')
 # Dashboard call (2026-11-15): the call page POSTs a WAV utterance to
 # /call/turn here; this server relays it to the core's /call/turn with
 # the shared token read server-side (same secrets file the dashboard
@@ -50,13 +47,6 @@ def get_ring():
 def set_ring(on):
     with open(RING_PATH, 'w') as f: json.dump({'ringing': bool(on), 'since': time.time()}, f)
     return get_ring()
-def kokoro(text):
-    req = urllib.request.Request('http://127.0.0.1:8091/tts', data=json.dumps({'text': text, 'voice': 'af_heart', 'speed': 1.0}).encode(), headers={'Content-Type': 'application/json', 'X-Lyra-Token': TOKEN})
-    with urllib.request.urlopen(req, timeout=60) as r: return base64.b64decode(json.loads(r.read())['data'])
-def ask_9b(text):
-    body = {'model': 'lyra-9b', 'temperature': 0.3, 'max_tokens': 140, 'messages': [{'role': 'system', 'content': BRIEF}, {'role': 'user', 'content': text}]}
-    req = urllib.request.Request('http://127.0.0.1:8094/v1/chat/completions', data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'})
-    with urllib.request.urlopen(req, timeout=120) as r: return json.loads(r.read())['choices'][0]['message']['content'].strip()
 def _write_job(wav, silent):
     """One speech job = one file (2026-11-15): streamed replies land
     as several jobs seconds apart and the page plays them from a
@@ -73,11 +63,6 @@ def _write_job(wav, silent):
                 os.remove(os.path.join(ROOT, 'jobs', old))
     except Exception: pass
 
-def speak(text):
-    text = ' '.join(text.split())[:420]
-    wav = kokoro(text)
-    _write_job(wav, False)
-    return len(wav)
 class H(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw): super().__init__(*a, directory=ROOT, **kw)
     def log_message(self, *a): pass
@@ -123,18 +108,7 @@ class H(SimpleHTTPRequestHandler):
                 if b is None: return self._json(400, {'error': 'brightness or percent required'})
                 return self._json(200, {'ok': True, 'brightness': set_dim(b)})
             except Exception as e: return self._json(500, {'error': str(e)})
-        if self.path not in ('/say', '/ask'): return self._json(404, {'error': 'not found'})
-        try:
-            req = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
-            text = (req.get('text') or '').strip()
-        except Exception: return self._json(400, {'error': 'bad request'})
-        if not text: return self._json(400, {'error': 'empty text'})
-        with _lock:
-            try:
-                reply = ask_9b(text) if self.path == '/ask' else text
-                speak(reply)
-            except Exception as e: return self._json(500, {'error': str(e)})
-        self._json(200, {'ok': True, 'reply': reply})
+        return self._json(404, {'error': 'not found'})
 if __name__ == '__main__':
     os.makedirs(os.path.join(ROOT, 'jobs'), exist_ok=True)
     print('lyra-web on :8095', flush=True)

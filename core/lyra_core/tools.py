@@ -778,7 +778,7 @@ class FirmwareTool:
     before the first byte moves.
     """
 
-    DEFAULT_ROOTS = ("~/Documents/LyraOS/firmware/sat", "~/Documents/lyra-core-assets")
+    DEFAULT_ROOTS = ("~/Documents/LyraOS/firmware/sat",)
 
     def __init__(self, *, box_getter, alarm, session,
                  allowed_roots=None) -> None:
