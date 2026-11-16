@@ -61,8 +61,13 @@ def room_state():
             display_on = bool(json.load(f).get('display_on'))
     except Exception:
         display_on = True
+    try:
+        with open(os.path.join(ROOT, 'sleep_state.json')) as f:
+            sleep = bool(json.load(f).get('sleep'))
+    except Exception:
+        sleep = False
     return {'light': _light_state(), 'display_on': display_on,
-            'call_active': get_call_state()['active']}
+            'call_active': get_call_state()['active'], 'sleep': sleep}
 def call_poll(call_id, after):
     q = urllib.parse.urlencode({'t': core_token(), 'call': call_id, 'after': after})
     with urllib.request.urlopen('http://127.0.0.1:8099/call/poll?' + q, timeout=15) as r:

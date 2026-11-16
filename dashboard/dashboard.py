@@ -134,6 +134,26 @@ def display_set(on: bool) -> dict:
     return display_state()
 
 
+SLEEP_STATE_FILE = HOME / "Documents/LyraOS/web/sleep_state.json"
+
+
+def sleep_state() -> dict:
+    try:
+        data = json.loads(SLEEP_STATE_FILE.read_text())
+        return {"active": bool(data.get("sleep", False)), "ok": True}
+    except Exception:
+        return {"active": False, "ok": True}
+
+
+def sleep_set(on: bool) -> dict:
+    # Sleep mode (2026-11-15, Daniel's ask): her sleep state -- the TV
+    # page shows the sleep plate and fades her model out while it is
+    # on. The Phase 2 sleep cycle will drive this same state later.
+    SLEEP_STATE_FILE.write_text(
+        json.dumps({"sleep": bool(on), "updated": time.time()}))
+    return sleep_state()
+
+
 def full_state() -> dict:
     state: dict = {"core_online": core_health()}
     for key, tool, action in (
@@ -154,6 +174,7 @@ def full_state() -> dict:
         state["jellyfin"] = {"ok": False, "error": str(exc), "now_playing": []}
     state["mic"] = mic_state()
     state["display"] = display_state()
+    state["sleep"] = sleep_state()
     return state
 
 
@@ -231,6 +252,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/display":
             try:
                 self._json(200, {"ok": True, "display": display_set(bool(payload.get("on")))})
+            except Exception as exc:
+                self._json(502, {"ok": False, "error": str(exc)})
+            return
+        if self.path == "/api/sleep":
+            try:
+                self._json(200, {"ok": True, "sleep": sleep_set(bool(payload.get("on")))})
             except Exception as exc:
                 self._json(502, {"ok": False, "error": str(exc)})
             return

@@ -118,6 +118,10 @@
       <div class="tile-name" style="font-size:15px;">Display</div>
       <button class="switch" id="displayToggle" aria-label="Toggle Lyra display"></button>
     </div>
+    <div class="row spread" style="margin-top:12px;">
+      <div class="tile-name" style="font-size:15px;">Sleep mode</div>
+      <button class="switch" id="sleepToggle" aria-label="Toggle Lyra sleep mode"></button>
+    </div>
     <div style="margin-top:12px;">
       <div class="label">Screen brightness <span id="tvVal" class="dim"></span></div>
       <input type="range" id="tvBri" min="0" max="100" step="5">
@@ -238,6 +242,7 @@ async function refresh() {
   const tb = pctOf(t.brightness);
   $('tvSub').textContent = tb !== null ? 'Brightness ' + tb + '%' : 'Viewer unreachable';
   setSwitch($('displayToggle'), j.display && j.display.ok ? !!j.display.active : null);
+  setSwitch($('sleepToggle'), j.sleep && j.sleep.ok ? !!j.sleep.active : null);
   if (j.display && j.display.ok) {
     $('tvSub').textContent += ' - voice on TV';
   }
@@ -303,6 +308,16 @@ $('displayToggle').onclick = async () => {
       body: JSON.stringify({on}) });
     toast(on ? 'Display on' : 'Display off - Lyra is silent');
   } catch (e) { toast('Display request failed'); }
+  refresh();
+};
+$('sleepToggle').onclick = async () => {
+  const on = !(S.sleep && S.sleep.active);
+  try {
+    await fetch('/api/sleep', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({on}) });
+    toast(on ? 'Sleep mode on - Lyra is asleep' : 'Sleep mode off');
+  } catch (e) { toast('Sleep request failed'); }
   refresh();
 };
 $('micToggle').onclick = async () => {
