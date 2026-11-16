@@ -18,11 +18,8 @@
 #daywin{left:26%;top:3%;width:41.5%;height:72%;background:radial-gradient(circle at 72% 20%, rgba(255,244,190,.95), rgba(255,244,190,0) 42%),linear-gradient(180deg,#79bfe8 0%,#cfeafb 58%,#a9cba0 100%);opacity:0;transition:opacity 1.5s ease}
 @keyframes sgpulse{0%,100%{opacity:.45}50%{opacity:1}}
 #phonedelta{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s ease}
-#tvstage{position:absolute;left:83%;top:26.8%;width:15.2%;height:37.6%;background:radial-gradient(120% 95% at 50% 38%,#16355f 0%,#0a1c3a 58%,#060f24 100%);color:#e8f6ff;font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;transform:perspective(1100px) rotateY(-30deg) rotate(-5deg);padding-right:5%}
-#tvstage .tt{font-size:2.85vw;font-weight:600;line-height:1.05;white-space:nowrap}
-#tvstage .ta{font-size:1vw;font-weight:500;opacity:.92;margin-top:1.4vh;white-space:nowrap}
 </style>
-<div id="bgwrap"><div id="tvstage"><div class="tt"></div><div class="ta"></div></div><img id="roombg" src="assets/room2-base.webp" alt=""><img id="roombg-off" src="assets/room2-lightoff.webp" alt=""><img id="roombg-sleep" src="assets/room2-sleep.webp" alt="">
+<div id="bgwrap"><img id="roombg" src="assets/room2-base.webp" alt=""><img id="roombg-off" src="assets/room2-lightoff.webp" alt=""><img id="roombg-sleep" src="assets/room2-sleep.webp" alt="">
 <div id="daywin"></div>
 
 <img id="phonedelta" src="assets/room2-phonedelta.webp" alt=""></div>
@@ -131,7 +128,14 @@
     } catch (e) {}
   }, 150);
 })();
-</script><div id="dimveil"></div><script>
+</script><style>
+#clock { position: fixed; top: 26px; right: 38px; text-align: right; z-index: 5;
+  color: #fff; font-family: system-ui, 'Segoe UI', sans-serif;
+  text-shadow: 0 1px 10px rgba(0,0,0,.45), 0 0 2px rgba(0,0,0,.35); pointer-events: none; }
+#clock .t { font-size: 54px; font-weight: 600; letter-spacing: .01em; line-height: 1; }
+#clock .d { font-size: 19px; font-weight: 500; opacity: .85; margin-top: 5px; }
+#clock .a { font-size: 19px; font-weight: 500; opacity: .85; margin-top: 5px; }
+</style><div id="clock"><div class="t"></div><div class="d"></div><div class="a"></div></div><div id="dimveil"></div><script>
 // TV brightness: lyra-web /dim is the single source of truth (voice tool + dashboard write it)
 async function pollDim(){ try{ const j = await (await fetch('/dim')).json(); document.getElementById('dimveil').style.opacity = (1 - j.brightness).toFixed(3); }catch(e){} }
 setInterval(pollDim, 1200); pollDim();
@@ -239,32 +243,51 @@ setInterval(pollRing, 700); pollRing();
 })();
 </script>
 <script>
-// Painted-TV window (2026-11-15, room v2, Daniels design): the
-// screen is CUT OUT of all three plates on its exact glass
-// boundary, and #tvstage lives BEHIND the plates as the bottom
-// child of #bgwrap -- a layer seen through the cut, like a
-// window. The painting crops it, so the boundary is exact by
-// construction; the stage itself only carries a single plane
-// tilt matching the wall (CSS transform). No text-shadow: the
-// time stays crisp, the alarm line sits small beneath it.
-// Anything can be dropped into #tvstage later.
+// Display clock (2026-11-15): top-right corner; the page is an
+// always-on display. 12-hour time + short date, dimmed along with
+// the scene by the brightness veil (it sits under #dimveil).
 (function(){
-  var stage = document.getElementById('tvstage');
-  if (!stage) return;
-  var tt = stage.querySelector('.tt'), ta = stage.querySelector('.ta');
-  function tick() { tt.textContent = new Date().toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'}); }
-  tick(); setInterval(tick, 5000);
-  function fmt(j) {
-    if (j.ringing) return '⏰ now';
-    if (!j.enabled || !j.next_fire) return '';
-    var nf = new Date(j.next_fire), now = new Date();
-    var time = nf.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
-    var tmr = new Date(now); tmr.setDate(tmr.getDate() + 1);
-    var day = nf.toDateString() === now.toDateString() ? 'Today' : (nf.toDateString() === tmr.toDateString() ? 'Tomorrow' : nf.toLocaleDateString('en-US', {weekday: 'short'}));
-    return '⏰ ' + day + ' ' + time;
+  const tEl = document.querySelector('#clock .t'), dEl = document.querySelector('#clock .d');
+  let last = '';
+  function tick(){
+    const now = new Date();
+    const t = now.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
+    if (t !== last) {
+      last = t;
+      tEl.textContent = t;
+      dEl.textContent = now.toLocaleDateString('en-US', {weekday: 'short', month: 'short', day: 'numeric'});
+    }
   }
-  async function ap() { try { var j = await (await fetch('/alarm', {cache: 'no-store'})).json(); ta.textContent = fmt(j); } catch (e) {} }
-  ap(); setInterval(ap, 30000);
+  setInterval(tick, 1000); tick();
+})();
+</script>
+<script>
+// Next alarm under the clock (2026-11-15, Daniel's ask): polls
+// lyra-web's /alarm (the core's alarm summary) every 30 s and shows
+// the next fire -- Today / Tomorrow / weekday + 12-hour time.
+(function(){
+  const aEl = document.querySelector('#clock .a');
+  if (!aEl) return;
+  function fmt(j) {
+    if (j.ringing) return '🚨 Now';
+    if (!j.enabled || !j.next_fire) return '';
+    const nf = new Date(j.next_fire), now = new Date();
+    const time = nf.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
+    const sameDay = nf.toDateString() === now.toDateString();
+    const tmr = new Date(now); tmr.setDate(tmr.getDate() + 1);
+    const day = sameDay ? 'Today' : (nf.toDateString() === tmr.toDateString() ? 'Tomorrow'
+      : nf.toLocaleDateString('en-US', {weekday: 'short'}));
+    return '🚨 ' + day + ' ' + time;
+  }
+  async function tick() {
+    try {
+      const r = await fetch('/alarm', {cache: 'no-store'});
+      const j = await r.json();
+      aEl.textContent = fmt(j);
+      aEl.style.display = aEl.textContent ? '' : 'none';
+    } catch (e) { /* keep the last shown value */ }
+  }
+  setInterval(tick, 30000); tick();
 })();
 </script>
 </body></html>
