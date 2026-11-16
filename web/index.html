@@ -18,12 +18,12 @@
 #daywin{left:26%;top:3%;width:41.5%;height:72%;background:radial-gradient(circle at 72% 20%, rgba(255,244,190,.95), rgba(255,244,190,0) 42%),linear-gradient(180deg,#79bfe8 0%,#cfeafb 58%,#a9cba0 100%);opacity:0;transition:opacity 1.5s ease}
 @keyframes sgpulse{0%,100%{opacity:.45}50%{opacity:1}}
 #phonedelta{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s ease}
-#tvstage{position:absolute;left:0;top:0;width:800px;height:450px;transform-origin:0 0;background:radial-gradient(120% 95% at 50% 38%,#16355f 0%,#0a1c3a 58%,#060f24 100%);color:#d8efff;font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;overflow:hidden}
-#tvstage .tt{font-size:118px;font-weight:600;line-height:1;text-shadow:0 0 22px rgba(90,170,255,.75)}
-#tvstage .ta{font-size:45px;font-weight:500;opacity:.92;margin-top:26px}
+#tvstage{position:absolute;left:83%;top:26.8%;width:15.2%;height:37.6%;background:radial-gradient(120% 95% at 50% 38%,#16355f 0%,#0a1c3a 58%,#060f24 100%);color:#e8f6ff;font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;transform:perspective(1100px) rotateY(-30deg) rotate(-5deg)}
+#tvstage .tt{font-size:3.1vw;font-weight:600;line-height:1.05;white-space:nowrap}
+#tvstage .ta{font-size:1.25vw;font-weight:500;opacity:.92;margin-top:1.4vh;white-space:nowrap}
 </style>
-<div id="bgwrap"><img id="roombg" src="assets/room2-base.webp" alt=""><img id="roombg-off" src="assets/room2-lightoff.webp" alt=""><img id="roombg-sleep" src="assets/room2-sleep.webp" alt="">
-<div id="daywin"></div><div id="tvstage"><div class="tt"></div><div class="ta"></div></div>
+<div id="bgwrap"><div id="tvstage"><div class="tt"></div><div class="ta"></div></div><img id="roombg" src="assets/room2-base.webp" alt=""><img id="roombg-off" src="assets/room2-lightoff.webp" alt=""><img id="roombg-sleep" src="assets/room2-sleep.webp" alt="">
+<div id="daywin"></div>
 
 <img id="phonedelta" src="assets/room2-phonedelta.webp" alt=""></div>
 <canvas id="c"></canvas>
@@ -239,51 +239,18 @@ setInterval(pollRing, 700); pollRing();
 })();
 </script>
 <script>
-// Painted-TV viewport (2026-11-15, room v2): her TV is a real
-// window, not a sticker -- a stage element perspective-warped
-// (matrix3d homography, recomputed on resize) onto the screen
-// quad measured from the paintings own bezel pixels, so whatever
-// the stage shows sits IN the screen at its exact slant. It no
-// longer tracks the real display state: if the display is off,
-// the room is not visible anyway. Default content: the clock
-// screensaver -- big 12-hour time + next-alarm line. Anything
-// else can be dropped into #tvstage later.
+// Painted-TV window (2026-11-15, room v2, Daniels design): the
+// screen is CUT OUT of all three plates on its exact glass
+// boundary, and #tvstage lives BEHIND the plates as the bottom
+// child of #bgwrap -- a layer seen through the cut, like a
+// window. The painting crops it, so the boundary is exact by
+// construction; the stage itself only carries a single plane
+// tilt matching the wall (CSS transform). No text-shadow: the
+// time stays crisp, the alarm line sits small beneath it.
+// Anything can be dropped into #tvstage later.
 (function(){
   var stage = document.getElementById('tvstage');
   if (!stage) return;
-  var QUAD = [[0.8509, 0.3349], [0.9575, 0.3151], [0.9587, 0.5973], [0.8522, 0.5921]];
-  var SW = 800, SH = 450;
-  function solve(A, b) {
-    var n = b.length;
-    for (var i = 0; i < n; i++) {
-      var piv = i;
-      for (var r = i + 1; r < n; r++) if (Math.abs(A[r][i]) > Math.abs(A[piv][i])) piv = r;
-      var tmp = A[i]; A[i] = A[piv]; A[piv] = tmp;
-      var tb = b[i]; b[i] = b[piv]; b[piv] = tb;
-      for (var r2 = 0; r2 < n; r2++) {
-        if (r2 === i) continue;
-        var f = A[r2][i] / A[i][i];
-        for (var c = i; c < n; c++) A[r2][c] -= f * A[i][c];
-        b[r2] -= f * b[i];
-      }
-    }
-    var x = [];
-    for (var i2 = 0; i2 < n; i2++) x[i2] = b[i2] / A[i2][i2];
-    return x;
-  }
-  function fit() {
-    var w = innerWidth, h = innerHeight;
-    var src = [[0, 0], [SW, 0], [SW, SH], [0, SH]];
-    var dst = QUAD.map(function(q) { return [q[0] * w, q[1] * h]; });
-    var A = [], b = [];
-    for (var i = 0; i < 4; i++) {
-      A.push([src[i][0], src[i][1], 1, 0, 0, 0, -dst[i][0] * src[i][0], -dst[i][0] * src[i][1]]); b.push(dst[i][0]);
-      A.push([0, 0, 0, src[i][0], src[i][1], 1, -dst[i][1] * src[i][0], -dst[i][1] * src[i][1]]); b.push(dst[i][1]);
-    }
-    var H = solve(A, b);
-    stage.style.transform = 'matrix3d(' + [H[0], H[3], 0, H[6], H[1], H[4], 0, H[7], 0, 0, 1, 0, H[2], H[5], 0, 1].join(',') + ')';
-  }
-  fit(); addEventListener('resize', fit);
   var tt = stage.querySelector('.tt'), ta = stage.querySelector('.ta');
   function tick() { tt.textContent = new Date().toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'}); }
   tick(); setInterval(tick, 5000);
