@@ -18,12 +18,12 @@
 #speakglow{left:81.15%;top:56.3%;width:4.9%;aspect-ratio:1;border-radius:50%;background:radial-gradient(circle,rgba(130,205,255,.6) 0%,rgba(130,205,255,0) 68%);opacity:0}
 #speakglow.on{animation:sgpulse 1.15s ease-in-out infinite}
 @keyframes sgpulse{0%,100%{opacity:.45}50%{opacity:1}}
-#phoneglow{left:85.8%;top:65%;width:3.6%;height:2.5%;border-radius:18%;background:#d8efff;box-shadow:0 0 18px 6px rgba(170,220,255,.75);opacity:0}
+#phonedelta{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s ease}
 </style>
 <div id="bgwrap"><img id="roombg" src="assets/room-bg.webp" alt=""><img id="roombg-off" src="assets/room-bg-lightoff.webp" alt="">
 <div id="daywin"></div><div id="tvoff" class="roomlayer"></div>
 
-<div id="speakglow"></div><div id="phoneglow" class="roomlayer"></div></div>
+<div id="speakglow"></div><img id="phonedelta" src="assets/room-bg-phonedelta.webp" alt=""></div>
 <canvas id="c"></canvas>
 
 <script>
@@ -275,7 +275,7 @@ setInterval(pollRing, 700); pollRing();
 // player).
 (function(){
   var tv=document.getElementById('tvoff'), off=document.getElementById('roombg-off'),
-      sg=document.getElementById('speakglow'), pg=document.getElementById('phoneglow');
+      sg=document.getElementById('speakglow'), pg=document.getElementById('phonedelta');
   function set(el, on){ if (el) el.style.opacity = on ? '1' : '0'; }
   async function tick(){
     try {
