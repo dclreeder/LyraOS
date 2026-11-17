@@ -185,7 +185,7 @@ class FreeChatClient:
     server can never hang a turn past its deadline."""
 
     def __init__(self, url: str, model: str, *, api_key: str | None = None,
-                 reasoning_effort: str = "low") -> None:
+                 reasoning_effort: str = "minimal") -> None:
         self._endpoint = url.rstrip("/") + "/chat/completions"
         self._model = model
         self._api_key = api_key
@@ -473,7 +473,7 @@ class FreeRouter:
                 cfg.llm_url,
                 cfg.llm_model,
                 api_key=api_key,
-                reasoning_effort=getattr(cfg, "reasoning_effort", "low"),
+                reasoning_effort=getattr(cfg, "reasoning_effort", "minimal"),
             )
         self._client = client
         self._history: list[list[dict]] = []

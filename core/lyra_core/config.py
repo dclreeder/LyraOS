@@ -74,7 +74,7 @@ class RouterConfig:
     # it (Daniel's central APIKeys .env).
     llm_url: str = "https://api.meta.ai/v1"
     llm_model: str = "muse-spark-1.3"
-    reasoning_effort: str = "low"
+    reasoning_effort: str = "minimal"
     api_key_path: str = "~/Documents/APIKeys/.env"
     api_key_var: str = "MUSE_MODEL_API_KEY"
     timezone: str = "America/New_York"
