@@ -9,8 +9,6 @@ Services stay separate processes; they ship, install, and back up as one system.
 - modules/     shared engines, single-instance rule: tts (Kokoro :8091),
                whisper (:8093), llm (llama.cpp :8094), wakeword (models +
                training + clip pool), wyoming (Wyoming bridges: wake/stt/tts)
-- firmware/    sat/ -- speaker-box firmware build tree (build only, never
-               flash without Daniel's explicit go-ahead)
 - services/    systemd unit files (user services) + drop-ins
 - config/      templates only -- real secrets stay OUTSIDE the tree:
                ~/Documents/APIKeys/.env, core/alarm_secrets.json

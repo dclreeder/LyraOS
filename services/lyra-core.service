@@ -1,5 +1,5 @@
 [Unit]
-Description=Lyra core — Fedora-native voice controller for the Lyra Flex speaker box
+Description=Lyra core — Fedora-native voice core (localmic transport; Fedora default audio devices)
 After=network-online.target
 Wants=network-online.target
 
