@@ -1,4 +1,4 @@
-"""Free-mode router (trial, 2026-11-11): the local 8B runs the turn.
+"""Free-mode router (trial, 2026-11-11): a frontier model runs the turn.
 
 Daniel's experiment, ordered after the caged LLM router shipped:
 "The reason to swap is to loosen the cage... I want to test the
@@ -23,6 +23,15 @@ and logs a grep-able FREE_FAIL line with the raw model output, so
 the trial's true failure rate is measurable from the journal. A
 free-mode failure NEVER silently reroutes through the caged
 router mid-turn.
+
+Backend (2026-11-16): Muse Spark 1.3 via the Meta Model API
+(OpenAI-compatible chat completions, reasoning effort low),
+replacing the local Qwen3.5-9B on llama-server; the local model
+was shut down and removed the same night at Daniel's order, so
+there is no local fallback. The 12-turn rolling history limit
+was removed at the same time: session history is sent in full
+(Spark's context is ~1M tokens), bounded only by the idle clear
+and a very large token safety valve (HISTORY_MAX_TOKENS).
 """
 from __future__ import annotations
 
@@ -42,10 +51,22 @@ from .tools import ToolResult
 
 _LOGGER = logging.getLogger("lyra_core.free_router")
 
-FREE_DEADLINE_S = 10.0
-HISTORY_MAX_TURNS = 12
-HISTORY_MAX_CHARS = 24000
+# Turn deadline: 10s in the local-server era; 30s since the
+# 2026-11-16 move to the Meta Model API, whose observed tail
+# latency can pass 10s on a single tool round.
+FREE_DEADLINE_S = 30.0
+# History has no turn limit since 2026-11-16 (Daniel's order):
+# the full session history goes to the model. This token
+# estimate (chars/4, see _history_tokens) is only a safety valve
+# against absurd growth, far under Spark's ~1M-token context.
+HISTORY_MAX_TOKENS = 800_000
 HISTORY_IDLE_CLEAR_S = 1800.0
+# Per-round reply budget: Spark spends part of it on reasoning
+# tokens, and on post-tool rounds it reasons hard (~800 tokens
+# observed at low effort for a trivial follow-up), so the local
+# era's 300 -- or even 800 -- truncates real replies to empty.
+# 4000 gives the reasoning room and still bounds a runaway reply.
+MAX_TOKENS = 4000
 MAX_TOOL_ROUNDS = 3
 MAX_TOOL_CALLS = 6
 
@@ -81,6 +102,28 @@ def load_soul() -> str:
     return text or _FALLBACK_BRIEF
 
 
+
+
+def _load_model_api_key(cfg) -> str | None:
+    """Read the Meta Model API key from Daniel's central APIKeys
+    .env (path/variable from RouterConfig). The value lives only
+    in this process's memory: never logged, never in config."""
+    path = Path(
+        getattr(cfg, "api_key_path", "~/Documents/APIKeys/.env")
+    ).expanduser()
+    var = getattr(cfg, "api_key_var", "MUSE_MODEL_API_KEY")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):]
+        if line.startswith(var + "="):
+            value = line.split("=", 1)[1].strip().strip('"').strip("'")
+            return value or None
+    return None
 
 
 def _fn(name: str, description: str, properties: dict, required: list) -> dict:
@@ -135,20 +178,31 @@ TOOL_SCHEMAS: list[dict] = [
 
 
 class FreeChatClient:
-    """Chat-completions client for free mode: same stdlib-urllib-in-
-    a-thread pattern as the caged LlmClient, but tool-capable. The
-    per-call socket timeout is whatever is left of the turn budget,
-    so a wedged server can never hang a turn past its deadline."""
+    """Chat-completions client for free mode: stdlib-urllib-in-
+    a-thread, tool-capable, talking to the Meta Model API
+    (OpenAI-compatible) with bearer auth. The per-call socket
+    timeout is whatever is left of the turn budget, so a wedged
+    server can never hang a turn past its deadline."""
 
-    def __init__(self, url: str, model: str) -> None:
-        self._endpoint = url.rstrip("/") + "/v1/chat/completions"
+    def __init__(self, url: str, model: str, *, api_key: str | None = None,
+                 reasoning_effort: str = "low") -> None:
+        self._endpoint = url.rstrip("/") + "/chat/completions"
         self._model = model
+        self._api_key = api_key
+        self._reasoning_effort = reasoning_effort
+
+    def _headers(self) -> dict:
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return headers
 
     async def chat(self, messages: list, tools, timeout_s: float) -> dict:
         body = {
             "model": self._model,
             "temperature": 0.3,
-            "max_tokens": 300,
+            "max_tokens": MAX_TOKENS,
+            "reasoning_effort": self._reasoning_effort,
             "messages": messages,
         }
         if tools:
@@ -156,15 +210,22 @@ class FreeChatClient:
             body["tool_choice"] = "auto"
         raw = await asyncio.to_thread(self._post, body, max(1.0, timeout_s))
         try:
-            return raw["choices"][0]["message"]
+            msg = raw["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
             raise LlmError(f"unparseable chat reply: {exc}") from exc
+        # Normalize to the fields the turn loop round-trips back to
+        # the API (the raw reply also carries e.g. a refusal field
+        # that must not be echoed into the next request).
+        message: dict = {"role": "assistant", "content": msg.get("content") or ""}
+        if msg.get("tool_calls"):
+            message["tool_calls"] = msg["tool_calls"]
+        return message
 
     def _post(self, body: dict, timeout_s: float) -> dict:
         req = urllib.request.Request(
             self._endpoint,
             data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
+            headers=self._headers(),
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout_s) as resp:
@@ -181,7 +242,8 @@ class FreeChatClient:
         body = {
             "model": self._model,
             "temperature": 0.3,
-            "max_tokens": 300,
+            "max_tokens": MAX_TOKENS,
+            "reasoning_effort": self._reasoning_effort,
             "messages": messages,
             "stream": True,
         }
@@ -245,7 +307,7 @@ class FreeChatClient:
         req = urllib.request.Request(
             self._endpoint,
             data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json"},
+            headers=self._headers(),
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout_s) as resp:
@@ -399,7 +461,21 @@ class FreeRouter:
         self._weather = weather
         self._tv = tv
         self._tv_volume = tv_volume
-        self._client = client or FreeChatClient(cfg.llm_url, cfg.llm_model)
+        if client is None:
+            api_key = _load_model_api_key(cfg)
+            if not api_key:
+                raise LlmError(
+                    "Meta Model API key not found: "
+                    f"{getattr(cfg, 'api_key_var', 'MUSE_MODEL_API_KEY')} in "
+                    f"{getattr(cfg, 'api_key_path', '~/Documents/APIKeys/.env')}"
+                )
+            client = FreeChatClient(
+                cfg.llm_url,
+                cfg.llm_model,
+                api_key=api_key,
+                reasoning_effort=getattr(cfg, "reasoning_effort", "low"),
+            )
+        self._client = client
         self._history: list[list[dict]] = []
         self._inbox = inbox
         self._last_slice: list = []
@@ -503,7 +579,7 @@ class FreeRouter:
         )
         return text
 
-    # -- rolling conversation context --------------------------------
+    # -- conversation context (no turn limit; see _trim_history) --------------------------------
 
     def _remember(self, command: str, spoken: str) -> None:
         """Record a turn whose model exchange failed (a fallback
@@ -521,17 +597,25 @@ class FreeRouter:
         self._last_turn_at = time.monotonic()
         self._trim_history()
 
+    def _history_tokens(self) -> int:
+        """Rough token estimate (chars/4) over message content and
+        tool-call arguments -- feeds only the safety valve below."""
+        chars = 0
+        for turn in self._history:
+            for m in turn:
+                chars += len(str(m.get("content") or ""))
+                for call in m.get("tool_calls") or []:
+                    fn = call.get("function") or {}
+                    chars += len(str(fn.get("name") or ""))
+                    chars += len(str(fn.get("arguments") or ""))
+        return chars // 4
+
     def _trim_history(self) -> None:
-        while len(self._history) > HISTORY_MAX_TURNS:
-            self._history.pop(0)
-
-        def _chars() -> int:
-            return sum(
-                len(str(m.get("content") or ""))
-                for turn in self._history for m in turn
-            )
-
-        while len(self._history) > 1 and _chars() > HISTORY_MAX_CHARS:
+        """No turn limit since 2026-11-16: the full session history
+        goes to the model. The only trim left is the safety valve:
+        drop the oldest turns when the estimate passes
+        HISTORY_MAX_TOKENS (~800K, under Spark's ~1M context)."""
+        while len(self._history) > 1 and self._history_tokens() > HISTORY_MAX_TOKENS:
             self._history.pop(0)
 
     async def _run_turn(self, command: str, on_sentence=None):
@@ -563,7 +647,16 @@ class FreeRouter:
                 )
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
-                return message.get("content") or "", calls_made, messages[slice_at:]
+                if (message.get("content") or "").strip() or last_round:
+                    return message.get("content") or "", calls_made, messages[slice_at:]
+                # Spark quirk (2026-11-16): a round -- typically the
+                # one after a tool result -- occasionally completes
+                # with no content at all (its reasoning consumed the
+                # whole budget or it simply stops empty). Nothing was
+                # spoken for the round, so re-ask it once.
+                _LOGGER.warning(
+                    "free turn: empty completion on round %d; retrying", round_no)
+                continue
             messages.append(message)
             for call in tool_calls:
                 total_calls += 1

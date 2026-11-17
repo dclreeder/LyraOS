@@ -16,8 +16,11 @@
     "public_host": "192.168.12.144"
   },
   "router": {
-    "llm_url": "http://127.0.0.1:8094",
-    "llm_model": "lyra-llm",
+    "llm_url": "https://api.meta.ai/v1",
+    "llm_model": "muse-spark-1.3",
+    "reasoning_effort": "low",
+    "api_key_path": "~/Documents/APIKeys/.env",
+    "api_key_var": "MUSE_MODEL_API_KEY",
     "timezone": "America/New_York",
     "weather_latitude": 30.3639618,
     "weather_longitude": -81.7529823

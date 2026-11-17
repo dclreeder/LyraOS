@@ -64,11 +64,19 @@ class AlarmConfig:
 
 @dataclass
 class RouterConfig:
-    # Free router (2026-11-11): the shared local LLM module
-    # (lyra-llm, Qwen3-8B) runs the turn uncaged through the
-    # tools layer; see lyra_core.free_router.
-    llm_url: str = "http://127.0.0.1:8094"
-    llm_model: str = "lyra-llm"
+    # Free router (2026-11-11): the model runs the turn uncaged
+    # through the tools layer; see lyra_core.free_router. Backend
+    # since 2026-11-16: Muse Spark 1.3 on the Meta Model API
+    # (OpenAI-compatible chat completions). The local llama-server
+    # (lyra-llm) was shut down and removed the same night at
+    # Daniel's order -- there is no local fallback. The API key is
+    # never stored here; config only says where free_router reads
+    # it (Daniel's central APIKeys .env).
+    llm_url: str = "https://api.meta.ai/v1"
+    llm_model: str = "muse-spark-1.3"
+    reasoning_effort: str = "low"
+    api_key_path: str = "~/Documents/APIKeys/.env"
+    api_key_var: str = "MUSE_MODEL_API_KEY"
     timezone: str = "America/New_York"
     # Home location exactly as the HA-era setup recorded it
     # (core.config in the 2026-11-10 HA baseline backup); Open-Meteo

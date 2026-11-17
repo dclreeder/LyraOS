@@ -19,16 +19,13 @@ code is modified.
   TV woken + volume-managed over ADB, the web page loops the tone
   and acks); the attached-client ring (localmic: the tone via
   Fedora's default sink) remains as the fallback path.
-- The LLM router is the session's on_command hook: the shared
-  local LLM (lyra-llm, Qwen3-4B-Instruct-2507) classifies each
-  verified command into a closed intent set under a JSON-schema
-  grammar; the router re-validates the slots, and the
-  readback-verified tools (light / alarm / clock / weather /
-  tv) speak short confirmations from the actual outcome
-  (D2) -- model text is never spoken. Garbled commands get the
-  one D5 "didn't catch that" line; no-match commands (including
-  any turn where the LLM is down) get the spoken
-  "I don't understand." line.
+- The session's on_command hook is the free router
+  (lyra_core.free_router): Muse Spark 1.3 via the Meta Model
+  API interprets each verified command uncaged and speaks its
+  own replies, with the readback-verified tools (light / alarm /
+  clock / weather / tv) as the only way anything actually
+  happens. Garbled commands get the one D5 "didn't catch that"
+  line; a failed turn speaks the fallback line.
 - The Phase 4 core API (lyra_core/api.py) is Lyra's hands on this
   same HTTP endpoint: POST /tool executes the router's own tool
   objects and returns their verified ToolResults as JSON, and

@@ -1,8 +1,8 @@
 """Free-mode offline bench (trial proof, 2026-11-11).
 
 Runs ~22 transcripts through FreeRouter.handle with STUBBED tools
-(stateful fakes that record every call) and the REAL local model
-on :8094. Nothing real is actuated. Per case it prints the tool
+(stateful fakes that record every call) and the REAL Muse Spark
+1.3 via the Meta Model API. Nothing real is actuated. Per case it prints the tool
 calls made, the final spoken text, and the latency, plus flags:
 HONESTY-VIOLATION (a tool call on a no-capability case), EMPTY
 (the FREE_FAIL fallback line), and end-state checks for the
@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from types import SimpleNamespace
 
+from .config import RouterConfig
 from .free_router import FreeRouter
 from .tools import ToolResult
 
@@ -167,9 +167,7 @@ async def _run_case(router: FreeRouter, transcript: str) -> tuple[str, float]:
 
 
 async def main() -> int:
-    cfg = SimpleNamespace(
-        llm_url="http://127.0.0.1:8094", llm_model="lyra-llm"
-    )
+    cfg = RouterConfig()
     problems = 0
     for i, (transcript, kind, check) in enumerate(CASES, 1):
         rec = Recorder()
