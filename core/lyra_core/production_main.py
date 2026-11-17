@@ -36,7 +36,18 @@ code is modified.
   as the alarm's note speaker, so a morning kill speaks the note
   right after the ring ends. Notes are set through the API
   (alarm note_set), not the voice router.
-- SIGTERM/SIGINT -> supervisor.stop(): the only exit is the clean
+- Modes (2026-11-16, Daniel's model): three exclusive modes --
+  WakeGate (the room path above), RTC (a full-duplex WebRTC
+  session with the TV page as the peer; lyra_core.rtc), and Sleep
+  (no inputs at all: capture suspended, she is in bed). One source
+  of truth, web/mode_state.json (lyra_core.mode): the dashboard
+  writes it, a _ModeManager here applies it -- WakeGate runs the
+  capture supervisor, RTC stops the capture and accepts offers,
+  Sleep stops everything input-shaped. The mode persists across
+  restarts EXCEPT rtc: a boot never has a peer, so a core that
+  finds rtc persisted comes up in WakeGate and rewrites the file.
+- SIGTERM/SIGINT -> shutdown: the mode manager stops the RTC
+  server and the seat's supervisor; the only exit is the clean
   disconnect of the attached client.
 - Transport is the core config's ONE switch, `transport`, and its
   only value is now "localmic" (2026-11-16): the session's client
@@ -65,6 +76,8 @@ from .config import CoreConfig
 from .pipeline import PipelineDriver
 from .free_router import FreeRouter
 from .localmic import LocalMicClient
+from . import mode as mode_store
+from .rtc import RtcServer
 from .session import VoiceSession
 from .inbox import InboxLog
 from .tv_ring import TvRinger
@@ -88,20 +101,114 @@ def _event_hook(kind: str, detail: dict) -> None:
     _LOGGER.info("session event: %s %s", kind, detail)
 
 
-async def _status_loop(session: VoiceSession, supervisor: CoreSupervisor) -> None:
+class _SupervisorSeat:
+    """Owns the (single) capture supervisor so the mode manager can
+    stop and restart the room capture as modes change. A fresh
+    CoreSupervisor per WakeGate entry: CoreSupervisor.stop() is a
+    one-way latch by design, and the clean client disconnect stays
+    the only release path."""
+
+    def __init__(self, cfg: CoreConfig, session: VoiceSession,
+                 factory) -> None:
+        self._cfg = cfg
+        self._session = session
+        self._factory = factory
+        self.supervisor: CoreSupervisor | None = None
+        self.task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        if self.task is not None:
+            return
+        self.supervisor = CoreSupervisor(
+            self._cfg, self._session, client_factory=self._factory)
+        self.task = asyncio.create_task(
+            self.supervisor.run(), name="lyra-supervisor")
+        self.task.add_done_callback(self._log_task_end)
+
+    @staticmethod
+    def _log_task_end(task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            _LOGGER.error("supervisor task ended with an exception",
+                          exc_info=task.exception())
+
+    async def stop(self) -> None:
+        if self.task is None:
+            return
+        assert self.supervisor is not None
+        self.supervisor.stop()
+        await self.task
+        self.task = None
+        self.supervisor = None
+
+    def stop_nowait(self) -> None:
+        if self.supervisor is not None:
+            self.supervisor.stop()
+
+
+class _ModeManager:
+    """Applies web/mode_state.json to the live composition.
+
+    wakegate -> capture supervisor running, RTC offers refused.
+    rtc      -> capture stopped; the RTC server accepts offers.
+    sleep    -> capture stopped, RTC closed; no inputs at all.
+
+    The dashboard writes the file; this manager polls it (the same
+    file-driven pattern lyra-web uses for the room state) and runs
+    the transitions serially."""
+
+    def __init__(self, seat: _SupervisorSeat, rtc_server: RtcServer) -> None:
+        self._seat = seat
+        self._rtc = rtc_server
+        self.current: str | None = None
+
+    async def apply(self, mode: str) -> None:
+        if mode == self.current:
+            return
+        previous, self.current = self.current, mode
+        _LOGGER.info("mode: %s -> %s", previous, mode)
+        if mode == mode_store.WAKEGATE:
+            await self._rtc.stop()
+            await self._seat.start()
+        elif mode == mode_store.RTC:
+            await self._seat.stop()
+            self._rtc.accepting = True
+        else:  # sleep
+            await self._rtc.stop()
+            await self._seat.stop()
+
+    async def watch(self) -> None:
+        while True:
+            try:
+                mode = mode_store.read_mode()
+                if mode != self.current:
+                    await self.apply(mode)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _LOGGER.exception("mode watch failed")
+            await asyncio.sleep(0.5)
+
+    async def shutdown(self) -> None:
+        await self._rtc.stop()
+        await self._seat.stop()
+
+
+async def _status_loop(session: VoiceSession, seat: _SupervisorSeat) -> None:
     while True:
         await asyncio.sleep(STATUS_PERIOD_S)
         client = session._box
         floor = session._ep.noise_floor
+        sup = seat.supervisor
         _LOGGER.info(
-            "status: client_connected=%s session_state=%s wake_link_up=%s "
-            "ep_noise_floor=%s connects=%d attempts=%d",
+            "status: mode=%s client_connected=%s session_state=%s "
+            "wake_link_up=%s ep_noise_floor=%s connects=%d attempts=%d",
+            mode_store.read_mode(),
             bool(client is not None and client.is_connected),
             session.state,
             session._wake_link_up,
             ("%.0f" % floor) if floor is not None else None,
-            supervisor.successful_connects,
-            supervisor.connect_attempts,
+            sup.successful_connects if sup is not None else 0,
+            sup.connect_attempts if sup is not None else 0,
         )
 
 
@@ -138,7 +245,10 @@ async def amain() -> int:
             audio_store=http.store,
         )
 
-    supervisor = CoreSupervisor(cfg, session, client_factory=_localmic_factory)
+    # The capture supervisor lives in a seat the mode manager
+    # drives: WakeGate starts it, RTC and Sleep stop it (capture
+    # suspended -- in Sleep she is not listening at all).
+    seat = _SupervisorSeat(cfg, session, _localmic_factory)
     _LOGGER.info(
         "transport: localmic (Fedora default source; no satellite box)"
     )
@@ -179,6 +289,19 @@ async def amain() -> int:
     )
     session._on_command = router.handle
     _LOGGER.info("FREE MODE live: %s", router.describe())
+
+    # -- modes + RTC (2026-11-16) --
+    # The RTC server runs the same router (via="rtc"); the mode
+    # manager owns when it may accept offers and when the room
+    # capture runs. See lyra_core.mode for the state contract.
+    rtc_server = RtcServer(driver, router.handle)
+    mode_mgr = _ModeManager(seat, rtc_server)
+
+    async def _rtc_offer(sdp: str, sdp_type: str) -> dict:
+        """RTC signaling gate: offers live and die with the mode."""
+        if mode_mgr.current != mode_store.RTC:
+            return {"error": "rtc mode is not active", "status": 409}
+        return await rtc_server.handle_offer(sdp, sdp_type)
 
     async def _announce(text: str) -> None:
         """Phase 4 /announce: Kokoro -> TV mirror. synthesize_speech
@@ -327,6 +450,7 @@ async def amain() -> int:
         announce=_announce,
         call_start=_call_start,
         call_poll=_call_poll,
+        rtc_offer=_rtc_offer,
         tv=tv_tool,
         tv_volume=tv_volume_tool,
     )
@@ -339,20 +463,39 @@ async def amain() -> int:
             "(the voice service stays up)"
         )
     await api.start()
+    # Boot mode: the persisted mode is honored EXCEPT rtc -- a boot
+    # never has a peer, so a core that finds rtc persisted comes up
+    # in WakeGate and rewrites the file (never strand her deaf).
+    persisted = mode_store.read_mode()
+    if persisted == mode_store.RTC:
+        _LOGGER.warning(
+            "mode persisted as rtc at boot; coercing to wakegate "
+            "(no peer can exist yet)")
+        mode_store.write_mode(mode_store.WAKEGATE)
+        persisted = mode_store.WAKEGATE
+    await mode_mgr.apply(persisted)
+    _shutdown = asyncio.Event()
+
+    def _request_shutdown() -> None:
+        seat.stop_nowait()
+        _shutdown.set()
+
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
-            loop.add_signal_handler(sig, supervisor.stop)
+            loop.add_signal_handler(sig, _request_shutdown)
         except NotImplementedError:
             pass
     _LOGGER.info("lyra core production starting (verify gate attached, LIVE filing)")
-    sup_task = asyncio.create_task(supervisor.run(), name="lyra-supervisor")
+    watch_task = asyncio.create_task(mode_mgr.watch(), name="lyra-mode-watch")
     status_task = asyncio.create_task(
-        _status_loop(session, supervisor), name="lyra-status"
+        _status_loop(session, seat), name="lyra-status"
     )
     try:
-        await sup_task
+        await _shutdown.wait()
     finally:
+        watch_task.cancel()
+        await mode_mgr.shutdown()
         await alarm.stop()
         status_task.cancel()
         await session.stop()

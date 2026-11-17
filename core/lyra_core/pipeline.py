@@ -256,10 +256,15 @@ class PipelineDriver:
             return (event.data.get("text") or "").strip()
 
     async def synthesize_speech(
-        self, text: str, timeout: float = 120.0
+        self, text: str, timeout: float = 120.0, *, mirror: bool = True
     ) -> tuple[bytes, int, int, int]:
         """Synthesize text via the TTS service; returns (wav_bytes, rate,
-        width, channels) with the PCM reassembled into a WAV container."""
+        width, channels) with the PCM reassembled into a WAV container.
+
+        mirror=False suppresses the TV-mirror side effect: in RTC mode
+        (2026-11-16) her voice plays on the peer track -- the peer IS
+        the TV page -- so firing the mirror too would double-play
+        every line. Every pre-RTC caller keeps the default."""
         cfg = self._cfg
         text = speakable_text(text)
         if not text:
@@ -291,7 +296,7 @@ class PipelineDriver:
             wf.setsampwidth(width)
             wf.setframerate(rate)
             wf.writeframes(bytes(pcm))
-        if speech_route() == "tv":
+        if mirror and speech_route() == "tv":
             try:
                 asyncio.get_running_loop().create_task(
                     _mirror_wav_to_tv(buf.getvalue()))

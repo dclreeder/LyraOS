@@ -82,11 +82,13 @@ _LOGGER = logging.getLogger("lyra_core.api")
 TOOL_PATH = "/tool"
 ANNOUNCE_PATH = "/announce"
 CALL_START_PATH = "/call/start"
+RTC_OFFER_PATH = "/rtc/offer"
 CALL_POLL_PATH = "/call/poll"
 ANNOUNCE_MAX_CHARS = 200
 _TOOL_TIMEOUT_S = 90.0
 _ANNOUNCE_TIMEOUT_S = 75.0
 _CALL_START_TIMEOUT_S = 60.0
+_RTC_OFFER_TIMEOUT_S = 20.0
 _CALL_MAX_BODY_BYTES = 8 * 1024 * 1024
 
 # The composition's announce: text -> None on success; raises
@@ -97,6 +99,10 @@ AnnounceFn = Callable[[str], Awaitable[None]]
 # (reply WAV bytes, transcript, reply text). Raises on failure.
 CallStartFn = Callable[[bytes], Awaitable[dict]]
 CallPollFn = Callable[[str, int], "dict | None"]
+
+# RTC signaling callback: an SDP offer -> the SDP answer dict, or
+# a dict with "error" (plus optional "status"). Raises on failure.
+RtcOfferFn = Callable[[str, str], Awaitable[dict]]
 
 
 class AnnounceUnavailable(Exception):
@@ -144,6 +150,7 @@ class CoreApi:
         weather: WeatherTool,
         announce: AnnounceFn,
         call_start: CallStartFn | None = None,
+        rtc_offer: RtcOfferFn | None = None,
         call_poll: CallPollFn | None = None,
         tv: TvTool | None = None,
         tv_volume: TvVolumeTool | None = None,
@@ -156,6 +163,7 @@ class CoreApi:
         self._weather = weather
         self._announce = announce
         self._call_start = call_start
+        self._rtc_offer = rtc_offer
         self._call_poll = call_poll
         self._tv = tv
         self._tv_volume = tv_volume
@@ -177,6 +185,11 @@ class CoreApi:
                 "core API registered: POST %s, GET %s (token auth)",
                 CALL_START_PATH,
                 CALL_POLL_PATH,
+            )
+        if self._rtc_offer is not None:
+            self._http.add_post_route(RTC_OFFER_PATH, self._serve_rtc_offer)
+            _LOGGER.info(
+                "core API registered: POST %s (token auth)", RTC_OFFER_PATH
             )
         _LOGGER.info(
             "core API registered: POST %s, POST %s (token auth)",
@@ -463,4 +476,41 @@ class CoreApi:
         result = self._call_poll(call_id, max(0, after))
         if result is None:
             return _json(404, {"ok": False, "error": "unknown call"})
+        return _json(200, {"ok": True, **result})
+
+    # -- /rtc/offer ------------------------------------------------
+    # WebRTC signaling for RTC mode (2026-11-16): the TV page (via
+    # the lyra-web proxy) posts its SDP offer; the composition's
+    # RTC server answers. Mode gating lives in the composition's
+    # callback -- outside RTC mode it returns an error dict and
+    # the offer is refused with its status.
+
+    def _serve_rtc_offer(self, query: dict, body: bytes) -> tuple[int, str, bytes]:
+        if not self._authorized(query):
+            _LOGGER.warning("core API /rtc/offer: rejected (bad token)")
+            return _json(403, {"ok": False, "error": "forbidden"})
+        if self._rtc_offer is None or self._loop is None:
+            return _json(503, {"ok": False, "error": "rtc not available"})
+        try:
+            payload = _parse_json_body(body)
+        except _BadRequest as exc:
+            return _json(400, {"ok": False, "error": str(exc)})
+        sdp = payload.get("sdp")
+        if not isinstance(sdp, str) or not sdp:
+            return _json(400, {"ok": False, "error": "sdp required"})
+        sdp_type = payload.get("type") or "offer"
+        future = asyncio.run_coroutine_threadsafe(
+            self._rtc_offer(sdp, str(sdp_type)), self._loop)
+        try:
+            result = future.result(timeout=_RTC_OFFER_TIMEOUT_S)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            _LOGGER.error("core API /rtc/offer: timed out; future cancelled")
+            return _json(504, {"ok": False, "error": "rtc offer timed out"})
+        except Exception as exc:
+            _LOGGER.error("core API /rtc/offer: failed: %s", exc)
+            return _json(500, {"ok": False, "error": "rtc offer failed"})
+        if isinstance(result, dict) and result.get("error"):
+            return _json(int(result.get("status") or 409),
+                         {"ok": False, "error": result["error"]})
         return _json(200, {"ok": True, **result})
