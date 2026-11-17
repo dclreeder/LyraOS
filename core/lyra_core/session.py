@@ -25,11 +25,10 @@ Phase scope notes:
   Phase 1 path (Wyoming STT transcript -> canned reply) is unchanged,
   exactly as HA's seat-swap proof requires (only the controller
   changes).
-- Wake ack (2026-11-12): at a Detection the session asks the box for
-  a subtle earcon (evt_wake_ack) so a gated wake is audible the
-  moment the gate opens, instead of silent limbo until the reply.
-  A short guard after each Detection keeps the earcon's own echo
-  from endpointing the capture it just announced.
+- No wake ack (removed 2026-11-16, Daniel's order): a Detection
+  used to trigger a box earcon, plus a guard that kept the
+  earcon's echo from endpointing the capture. Both are gone;
+  capture endpoints on the speaker's VAD alone.
 - An empty transcript ends the run as ERROR "stt-no-text-recognized"
   (the firmware ignores that code: no error LED phase), mirroring HA.
 - While a run is active the mic stream is NOT forwarded to the wake
@@ -67,10 +66,6 @@ _LOGGER = logging.getLogger("lyra_core.session")
 RATE, WIDTH, CHANNELS = 16000, 2, 1
 CANNED_REPLY = "Lyra core bench check complete."
 
-# How long after a Detection a VAD_END is treated as the wake-ack
-# chime's echo (chime ~0.23 s + playback drain + the endpointer's
-# 700 ms hangover) rather than the end of the user's command.
-WAKE_ACK_GUARD_S = 1.25
 
 # Observer hook: (kind, detail) — kinds: wake_forward (first chunk),
 # detection, vad_start, vad_end, verify, silent_drop,
@@ -162,7 +157,6 @@ class VoiceSession:
         verify_gate=None,
         on_command: Callable[[str], object] | None = None,
         clip_ring_s: float = 2.5,
-        wake_ack_guard_s: float = WAKE_ACK_GUARD_S,
     ) -> None:
         self._cfg = config
         self._driver = driver
@@ -187,7 +181,6 @@ class VoiceSession:
         self._clip_ring_max = int(RATE * WIDTH * CHANNELS * clip_ring_s)
         self._clip_ring: deque[bytes] = deque()
         self._clip_ring_bytes = 0
-        self._wake_ack_guard_s = wake_ack_guard_s
         self._capture_started_at: float | None = None
         self._clip_prefix = b""
         self._utterance_preroll_len = 0
@@ -337,23 +330,11 @@ class VoiceSession:
                         "stt_vad_start", self._box.evt_stt_vad_start if self._box else None
                     )
                 elif vad_event == VAD_END:
-                    if self._in_wake_ack_guard():
-                        # The wake-ack earcon's own echo can look
-                        # like a complete utterance (VAD_START, then
-                        # the 700 ms hangover). It must not endpoint
-                        # the capture it just announced: drop the
-                        # event, and let real speech start a fresh
-                        # VAD cycle (or the watchdog end the turn as
-                        # no-speech, exactly like a silent wake).
-                        self._vad_started = False
-                        self._notify("vad_end_ignored", {"reason": "wake_ack_guard"})
-                        _LOGGER.debug("VAD_END inside wake-ack guard ignored")
-                    else:
-                        self._notify("vad_end", {})
-                        self._emit_box(
-                            "stt_vad_end", self._box.evt_stt_vad_end if self._box else None
-                        )
-                        self._finish_capture()
+                    self._notify("vad_end", {})
+                    self._emit_box(
+                        "stt_vad_end", self._box.evt_stt_vad_end if self._box else None
+                    )
+                    self._finish_capture()
         # PROCESSING: audio is dropped (HA diverts it to the STT stage;
         # here the utterance is already captured).
 
@@ -396,11 +377,6 @@ class VoiceSession:
         self._ep.begin_capture()
         self._emit_box("run_start", self._box.evt_run_start)
         self._emit_box("stt_start", self._box.evt_stt_start)
-        # The gate is open: say so, quietly, right now -- before
-        # capture/verify/routing, which are the silent-limbo part.
-        wake_ack = getattr(self._box, "evt_wake_ack", None)
-        if wake_ack is not None:
-            self._emit_box("wake_ack", wake_ack)
         loop = asyncio.get_running_loop()
         self._capture_deadline = loop.create_task(
             self._capture_watchdog(), name="lyra-capture-watchdog"
@@ -632,11 +608,6 @@ class VoiceSession:
                 reply = offered
         return result.transcript, reply
 
-    def _in_wake_ack_guard(self) -> bool:
-        return (
-            self._capture_started_at is not None
-            and time.monotonic() - self._capture_started_at < self._wake_ack_guard_s
-        )
 
     def _cancel_capture_tasks(self) -> None:
         for task in (self._capture_deadline, self._process_task):

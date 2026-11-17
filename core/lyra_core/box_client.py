@@ -291,12 +291,6 @@ class BoxClient:
     def evt_run_end(self) -> None:
         self._send(VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END)
 
-    def evt_wake_ack(self) -> None:
-        """Wake-gate earcon: this transport has no local ack tone
-        (the satlink client plays one natively); the no-op keeps
-        the session's call transport-agnostic."""
-        pass
-
     def evt_stt_start(self) -> None:
         self._send(VoiceAssistantEventType.VOICE_ASSISTANT_STT_START)
 

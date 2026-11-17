@@ -58,9 +58,7 @@ the sat firmware has no run/TTS concept -- a turn is mic audio in
 and PCM audio out, and it ends when the stream ends. Every evt_*
 method is therefore a no-op except evt_tts_end(url), which starts
 streaming the reply (evt_tts_start's text is NOT sent: the protocol
-carries no TTS text event). One exception: evt_wake_ack streams a
-short generated earcon the moment the session reports a wake
-Detection. The box's LEDs stay on the firmware's stock SDK
+carries no TTS text event). The box's LEDs stay on the firmware's stock SDK
 patterns; the protocol has no LED control.
 
 Volume lives on the device (NVS) per the standing hardware rule:
@@ -181,50 +179,6 @@ def pcm_to_24k_mono(pcm: bytes, *, rate: int, width: int, channels: int) -> byte
     return struct.pack(f"<{len(mono)}h", *mono)
 
 
-# Wake-ack chime (2026-11-12): played the moment the wake gate
-# opens so a gated wake is audible instead of silent limbo.
-# Generated, not an asset file -- one less thing to lose in a
-# folder move. Two ascending notes (E6 -> A6), the classic
-# "ready to listen" shape: Daniel's verdict on the first single
-# 0.15 FS blip was "too subtle", so the chime peaks at 0.35 FS
-# (the box's everyday volume still scales it on top of that),
-# with Hann envelopes so it stays click-free.
-WAKE_ACK_NOTES = ((1318.5, 0.0, 0.09), (1760.0, 0.07, 0.16))
-WAKE_ACK_AMPLITUDE = 0.35
-# After the box plays anything (a reply, the morning note), its
-# own voice leaks into the mic and can re-fire the gate: the
-# journal for 2026-11-12 17:02 shows the spoken reply "The
-# current time is 17:02." doing exactly that, gate score 0.981,
-# one second after it played. A wake ack inside this window
-# after playback ends would just be Lyra chiming at her own
-# echo, so it is suppressed (verify drops those turns anyway).
-WAKE_ACK_ECHO_SUPPRESS_S = 2.0
-
-
-def _make_wake_ack_pcm() -> bytes:
-    total_s = max(start + dur for _f, start, dur in WAKE_ACK_NOTES)
-    n = int(PLAY_RATE * total_s)
-    samples = [0.0] * n
-    for freq, start_s, dur_s in WAKE_ACK_NOTES:
-        start = int(PLAY_RATE * start_s)
-        count = int(PLAY_RATE * dur_s)
-        for i in range(count):
-            env = 0.5 - 0.5 * math.cos(
-                2.0 * math.pi * i / max(1, count - 1)
-            )
-            samples[start + i] += (
-                WAKE_ACK_AMPLITUDE * env
-                * math.sin(2.0 * math.pi * freq * i / PLAY_RATE)
-            )
-    return struct.pack(
-        f"<{n}h",
-        *(max(-32768, min(32767, int(32767 * v))) for v in samples),
-    )
-
-
-WAKE_ACK_PCM = _make_wake_ack_pcm()
-
-
 class _StreamReplaced(Exception):
     """A producer noticed a newer stream (or a stop) owns playback."""
 
@@ -301,9 +255,7 @@ class SatBoxClient:
         self._producer_task: asyncio.Task | None = None
         self._playing = False
         self._play_done: asyncio.Future | None = None
-        # Monotonic time the last playback stream drained/stopped;
-        # the wake ack stays quiet for a short window after it
-        # (see WAKE_ACK_ECHO_SUPPRESS_S).
+        # Monotonic time the last playback stream drained/stopped.
         self._last_playback_end: float = 0.0
 
     # -- lifecycle -----------------------------------------------------------
@@ -785,28 +737,6 @@ class SatBoxClient:
         )
         return done
 
-    async def _play_pcm(self, pcm: bytes) -> asyncio.Future:
-        """Stream raw 24 kHz PCM (the wake-ack earcon) under the same
-        generation/barge-in discipline as _play_url."""
-        if self._ota_active:
-            _LOGGER.warning("satlink: wake-ack earcon dropped during OTA")
-            dropped: asyncio.Future = asyncio.get_running_loop().create_future()
-            dropped.set_result(False)
-            return dropped
-        self._stop_playback_local()
-        if self.is_connected:
-            try:
-                await self._send_ctrl({"cmd": "barge_in"})
-            except NotConnectedError:
-                pass
-        gen = self._play_gen
-        done: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._play_done = done
-        self._producer_task = asyncio.create_task(
-            self._produce_pcm_source(gen, pcm, done),
-            name="lyra-satlink-pcm-producer",
-        )
-        return done
 
     async def _produce_pcm_source(
         self, gen: int, pcm: bytes, done: asyncio.Future
@@ -957,26 +887,6 @@ class SatBoxClient:
     def evt_run_end(self) -> None:
         pass
 
-    def evt_wake_ack(self) -> None:
-        """The wake gate just opened: play the ready chime --
-        unless playback already owns the speaker (alarm ring, a
-        reply still playing), an OTA transfer owns the wire, or
-        the box finished playing something a moment ago (this
-        gate fire is then almost certainly Lyra's own voice
-        leaking back into the mic). The ack never barges."""
-        if not self.is_connected or self._ota_active:
-            return
-        if self._playing or not self._play_queue.empty():
-            return
-        if self._producer_task is not None and not self._producer_task.done():
-            return
-        since_play = time.monotonic() - self._last_playback_end
-        if since_play < WAKE_ACK_ECHO_SUPPRESS_S:
-            _LOGGER.debug(
-                "wake ack suppressed: %.2fs after playback end", since_play
-            )
-            return
-        self._schedule(self._play_pcm(WAKE_ACK_PCM))
 
     def evt_stt_start(self) -> None:
         pass
