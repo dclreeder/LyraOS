@@ -2,7 +2,3 @@
 	path = modules/whisper
 	url = https://github.com/ggml-org/whisper.cpp.git
 	ignore = dirty
-[submodule "modules/llm/llama.cpp"]
-	path = modules/llm/llama.cpp
-	url = https://github.com/ggml-org/llama.cpp.git
-	ignore = dirty

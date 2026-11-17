@@ -3,17 +3,18 @@
 One tree for the whole Lyra system (consolidated 2026-11-15, Daniel's design).
 Services stay separate processes; they ship, install, and back up as one system.
 
-- core/        lyra-core: free router, tools, SOUL.md, alarm, /tool /announce /call/turn (:8099)
+- core/        lyra-core: free router (brain: Muse Spark 1.3 via the Meta
+               Model API), tools, SOUL.md, alarm, /tool /announce /call/turn (:8099)
 - web/         lyra-web: TV viewer + call page (:8095), kiosk + route-apply
 - dashboard/   home dashboard (:8098)
 - modules/     shared engines, single-instance rule: tts (Kokoro :8091),
-               whisper (:8093), llm (llama.cpp :8094), wakeword (models +
+               whisper (:8093), wakeword (models +
                training + clip pool), wyoming (Wyoming bridges: wake/stt/tts)
 - services/    systemd unit files (user services) + drop-ins
 - config/      templates only -- real secrets stay OUTSIDE the tree:
                ~/Documents/APIKeys/.env, core/alarm_secrets.json
-- data/        big assets, backed up separately: models/ (GGUFs),
-               assets/ (alarm tone), wake pool lives in modules/wakeword/data
+- data/        big assets, backed up separately: assets/ (alarm tone),
+               wake pool lives in modules/wakeword/data
 - memory/      RESERVED: local Lyra's future memory layer (later phase)
 
 External, deliberately not in the tree: ~/Documents/muse-gadget-sdk (vendor),
