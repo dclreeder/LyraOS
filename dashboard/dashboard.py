@@ -4,15 +4,14 @@
 Recreates Daniel's old Home Assistant 'Home' dashboard with live state
 and working controls. Everything runs through lyra-core's own /tool API
 (:8099, token read server-side from the core's secrets file - the
-browser never sees it) plus Jellyfin's sessions API (key read
-server-side from APIKeys/.env) and pactl for the PC mic mute.
+browser never sees it) plus pactl for Fedora's audio defaults
+and the default-source mic mute.
 
 Bind: 0.0.0.0:8098 (home LAN + tailnet only by network design).
 """
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import time
 import urllib.request
@@ -21,7 +20,6 @@ from pathlib import Path
 
 HOME = Path.home()
 CORE = "http://127.0.0.1:8099"
-JELLYFIN = "http://127.0.0.1:8096"
 PAGE = Path(__file__).with_name("dashboard.html")
 
 
@@ -38,15 +36,7 @@ def _kill_token() -> str:
     return data["kill_token"]
 
 
-def _jellyfin_key() -> str:
-    for line in (HOME / "Documents/APIKeys/.env").read_text().splitlines():
-        if line.startswith("JELLYFIN_API_KEY="):
-            return line.split("=", 1)[1].strip().strip('"').strip("'")
-    raise RuntimeError("JELLYFIN_API_KEY not found")
-
-
 TOKEN = _kill_token()
-JF_KEY = _jellyfin_key()
 
 
 def _req(url: str, data: bytes | None = None, timeout: float = 10.0):
@@ -71,48 +61,23 @@ def core_health() -> bool:
         return False
 
 
-def jellyfin_now_playing() -> list[dict]:
-    _, _, raw = _req(f"{JELLYFIN}/Sessions?api_key={JF_KEY}", timeout=5.0)
-    out = []
-    for s in json.loads(raw):
-        item = s.get("NowPlayingItem")
-        if not item:
-            continue
-        ps = s.get("PlayState") or {}
-        runtime = item.get("RunTimeTicks") or 0
-        pos = ps.get("PositionTicks") or 0
-        title = item.get("Name", "")
-        if item.get("SeriesName"):
-            ep = ""
-            if item.get("ParentIndexNumber") is not None and item.get("IndexNumber") is not None:
-                ep = f"S{item['ParentIndexNumber']} E{item['IndexNumber']} - "
-            title = f"{item['SeriesName']} - {ep}{title}"
-        out.append({
-            "title": title,
-            "type": item.get("Type", ""),
-            "user": s.get("UserName", ""),
-            "client": s.get("Client", ""),
-            "device": s.get("DeviceName", ""),
-            "paused": bool(ps.get("IsPaused")),
-            "pct": round(100 * pos / runtime) if runtime else 0,
-            "image_id": item.get("SeriesId") or item.get("Id"),
-        })
-    return out
-
-
-def mic_state() -> dict:
+def _source_muted() -> bool | None:
     try:
         out = subprocess.run(["pactl", "get-source-mute", "@DEFAULT_SOURCE@"],
                              capture_output=True, text=True, timeout=4).stdout
-        return {"muted": "yes" in out.lower(), "ok": True}
-    except Exception as exc:
-        return {"muted": None, "ok": False, "error": str(exc)}
+        return "yes" in out.lower()
+    except Exception:
+        return None
 
 
-def mic_set(muted: bool) -> dict:
+def audio_mute_set(muted: bool) -> dict:
+    # The mic mute rides Fedora's DEFAULT source (the localmic
+    # feeder captures it): muting the default source means Lyra
+    # hears nothing. Same pactl mechanism the old standalone Mic
+    # Mute toggle used; the control now lives on the Audio card.
     subprocess.run(["pactl", "set-source-mute", "@DEFAULT_SOURCE@",
                     "1" if muted else "0"], capture_output=True, timeout=4)
-    return mic_state()
+    return audio_devices()
 
 
 def audio_devices() -> dict:
@@ -130,7 +95,7 @@ def audio_devices() -> dict:
         nodes = json.loads(out)
     except Exception as exc:
         return {"ok": False, "error": str(exc), "sinks": [], "sources": [],
-                "default_sink": "", "default_source": ""}
+                "default_sink": "", "default_source": "", "source_muted": None}
     for obj in nodes:
         if obj.get("type") != "PipeWire:Interface:Node":
             continue
@@ -156,7 +121,8 @@ def audio_devices() -> dict:
 
     return {"ok": True, "sinks": sinks, "sources": sources,
             "default_sink": _default("get-default-sink"),
-            "default_source": _default("get-default-source")}
+            "default_source": _default("get-default-source"),
+            "source_muted": _source_muted()}
 
 
 def audio_set(kind: str, device: str) -> dict:
@@ -213,8 +179,6 @@ def full_state() -> dict:
     for key, tool, action in (
         ("alarm", "alarm", "summary"),
         ("light", "light", "state"),
-        ("monitor", "monitor", "state"),
-        ("volume", "media_volume", "get"),
         ("tv", "tv", "get"),
         ("tv_volume", "tv_volume", "get"),
     ):
@@ -222,11 +186,6 @@ def full_state() -> dict:
             state[key] = core_tool(tool, action, {})
         except Exception as exc:
             state[key] = {"ok": False, "error": str(exc)}
-    try:
-        state["jellyfin"] = {"ok": True, "now_playing": jellyfin_now_playing()}
-    except Exception as exc:
-        state["jellyfin"] = {"ok": False, "error": str(exc), "now_playing": []}
-    state["mic"] = mic_state()
     state["audio"] = audio_devices()
     state["display"] = display_state()
     state["sleep"] = sleep_state()
@@ -235,10 +194,8 @@ def full_state() -> dict:
 
 ALLOWED = {
     "light": {"state", "on", "off", "set_brightness"},
-    "monitor": {"state", "on", "off"},
     "alarm": {"summary", "set", "kill", "snooze", "enable", "disable",
               "ring_volume_get", "ring_volume_set", "note_get"},
-    "media_volume": {"get", "set"},
     "tv": {"get", "set", "adjust"},
     "tv_volume": {"get", "set", "adjust"},
 }
@@ -266,16 +223,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/state":
             self._json(200, full_state())
             return
-        m = re.fullmatch(r"/api/poster/([A-Za-z0-9]+)", self.path)
-        if m:
-            try:
-                _, ctype, raw = _req(
-                    f"{JELLYFIN}/Items/{m.group(1)}/Images/Primary?api_key={JF_KEY}",
-                    timeout=6.0)
-                self._send(200, ctype, raw)
-            except Exception:
-                self._json(404, {"ok": False})
-            return
         self._json(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
@@ -298,12 +245,6 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._json(502, {"ok": False, "error": str(exc)})
             return
-        if self.path == "/api/mic":
-            try:
-                self._json(200, {"ok": True, "mic": mic_set(bool(payload.get("muted")))})
-            except Exception as exc:
-                self._json(502, {"ok": False, "error": str(exc)})
-            return
         if self.path == "/api/display":
             try:
                 self._json(200, {"ok": True, "display": display_set(bool(payload.get("on")))})
@@ -318,6 +259,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/audio":
             try:
+                if "muted" in payload:
+                    self._json(200, {"ok": True,
+                                     "audio": audio_mute_set(bool(payload["muted"]))})
+                    return
                 kind = str(payload.get("kind", ""))
                 if kind not in ("sink", "source"):
                     raise ValueError("kind must be sink or source")

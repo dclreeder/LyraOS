@@ -42,10 +42,6 @@
            border:1px solid #2a313a; border-radius:10px; padding:10px; }
   select:disabled { opacity:.45; }
   .tile-name { font-size:17px; font-weight:600; }
-  .poster { width:54px; height:80px; object-fit:cover; border-radius:8px;
-            background:#21262d; flex:none; }
-  .progress { height:5px; background:#30363d; border-radius:99px; margin-top:8px; }
-  .progress > div { height:100%; background:#2ea043; border-radius:99px; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   .grid2 .card { margin-bottom:0; }
   .wrap { margin-bottom:12px; }
@@ -96,25 +92,7 @@
 </div>
 
 <div class="card">
-  <div class="label">Lyra Flex</div>
-  <div class="row spread">
-    <div class="tile-name">Speaker Box</div>
-    <span class="badge" id="coreBadge">...</span>
-  </div>
-  <div style="margin-top:12px;">
-    <div class="label">Speaking volume <span id="volVal" class="dim"></span></div>
-    <input type="range" id="vol" min="0" max="100" step="5">
-  </div>
-</div>
-
-<div class="card">
-  <div class="label">Jellyfin</div>
-  <div id="jfBody"><div class="sub">Loading...</div></div>
-</div>
-
-<div class="wrap grid2">
-  <div class="card">
-    <div class="label">TV</div>
+  <div class="label">TV</div>
     <div class="tile-name">Lyra TV</div>
     <div class="sub" id="tvSub">...</div>
     <div class="row spread" style="margin-top:12px;">
@@ -138,19 +116,6 @@
       <button id="tvFullBtn">Full</button>
     </div>
   </div>
-  <div class="card">
-    <div class="label">Utilities</div>
-    <div class="row spread" style="margin-bottom:12px;">
-      <div class="tile-name" style="font-size:15px;">PC Monitor</div>
-      <button class="switch" id="monitorToggle" aria-label="Toggle PC monitor"></button>
-    </div>
-    <div class="row spread">
-      <div class="tile-name" style="font-size:15px;">Mic Mute</div>
-      <button class="switch" id="micToggle" aria-label="Toggle mic mute"></button>
-    </div>
-  </div>
-</div>
-
 <div class="card">
   <div class="label">Audio</div>
   <div class="sub" style="margin-top:0;">Lyra uses Fedora's default devices - these pick her speakers and mic.</div>
@@ -162,6 +127,11 @@
     <div class="label">Microphone</div>
     <select id="audioSource" aria-label="Default microphone"></select>
   </div>
+  <div class="row spread" style="margin-top:12px;">
+    <div class="tile-name" style="font-size:15px;">Mic mute</div>
+    <button class="switch" id="micMuteToggle" aria-label="Toggle microphone mute"></button>
+  </div>
+  <div class="sub">Muting applies to Fedora's default mic - while it's on, Lyra hears nothing.</div>
 </div>
 
 <div class="card">
@@ -175,7 +145,10 @@
   </div>
 </div>
 
-<div class="sub" style="text-align:center;" id="foot">Served by the Fedora - lyra-core :8099</div>
+<div class="row" style="justify-content:center;">
+  <span class="badge" id="coreBadge">...</span>
+  <span class="sub" style="margin-top:0;">Served by the Fedora - lyra-core :8099</span>
+</div>
 <div id="toast"></div>
 
 <script>
@@ -249,11 +222,6 @@ async function refresh() {
   if (lb !== null && document.activeElement !== $('lightBri')) $('lightBri').value = lb;
   $('coreBadge').textContent = j.core_online ? 'Core online' : 'Core offline';
   $('coreBadge').className = 'badge' + (j.core_online ? '' : ' off');
-  const v = (j.volume && j.volume.state) || {};
-  const vv = pctOf(v.volume !== undefined ? v.volume : v.percent);
-  if (vv !== null && document.activeElement !== $('vol')) {
-    $('vol').value = vv; $('volVal').textContent = vv + '%';
-  }
   const t = (j.tv && j.tv.state) || {};
   const tb = pctOf(t.brightness);
   $('tvSub').textContent = tb !== null ? 'Brightness ' + tb + '%' : 'Viewer unreachable';
@@ -270,28 +238,9 @@ async function refresh() {
   if (tvo !== null && document.activeElement !== $('tvVol')) {
     $('tvVol').value = tvo; $('tvVolVal').textContent = tvo + '%';
   }
-  const mon = onOf((j.monitor && j.monitor.state) || {});
-  setSwitch($('monitorToggle'), mon);
-  setSwitch($('micToggle'), j.mic && j.mic.ok ? !!j.mic.muted : null);
   renderAudio(j.audio);
-  const jfErr = j.jellyfin && j.jellyfin.ok === false;
-  const np = (j.jellyfin && j.jellyfin.now_playing) || [];
-  if (jfErr) {
-    $('jfBody').innerHTML = '<div class="sub">Jellyfin rejected the stored API key - it needs a fresh one (Jellyfin &gt; Dashboard &gt; API Keys), then update JELLYFIN_API_KEY in APIKeys/.env.</div>';
-  } else if (!np.length) {
-    $('jfBody').innerHTML = '<div class="sub">Nothing playing</div>';
-  } else {
-    $('jfBody').innerHTML = np.map(x => `
-      <div class="row" style="align-items:flex-start;">
-        <img class="poster" src="/api/poster/${x.image_id}" alt="">
-        <div style="flex:1; min-width:0;">
-          <div class="tile-name" style="font-size:15px;">${x.title}</div>
-          <div class="sub">${x.user} - ${x.client} - ${x.device}${x.paused ? ' - paused' : ''}</div>
-          <div class="progress"><div style="width:${x.pct}%"></div></div>
-        </div>
-      </div>`).join('');
-  }
 }
+
 let audioSig = '';
 function fillSelect(sel, devices, current, emptyLabel) {
   sel.innerHTML = '';
@@ -312,13 +261,16 @@ function fillSelect(sel, devices, current, emptyLabel) {
 }
 function renderAudio(a, force) {
   if (!a || !a.ok) return;
-  const sig = JSON.stringify([a.sinks, a.sources, a.default_sink, a.default_source]);
+  const sig = JSON.stringify([a.sinks, a.sources, a.default_sink, a.default_source, a.source_muted]);
   if (!force && sig === audioSig) return;
   if (!force && (document.activeElement === $('audioSink') ||
                  document.activeElement === $('audioSource'))) return;
   audioSig = sig;
   fillSelect($('audioSink'), a.sinks || [], a.default_sink, 'No speakers');
   fillSelect($('audioSource'), a.sources || [], a.default_source, 'No microphone');
+  setSwitch($('micMuteToggle'),
+            a.source_muted === null || a.source_muted === undefined
+              ? null : !!a.source_muted);
 }
 async function setAudio(kind, device) {
   try {
@@ -339,6 +291,25 @@ async function setAudio(kind, device) {
   } catch (e) { toast('Audio request failed'); }
   refresh();
 }
+async function setAudioMute(muted) {
+  try {
+    const r = await fetch('/api/audio', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({muted}) });
+    const j = await r.json();
+    if (j.ok && j.audio) {
+      renderAudio(j.audio, true);
+      toast(muted ? 'Mic muted' : 'Mic live');
+    } else {
+      toast(j.error || 'Mic change failed');
+    }
+  } catch (e) { toast('Mic request failed'); }
+  refresh();
+}
+$('micMuteToggle').onclick = () => {
+  const muted = !(S.audio && S.audio.source_muted);
+  setAudioMute(muted);
+};
 $('audioSink').onchange = e => setAudio('sink', e.target.value);
 $('audioSource').onchange = e => setAudio('source', e.target.value);
 $('killBtn').onclick = () => act('alarm', 'kill');
@@ -354,18 +325,12 @@ $('lightToggle').onclick = () => {
   act('light', lon ? 'off' : 'on');
 };
 $('lightBri').onchange = e => act('light', 'set_brightness', {percent: +e.target.value});
-$('vol').onchange = e => act('media_volume', 'set', {percent: +e.target.value});
-$('vol').oninput = e => $('volVal').textContent = e.target.value + '%';
 $('tvBri').onchange = e => act('tv', 'set', {percent: +e.target.value});
 $('tvBri').oninput = e => $('tvVal').textContent = e.target.value + '%';
 $('tvVol').onchange = e => act('tv_volume', 'set', {percent: +e.target.value});
 $('tvVol').oninput = e => $('tvVolVal').textContent = e.target.value + '%';
 $('tvDimBtn').onclick = () => act('tv', 'set', {percent: 30});
 $('tvFullBtn').onclick = () => act('tv', 'set', {percent: 100});
-$('monitorToggle').onclick = () => {
-  const mon = onOf((S.monitor && S.monitor.state) || {});
-  act('monitor', mon ? 'off' : 'on');
-};
 $('displayToggle').onclick = async () => {
   const on = !(S.display && S.display.active);
   try {
@@ -384,16 +349,6 @@ $('sleepToggle').onclick = async () => {
       body: JSON.stringify({on}) });
     toast(on ? 'Sleep mode on - Lyra is asleep' : 'Sleep mode off');
   } catch (e) { toast('Sleep request failed'); }
-  refresh();
-};
-$('micToggle').onclick = async () => {
-  const muted = !(S.mic && S.mic.muted);
-  try {
-    await fetch('/api/mic', { method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({muted}) });
-    toast(muted ? 'Mic muted' : 'Mic live');
-  } catch (e) { toast('Mic request failed'); }
   refresh();
 };
 refresh();
