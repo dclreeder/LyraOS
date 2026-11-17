@@ -154,23 +154,56 @@ def display_set(on: bool) -> dict:
     return display_state()
 
 
-SLEEP_STATE_FILE = HOME / "Documents/LyraOS/web/sleep_state.json"
+MODE_STATE_FILE = HOME / "Documents/LyraOS/web/mode_state.json"
+RTC_STATE_FILE = HOME / "Documents/LyraOS/web/rtc_state.json"
+MODES = ("wakegate", "rtc", "sleep")
+
+
+def mode_state() -> dict:
+    # Lyra's mode (2026-11-16): web/mode_state.json is the ONE
+    # source of truth -- this dashboard writes it, lyra-core applies
+    # it (capture / RTC acceptance), lyra-web reports it to the TV
+    # page. rtc_connected is the core's published fact
+    # (rtc_state.json), merged here for the mode card.
+    try:
+        data = json.loads(MODE_STATE_FILE.read_text())
+        mode = data.get("mode")
+    except Exception:
+        mode = None
+    if mode not in MODES:
+        mode = "wakegate"
+    try:
+        rtc = json.loads(RTC_STATE_FILE.read_text())
+        connected = bool(rtc.get("connected", False))
+    except Exception:
+        connected = False
+    return {"mode": mode, "rtc_connected": connected, "ok": True}
+
+
+def mode_set(mode: str) -> dict:
+    if mode not in MODES:
+        raise ValueError(f"unknown mode {mode!r}")
+    tmp = MODE_STATE_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"mode": mode, "updated": time.time()}))
+    tmp.replace(MODE_STATE_FILE)
+    return mode_state()
 
 
 def sleep_state() -> dict:
-    try:
-        data = json.loads(SLEEP_STATE_FILE.read_text())
-        return {"active": bool(data.get("sleep", False)), "ok": True}
-    except Exception:
-        return {"active": False, "ok": True}
+    # Sleep is a MODE now (2026-11-16): the TV card's sleep switch
+    # reads the mode file like everything else -- there is no
+    # separate sleep state anymore (the old sleep_state.json is
+    # retired; the Phase 2 sleep cycle will select the mode too).
+    return {"active": mode_state()["mode"] == "sleep", "ok": True}
 
 
 def sleep_set(on: bool) -> dict:
-    # Sleep mode (2026-11-15, Daniel's ask): her sleep state -- the TV
-    # page shows the sleep plate and fades her model out while it is
-    # on. The Phase 2 sleep cycle will drive this same state later.
-    SLEEP_STATE_FILE.write_text(
-        json.dumps({"sleep": bool(on), "updated": time.time()}))
+    # Toggling sleep on selects the sleep mode; toggling it off
+    # returns her to the resting WakeGate mode.
+    if on:
+        mode_set("sleep")
+    elif mode_state()["mode"] == "sleep":
+        mode_set("wakegate")
     return sleep_state()
 
 
@@ -189,6 +222,7 @@ def full_state() -> dict:
     state["audio"] = audio_devices()
     state["display"] = display_state()
     state["sleep"] = sleep_state()
+    state["mode"] = mode_state()
     return state
 
 
@@ -250,6 +284,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True, "display": display_set(bool(payload.get("on")))})
             except Exception as exc:
                 self._json(502, {"ok": False, "error": str(exc)})
+            return
+        if self.path == "/api/mode":
+            try:
+                self._json(200, {"ok": True,
+                                 "mode": mode_set(str(payload.get("mode", "")))})
+            except Exception as exc:
+                self._json(400, {"ok": False, "error": str(exc)})
             return
         if self.path == "/api/sleep":
             try:

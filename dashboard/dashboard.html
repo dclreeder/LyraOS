@@ -53,10 +53,22 @@
   #toast.show { opacity:1; }
   .dim { color:#8b949e; }
   .note { font-style: italic; color:#d29922; margin-top:8px; font-size:14px; }
+  .modebtn { flex:1; }
+  .modebtn.on { background:#1d5c38; border-color:#2ea043; color:#fff; }
 </style>
 </head>
 <body>
 <h1>Home</h1>
+
+<div class="card">
+  <div class="label">Mode</div>
+  <div class="row" style="gap:10px;">
+    <button class="modebtn" id="modeWakegate">WakeGate</button>
+    <button class="modebtn" id="modeRtc">RTC</button>
+    <button class="modebtn" id="modeSleep">Sleep</button>
+  </div>
+  <div class="sub" id="modeSub">...</div>
+</div>
 
 <div class="card" id="alarmCard">
   <div class="row spread">
@@ -239,6 +251,7 @@ async function refresh() {
     $('tvVol').value = tvo; $('tvVolVal').textContent = tvo + '%';
   }
   renderAudio(j.audio);
+  renderMode(j.mode);
 }
 
 let audioSig = '';
@@ -306,6 +319,34 @@ async function setAudioMute(muted) {
   } catch (e) { toast('Mic request failed'); }
   refresh();
 }
+let modeSig = '';
+function renderMode(m) {
+  if (!m || !m.mode) return;
+  const sig = m.mode + '|' + m.rtc_connected;
+  if (sig === modeSig) return;
+  modeSig = sig;
+  for (const [id, md] of [['modeWakegate','wakegate'],['modeRtc','rtc'],['modeSleep','sleep']])
+    $(id).classList.toggle('on', m.mode === md);
+  $('modeSub').textContent =
+    m.mode === 'wakegate' ? 'Listening for the wake word' :
+    m.mode === 'rtc' ? (m.rtc_connected ? 'Live on the TV page - talk freely, no wake word'
+                                        : 'RTC selected - the TV page is connecting') :
+    'In bed - not listening';
+}
+async function setMode(mode) {
+  try {
+    const r = await fetch('/api/mode', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({mode}) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'failed');
+    toast('Mode: ' + mode);
+  } catch (e) { toast('Mode change failed'); }
+  refresh();
+}
+$('modeWakegate').onclick = () => setMode('wakegate');
+$('modeRtc').onclick = () => setMode('rtc');
+$('modeSleep').onclick = () => setMode('sleep');
 $('micMuteToggle').onclick = () => {
   const muted = !(S.audio && S.audio.source_muted);
   setAudioMute(muted);
