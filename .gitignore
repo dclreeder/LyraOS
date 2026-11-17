@@ -40,3 +40,7 @@ modules/wakeword/data/clips/
 # Memory build Phase 0: conversation inbox logs are private (Daniels
 # conversations) -- like the wake clip pool, they never enter the repo.
 memory/inbox/
+
+# llama.cpp checkout + build artifacts (re-clone to rebuild; see modules/llm/README.md)
+modules/llm/llama.cpp/
+modules/llm/*.log

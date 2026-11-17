@@ -1,0 +1,11 @@
+[Unit]
+Description=Lyra LLM module - llama.cpp server (local LLM, production router brain)
+After=network.target
+
+[Service]
+ExecStart=/home/dclreeder/Documents/LyraOS/modules/llm/llama.cpp/build/bin/llama-server -m /home/dclreeder/Documents/LyraOS/data/models/gemma-4-12b-it-Q4_K_M.gguf --host 127.0.0.1 --port 8094 -ngl 99 -c 32768 --alias gemma4:12b
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

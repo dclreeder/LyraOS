@@ -66,17 +66,24 @@ class AlarmConfig:
 class RouterConfig:
     # Free router (2026-11-11): the model runs the turn uncaged
     # through the tools layer; see lyra_core.free_router. Backend
-    # since 2026-11-16: Muse Spark 1.3 on the Meta Model API
-    # (OpenAI-compatible chat completions). The local llama-server
-    # (lyra-llm) was shut down and removed the same night at
-    # Daniel's order -- there is no local fallback. The API key is
-    # never stored here; config only says where free_router reads
-    # it (Daniel's central APIKeys .env).
-    llm_url: str = "https://api.meta.ai/v1"
-    llm_model: str = "muse-ember-1.0"
+    # since 2026-11-17: LOCAL llama-server (lyra-llm.service) on
+    # 127.0.0.1:8094 serving Gemma 4 12B (alias gemma4:12b,
+    # Q4_K_M GGUF) on the RX 9060 XT via Vulkan -- Daniel's order.
+    # Previous backend (2026-11-16): Muse Ember 1.0, Meta Model
+    # API. ROLLBACK to Ember = restore these lines to:
+    #   llm_url "https://api.meta.ai/v1", llm_model "muse-ember-1.0",
+    #   api_key_path "~/Documents/APIKeys/.env",
+    #   api_key_var "MUSE_MODEL_API_KEY" (reasoning_effort as-is)
+    # and restart lyra-core. The local server ignores the
+    # reasoning_effort field (verified 2026-11-17) and needs no
+    # real key; the loader still requires a non-empty one, so it
+    # reads a dummy from the project-local llama_api_key.env
+    # (NOT a secret -- see that file).
+    llm_url: str = "http://127.0.0.1:8094/v1"
+    llm_model: str = "gemma4:12b"
     reasoning_effort: str = "minimal"
-    api_key_path: str = "~/Documents/APIKeys/.env"
-    api_key_var: str = "MUSE_MODEL_API_KEY"
+    api_key_path: str = "~/Documents/LyraOS/core/llama_api_key.env"
+    api_key_var: str = "LLAMA_API_KEY"
     timezone: str = "America/New_York"
     # Home location exactly as the HA-era setup recorded it
     # (core.config in the 2026-11-10 HA baseline backup); Open-Meteo
