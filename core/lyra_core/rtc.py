@@ -80,6 +80,15 @@ def _pcm_frame(pcm: bytes, rate: int) -> av.AudioFrame:
     return frame
 
 
+
+def _frame_pcm(frame) -> bytes:
+    """Packed s16 mono PCM out of a PyAV frame WITHOUT numpy:
+    frame.to_ndarray() imports numpy, which this venv does not
+    have -- production only worked because another core import
+    drags the wyoming venv's numpy into the process. Plane bytes
+    sliced to the frame's sample count are the same data."""
+    return bytes(frame.planes[0])[: frame.samples * 2]
+
 class _Segmenter:
     """VAD segmentation over the peer's 16 kHz stream.
 
@@ -220,7 +229,7 @@ class _RtcSpeaker:
             if sentence is None:
                 for frame in self._resampler.resample(None):
                     self._session.append_out(
-                        frame.to_ndarray().tobytes(), self._generation)
+                        _frame_pcm(frame), self._generation)
                 return
             try:
                 wav_bytes, rate, _w, _c = await self._driver.synthesize_speech(
@@ -233,7 +242,7 @@ class _RtcSpeaker:
                 pcm = wf.readframes(wf.getnframes())
             for frame in self._resampler.resample(_pcm_frame(pcm, rate)):
                 self._session.append_out(
-                    frame.to_ndarray().tobytes(), self._generation)
+                    _frame_pcm(frame), self._generation)
 
     async def drain(self) -> None:
         if self._worker is not None:
@@ -303,7 +312,7 @@ class _RtcSession:
             while not self._closed:
                 frame = await track.recv()
                 for out in resampler.resample(frame):
-                    pcm = out.to_ndarray().tobytes()
+                    pcm = _frame_pcm(out)
                     for kind, payload in self._seg.feed(pcm):
                         if kind == "speech_start":
                             self.barge_in()
