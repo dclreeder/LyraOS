@@ -78,6 +78,7 @@ from .config import CoreConfig
 from .pipeline import PipelineDriver, speech_route
 from .free_router import FreeRouter
 from .satlink import SatBoxClient
+from .localmic import LocalMicClient
 from .session import VoiceSession
 from .inbox import InboxLog
 from .tv_ring import TvRinger
@@ -205,6 +206,26 @@ async def amain() -> int:
         _LOGGER.info(
             "box transport: satlink (listening on %s:%d)",
             cfg.satlink.bind_host, cfg.satlink.port,
+        )
+    elif cfg.transport == "localmic":
+        # Box-free transport (2026-11-16, Daniel: "act like the box
+        # is gone"): the session's ears are a PipeWire capture of
+        # Fedora's default audio source, and her voice already
+        # leaves via the TV mirror -> Fedora's default sink. No
+        # satlink listener is opened; the satellite code stays in
+        # the tree, unused, one config value away.
+        def _localmic_factory() -> LocalMicClient:
+            return LocalMicClient(
+                cfg,
+                on_audio=session.handle_audio,
+                on_start=session.handle_start,
+                on_stop=session.handle_stop,
+                audio_store=http.store,
+            )
+
+        supervisor = CoreSupervisor(cfg, session, box_factory=_localmic_factory)
+        _LOGGER.info(
+            "box transport: localmic (Fedora default source; no satellite box)"
         )
     elif cfg.transport == "esphome":
         supervisor = CoreSupervisor(cfg, session)
