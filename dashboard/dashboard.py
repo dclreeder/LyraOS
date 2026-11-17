@@ -115,6 +115,60 @@ def mic_set(muted: bool) -> dict:
     return mic_state()
 
 
+def audio_devices() -> dict:
+    # Fedora audio devices via PipeWire (2026-11-16, Daniel's ask).
+    # The dashboard only flips the OS defaults: Lyra's voice follows
+    # the default sink and the localmic feeder captures the default
+    # source, so these defaults ARE Lyra's speaker/mic choice. Node
+    # names are the stable ids (wpctl numbers change on replug).
+    # *.monitor sources are output loopbacks, not microphones.
+    sinks: list[dict] = []
+    sources: list[dict] = []
+    try:
+        out = subprocess.run(["pw-dump"], capture_output=True, text=True,
+                             timeout=6).stdout
+        nodes = json.loads(out)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "sinks": [], "sources": [],
+                "default_sink": "", "default_source": ""}
+    for obj in nodes:
+        if obj.get("type") != "PipeWire:Interface:Node":
+            continue
+        props = (obj.get("info") or {}).get("props") or {}
+        name = props.get("node.name")
+        cls = props.get("media.class")
+        if not name:
+            continue
+        entry = {"name": name,
+                 "label": props.get("node.description")
+                 or props.get("node.nick") or name}
+        if cls == "Audio/Sink":
+            sinks.append(entry)
+        elif cls == "Audio/Source" and not name.endswith(".monitor"):
+            sources.append(entry)
+
+    def _default(cmd: str) -> str:
+        try:
+            return subprocess.run(["pactl", cmd], capture_output=True,
+                                  text=True, timeout=4).stdout.strip()
+        except Exception:
+            return ""
+
+    return {"ok": True, "sinks": sinks, "sources": sources,
+            "default_sink": _default("get-default-sink"),
+            "default_source": _default("get-default-source")}
+
+
+def audio_set(kind: str, device: str) -> dict:
+    state = audio_devices()
+    pool = state["sinks"] if kind == "sink" else state["sources"]
+    if device not in {d["name"] for d in pool}:
+        raise ValueError("unknown audio device")
+    cmd = "set-default-sink" if kind == "sink" else "set-default-source"
+    subprocess.run(["pactl", cmd, device], capture_output=True, timeout=4)
+    return audio_devices()
+
+
 DISPLAY_STATE_FILE = HOME / "Documents/LyraOS/web/display_state.json"
 
 
@@ -173,6 +227,7 @@ def full_state() -> dict:
     except Exception as exc:
         state["jellyfin"] = {"ok": False, "error": str(exc), "now_playing": []}
     state["mic"] = mic_state()
+    state["audio"] = audio_devices()
     state["display"] = display_state()
     state["sleep"] = sleep_state()
     return state
@@ -258,6 +313,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/sleep":
             try:
                 self._json(200, {"ok": True, "sleep": sleep_set(bool(payload.get("on")))})
+            except Exception as exc:
+                self._json(502, {"ok": False, "error": str(exc)})
+            return
+        if self.path == "/api/audio":
+            try:
+                kind = str(payload.get("kind", ""))
+                if kind not in ("sink", "source"):
+                    raise ValueError("kind must be sink or source")
+                self._json(200, {"ok": True,
+                                 "audio": audio_set(kind, str(payload.get("device", "")))})
             except Exception as exc:
                 self._json(502, {"ok": False, "error": str(exc)})
             return

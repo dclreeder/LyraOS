@@ -38,6 +38,9 @@
   .switch.on { background:#1d5c38; border-color:#2ea043; }
   .switch.on::after { left:27px; }
   input[type=range] { width:100%; accent-color:#2ea043; margin-top:10px; }
+  select { width:100%; font:inherit; background:#21262d; color:#e6edf3;
+           border:1px solid #2a313a; border-radius:10px; padding:10px; }
+  select:disabled { opacity:.45; }
   .tile-name { font-size:17px; font-weight:600; }
   .poster { width:54px; height:80px; object-fit:cover; border-radius:8px;
             background:#21262d; flex:none; }
@@ -145,6 +148,19 @@
       <div class="tile-name" style="font-size:15px;">Mic Mute</div>
       <button class="switch" id="micToggle" aria-label="Toggle mic mute"></button>
     </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="label">Audio</div>
+  <div class="sub" style="margin-top:0;">Lyra uses Fedora's default devices - these pick her speakers and mic.</div>
+  <div style="margin-top:12px;">
+    <div class="label">Speakers</div>
+    <select id="audioSink" aria-label="Default speaker"></select>
+  </div>
+  <div style="margin-top:12px;">
+    <div class="label">Microphone</div>
+    <select id="audioSource" aria-label="Default microphone"></select>
   </div>
 </div>
 
@@ -257,6 +273,7 @@ async function refresh() {
   const mon = onOf((j.monitor && j.monitor.state) || {});
   setSwitch($('monitorToggle'), mon);
   setSwitch($('micToggle'), j.mic && j.mic.ok ? !!j.mic.muted : null);
+  renderAudio(j.audio);
   const jfErr = j.jellyfin && j.jellyfin.ok === false;
   const np = (j.jellyfin && j.jellyfin.now_playing) || [];
   if (jfErr) {
@@ -275,6 +292,55 @@ async function refresh() {
       </div>`).join('');
   }
 }
+let audioSig = '';
+function fillSelect(sel, devices, current, emptyLabel) {
+  sel.innerHTML = '';
+  if (!devices.length) {
+    const o = document.createElement('option');
+    o.textContent = emptyLabel; o.disabled = true;
+    sel.appendChild(o); sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  for (const d of devices) {
+    const o = document.createElement('option');
+    o.value = d.name; o.textContent = d.label;
+    sel.appendChild(o);
+  }
+  if (devices.some(d => d.name === current)) sel.value = current;
+  else sel.selectedIndex = -1;
+}
+function renderAudio(a, force) {
+  if (!a || !a.ok) return;
+  const sig = JSON.stringify([a.sinks, a.sources, a.default_sink, a.default_source]);
+  if (!force && sig === audioSig) return;
+  if (!force && (document.activeElement === $('audioSink') ||
+                 document.activeElement === $('audioSource'))) return;
+  audioSig = sig;
+  fillSelect($('audioSink'), a.sinks || [], a.default_sink, 'No speakers');
+  fillSelect($('audioSource'), a.sources || [], a.default_source, 'No microphone');
+}
+async function setAudio(kind, device) {
+  try {
+    const r = await fetch('/api/audio', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({kind, device}) });
+    const j = await r.json();
+    if (j.ok && j.audio) {
+      renderAudio(j.audio, true);
+      const key = kind === 'sink' ? 'default_sink' : 'default_source';
+      const list = kind === 'sink' ? j.audio.sinks : j.audio.sources;
+      const cur = (list || []).find(d => d.name === j.audio[key]);
+      toast((kind === 'sink' ? 'Speakers: ' : 'Microphone: ') +
+            (cur ? cur.label : device));
+    } else {
+      toast(j.error || 'Audio change failed');
+    }
+  } catch (e) { toast('Audio request failed'); }
+  refresh();
+}
+$('audioSink').onchange = e => setAudio('sink', e.target.value);
+$('audioSource').onchange = e => setAudio('source', e.target.value);
 $('killBtn').onclick = () => act('alarm', 'kill');
 $('snoozeBtn').onclick = () => act('alarm', 'snooze');
 $('alarmToggle').onclick = () => {
