@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lyra web viewer server: static pages, /mirror speech jobs, /ring, /dim, and the streamed /call proxy to the core."""
+"""Lyra web viewer server: static pages, /mirror speech jobs, /ring, /dim, the streamed /call proxy to the core, and the /rtc/offer signaling proxy."""
 import base64, json, os, threading, time, urllib.request, urllib.error, urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.path.expanduser('~/Documents/LyraOS/web')
@@ -20,6 +20,16 @@ def call_start(wav):
     req = urllib.request.Request('http://127.0.0.1:8099/call/start?t=' + core_token(),
                                  data=wav, headers={'Content-Type': 'audio/wav'})
     with urllib.request.urlopen(req, timeout=90) as r:
+        return r.status, json.loads(r.read())
+# RTC signaling (2026-11-16): in rtc mode the TV page itself is the
+# WebRTC peer; it POSTs its SDP offer to /rtc/offer here and this
+# server relays it to the core with the token server-side, exactly
+# like the call proxy. The core answers 409 unless rtc mode is
+# active; that status passes straight through to the page.
+def rtc_offer(payload):
+    req = urllib.request.Request('http://127.0.0.1:8099/rtc/offer?t=' + core_token(),
+                                 data=payload, headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=30) as r:
         return r.status, json.loads(r.read())
 # Next-alarm line for the TV clock (2026-11-15): the core's alarm
 # tool summary, relayed server-side like the call proxy. The TV page
@@ -55,19 +65,34 @@ def _light_state():
         val = {'on': None, 'brightness': None}
     _light_cache[0] = now; _light_cache[1] = val
     return val
+# Lyra's mode (2026-11-16): mode_state.json is the ONE source of
+# truth -- the dashboard writes it, lyra-core applies it, and this
+# server reports it to the TV page. rtc_state.json is the core's
+# published fact about whether an RTC peer is connected. Sleep is
+# a mode now; the page's `sleep` flag derives from it (the old
+# sleep_state.json is retired).
+MODE_STATE_PATH = os.path.join(ROOT, 'mode_state.json')
+RTC_STATE_PATH = os.path.join(ROOT, 'rtc_state.json')
+def get_mode():
+    try:
+        with open(MODE_STATE_PATH) as f: mode = json.load(f).get('mode')
+    except Exception: mode = None
+    return mode if mode in ('wakegate', 'rtc', 'sleep') else 'wakegate'
+def get_rtc_connected():
+    try:
+        with open(RTC_STATE_PATH) as f: return bool(json.load(f).get('connected'))
+    except Exception: return False
 def room_state():
     try:
         with open(os.path.join(ROOT, 'display_state.json')) as f:
             display_on = bool(json.load(f).get('display_on'))
     except Exception:
         display_on = True
-    try:
-        with open(os.path.join(ROOT, 'sleep_state.json')) as f:
-            sleep = bool(json.load(f).get('sleep'))
-    except Exception:
-        sleep = False
+    mode = get_mode()
     return {'light': _light_state(), 'display_on': display_on,
-            'call_active': get_call_state()['active'], 'sleep': sleep}
+            'call_active': get_call_state()['active'],
+            'sleep': mode == 'sleep', 'mode': mode,
+            'rtc_connected': get_rtc_connected()}
 def call_poll(call_id, after):
     q = urllib.parse.urlencode({'t': core_token(), 'call': call_id, 'after': after})
     with urllib.request.urlopen('http://127.0.0.1:8099/call/poll?' + q, timeout=15) as r:
@@ -170,6 +195,17 @@ class H(SimpleHTTPRequestHandler):
                 if n <= 0 or n > 8 * 1024 * 1024: return self._json(413, {'error': 'bad size'})
                 wav = self.rfile.read(n)
                 code, obj = call_start(wav)
+                return self._json(code, obj)
+            except urllib.error.HTTPError as e:
+                try: return self._json(e.code, json.loads(e.read()))
+                except Exception: return self._json(e.code, {'error': 'core error'})
+            except Exception as e: return self._json(502, {'error': str(e)})
+        if self.path == '/rtc/offer':
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                if n <= 0 or n > 256 * 1024: return self._json(413, {'error': 'bad size'})
+                payload = self.rfile.read(n)
+                code, obj = rtc_offer(payload)
                 return self._json(code, obj)
             except urllib.error.HTTPError as e:
                 try: return self._json(e.code, json.loads(e.read()))

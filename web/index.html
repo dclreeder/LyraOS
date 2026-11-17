@@ -233,7 +233,7 @@ setInterval(pollRing, 700); pollRing();
     try {
       var j = await (await fetch('/roomstate', {cache: 'no-store'})).json();
       set(off, !!(j.light && j.light.on === false));
-      set(pg, !!j.call_active);
+      set(pg, !!j.call_active || (j.mode === 'rtc' && !!j.rtc_connected));
       set(slp, !!j.sleep);
       if (cv) cv.style.opacity = j.sleep ? '0' : '1';
     } catch (e) {}
@@ -287,6 +287,65 @@ setInterval(pollRing, 700); pollRing();
     } catch (e) { /* keep the last shown value */ }
   }
   setInterval(tick, 30000); tick();
+})();
+</script>
+<script>
+// RTC client (2026-11-16): in rtc mode THIS page is Lyra's WebRTC
+// peer -- the same browser, the same page; the mode is a state of
+// the one system, not a different surface. The page captures the
+// system default microphone (no device is selected or pinned
+// anywhere) and plays her returned audio through a plain audio
+// element, which PipeWire routes to the default sink like every
+// other stream -- if the default changes mid-session, her voice
+// follows it. The connection's life is keyed to the MODE only:
+// never to page visibility or the display state (the TV is just a
+// display; with the panel off this page keeps running and she is
+// still heard on whatever speaker is default).
+(function(){
+  var pc = null, micStream = null, audioEl = null, connecting = false;
+  function stopRtc(){
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+    if (micStream) { micStream.getTracks().forEach(function(t){ t.stop(); }); micStream = null; }
+    if (audioEl) { audioEl.srcObject = null; }
+    connecting = false;
+  }
+  async function startRtc(){
+    if (pc || connecting) return;
+    connecting = true;
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
+      pc = new RTCPeerConnection();
+      micStream.getTracks().forEach(function(t){ pc.addTrack(t, micStream); });
+      pc.ontrack = function(ev){
+        if (!audioEl) { audioEl = new Audio(); audioEl.autoplay = true; }
+        audioEl.srcObject = ev.streams[0];
+        audioEl.play().catch(function(){});
+      };
+      pc.onconnectionstatechange = function(){
+        if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed')) stopRtc();
+      };
+      var offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await new Promise(function(res){
+        if (pc.iceGatheringState === 'complete') return res();
+        var to = setTimeout(res, 3000);
+        pc.onicegatheringstatechange = function(){ if (pc.iceGatheringState === 'complete') { clearTimeout(to); res(); } };
+      });
+      var r = await fetch('/rtc/offer', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sdp: pc.localDescription.sdp, type: pc.localDescription.type})});
+      if (!r.ok) throw new Error('offer refused ' + r.status);
+      var ans = await r.json();
+      await pc.setRemoteDescription(ans);
+    } catch (e) { stopRtc(); }
+    connecting = false;
+  }
+  async function tick(){
+    try {
+      var j = await (await fetch('/roomstate', {cache: 'no-store'})).json();
+      if (j.mode === 'rtc') startRtc(); else if (pc || connecting) stopRtc();
+    } catch (e) {}
+  }
+  setInterval(tick, 1500); tick();
 })();
 </script>
 </body></html>
