@@ -11,34 +11,22 @@ this module by the production composition, and is never logged.
   ToolResult as JSON: {"ok": bool, "confirmation": str,
   "state": {...}}. Actions mirror the router's dispatch:
     light   state | on | off | dim {percent}
-    monitor state | on | off
     alarm   summary | set {time "HH:MM"} | kill | snooze |
             enable | disable | ring_volume_get |
             ring_volume_set {percent | volume} |
             note_get | note_set {text, date "YYYY-MM-DD"} |
             note_clear
-    media_volume  get | set {percent | volume}   (the box's
-            EVERYDAY volume -- plain "volume"; NOT the alarm's
-            ring volume, which stays under alarm/ring_volume_*)
     time    (the clock's time result)
     date    (the clock's date result)
     weather (the weather report)
     tv      get | set {percent} | adjust {delta_points}
             (the TV screen brightness of the lyra-web viewer)
-    firmware  update {path} | update_status
-            (satlink OTA push. update is the ONE action that does
-            not run to completion inside the call: the transfer
-            can take the better part of a minute, and this
-            handler's timeout discipline would cancel it mid-image,
-            so the tool starts the push as a background task and
-            returns at once; update_status reports its state.)
   A read (state/summary) composes its confirmation from the live
   readback, like every other tool sentence (D2).
 
 - POST /announce {"text": "..."}
-  Speaks the text through the speaker box via the core's announce
-  path (Kokoro af_heart -> audio URL -> box announce), injected by
-  the composition. Statement-only: a "?" anywhere in the text is
+  Speaks the text via the core's announce path (Kokoro af_heart
+  -> TV mirror), injected by the composition. Statement-only: a "?" anywhere in the text is
   rejected 400 (the standing announcements rule), as are empty
   texts and texts over the length cap.
 
@@ -82,10 +70,7 @@ from .audio_http import AudioHttpServer
 from .tools import (
     AlarmTool,
     ClockTool,
-    FirmwareTool,
     LightTool,
-    MediaVolumeTool,
-    MonitorTool,
     ToolResult,
     TvTool,
     TvVolumeTool,
@@ -105,7 +90,7 @@ _CALL_START_TIMEOUT_S = 60.0
 _CALL_MAX_BODY_BYTES = 8 * 1024 * 1024
 
 # The composition's announce: text -> None on success; raises
-# AnnounceUnavailable when there is no box to speak through.
+# AnnounceUnavailable when there is no way to speak.
 AnnounceFn = Callable[[str], Awaitable[None]]
 
 # The composition's call turn: utterance WAV bytes ->
@@ -115,7 +100,7 @@ CallPollFn = Callable[[str, int], "dict | None"]
 
 
 class AnnounceUnavailable(Exception):
-    """No speaker box is currently connected to announce through."""
+    """Announce is unavailable (no speech output path)."""
 
 
 class _BadRequest(Exception):
@@ -154,30 +139,24 @@ class CoreApi:
         http: AudioHttpServer,
         token: str,
         light: LightTool,
-        monitor: MonitorTool,
         alarm_tool: AlarmTool,
-        media_volume: MediaVolumeTool,
         clock: ClockTool,
         weather: WeatherTool,
         announce: AnnounceFn,
         call_start: CallStartFn | None = None,
         call_poll: CallPollFn | None = None,
-        firmware: FirmwareTool | None = None,
         tv: TvTool | None = None,
         tv_volume: TvVolumeTool | None = None,
     ) -> None:
         self._http = http
         self._token = token
         self._light = light
-        self._monitor = monitor
         self._alarm = alarm_tool
-        self._media_volume = media_volume
         self._clock = clock
         self._weather = weather
         self._announce = announce
         self._call_start = call_start
         self._call_poll = call_poll
-        self._firmware = firmware
         self._tv = tv
         self._tv_volume = tv_volume
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -289,14 +268,6 @@ class CoreApi:
             if action in ("dim", "set_brightness"):
                 return await self._light.set_brightness(_arg_percent(args))
             raise _BadRequest(f"unknown light action: {action!r}")
-        if tool == "monitor":
-            if action in (None, "state"):
-                return await self._monitor_state()
-            if action == "on":
-                return await self._monitor.turn_on()
-            if action == "off":
-                return await self._monitor.turn_off()
-            raise _BadRequest(f"unknown monitor action: {action!r}")
         if tool == "alarm":
             if action in (None, "summary"):
                 return self._alarm_summary()
@@ -334,14 +305,6 @@ class CoreApi:
             if action == "note_clear":
                 return await self._alarm.clear_morning_note()
             raise _BadRequest(f"unknown alarm action: {action!r}")
-        if tool == "media_volume":
-            if action in (None, "get", "media_volume_get"):
-                return await self._media_volume.get_volume()
-            if action in ("set", "media_volume_set"):
-                return await self._media_volume.set_volume(
-                    self._volume_arg(args)
-                )
-            raise _BadRequest(f"unknown media_volume action: {action!r}")
         if tool == "time":
             return self._clock.time_result()
         if tool == "date":
@@ -378,20 +341,12 @@ class CoreApi:
                     raise _BadRequest("args.delta_points (integer) is required")
                 return await self._tv_volume.adjust_volume(delta)
             raise _BadRequest(f"unknown tv_volume action: {action!r}")
-        if tool == "firmware":
-            if self._firmware is None:
-                raise _BadRequest("firmware updates are not wired in this core")
-            if action == "update":
-                return await self._firmware.update(args.get("path"))
-            if action in (None, "update_status", "status"):
-                return self._firmware.update_status()
-            raise _BadRequest(f"unknown firmware action: {action!r}")
         raise _BadRequest(f"unknown tool: {tool!r}")
 
     @staticmethod
     def _volume_arg(args: dict) -> float:
-        """A volume argument for ring_volume_set / media_volume
-        set: args.percent (int 0-100) or args.volume (0.0-1.0)."""
+        """A volume argument for ring_volume_set: args.percent
+        (int 0-100) or args.volume (0.0-1.0)."""
         if "percent" in args:
             return _arg_percent(args) / 100.0
         value = args.get("volume")
@@ -417,12 +372,6 @@ class CoreApi:
                 )
             return ToolResult(True, "light state: on=true", {"on": True})
         return ToolResult(True, "light state: on=false", {"on": False})
-
-    async def _monitor_state(self) -> ToolResult:
-        state = await self._monitor.get_state()
-        if state is None:
-            return ToolResult(False, "rejected: monitor state unconfirmed", {})
-        return ToolResult(True, f"monitor state: {state}", {"monitor": state})
 
     def _alarm_summary(self) -> ToolResult:
         summary = self._alarm.summary()

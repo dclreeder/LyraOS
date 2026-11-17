@@ -4,17 +4,14 @@ Each tool executes ONE action and verifies it by readback, then
 reports a ToolResult whose ``confirmation`` is the short spoken line
 (Decision D2) built from the ACTUAL outcome -- a readback that
 contradicts the command produces a sentence saying what really
-happened, never a success claim. The set is closed: light, monitor, tv brightness,
-alarm, media volume, clock, weather. Nothing here can call anything outside it
+happened, never a success claim. The set is closed: light, tv brightness,
+tv volume, alarm, clock, weather. Nothing here can call anything outside it
 (the Companion lesson: a deterministic router cannot bluff, and
 neither can its tools).
 
 Hardware access mirrors the proven paths:
 - Light: the alarm module's ShellyLight RPC client (reused, not
   forked) against the Shelly Dimmer Gen4 at 192.168.12.204.
-- Monitor: ddcutil on the Fedora, with the lyra-tunnel retry/parse
-  strategy (getvcp D6, parse sl=0x.., retry -- DDC comms are flaky;
-  0x01 = on, 0x02..0x05 = off/standby family).
 - Alarm: the core's own Alarm module. snooze() is gated HERE, in
   the tool, on the alarm actually ringing; kill() delegates the
   decision to the model (ringing -> stop; snooze pending ->
@@ -140,85 +137,6 @@ class LightTool:
 
 
 # ---------------------------------------------------------------------------
-# Monitor (ddcutil, local)
-# ---------------------------------------------------------------------------
-
-
-async def _ddcutil_runner(args: list[str]) -> tuple[int, str]:
-    def _run() -> tuple[int, str]:
-        proc = subprocess.run(
-            ["ddcutil", *args], capture_output=True, text=True, timeout=20
-        )
-        return proc.returncode, proc.stdout
-
-    return await asyncio.to_thread(_run)
-
-
-class MonitorTool:
-    """PC monitor power via ddcutil VCP D6 (01 on / 04 off), with
-    the lyra-tunnel readback discipline: parse sl=0x.. out of getvcp
-    output, retry (DDC answers are intermittent), poll after a set
-    until the readback agrees or the attempts run out. An unreadable
-    state is reported as unconfirmed -- never guessed."""
-
-    def __init__(self, runner=None) -> None:
-        self._runner = runner or _ddcutil_runner
-
-    async def _read_state(self, attempts: int) -> str | None:
-        # DDC VCP D6 power values (see the module docstring): 0x01 is
-        # the ONLY "on" value; 0x02..0x05 are the explicit off family
-        # (standby / suspend / off / hardware-off). Anything else -- a
-        # failed command (rc != 0), unparseable output, or a value
-        # outside both families -- is UNKNOWN, never a guess: keep
-        # retrying, then return None so the caller reports the state
-        # as unconfirmed (dial-in 2026-11-11, item A).
-        for _ in range(attempts):
-            try:
-                rc, out = await self._runner(["getvcp", "D6"])
-            except Exception:
-                rc, out = 1, ""
-            if rc == 0:
-                m = re.search(r"sl=0x([0-9a-fA-F]+)", out or "")
-                if m:
-                    value = int(m.group(1), 16)
-                    if value == 0x01:
-                        return "on"
-                    if 0x02 <= value <= 0x05:
-                        return "off"
-            await asyncio.sleep(0.6)
-        return None
-
-    async def get_state(self) -> str | None:
-        return await self._read_state(attempts=5)
-
-    async def turn_on(self) -> ToolResult:
-        return await self._set("01", "on")
-
-    async def turn_off(self) -> ToolResult:
-        return await self._set("04", "off")
-
-    async def _set(self, code: str, want: str) -> ToolResult:
-        try:
-            await self._runner(["setvcp", "D6", code])
-        except Exception as exc:
-            _LOGGER.warning("monitor setvcp failed: %s", exc)
-            return ToolResult(False, "rejected: monitor unreachable")
-        state: str | None = None
-        for _ in range(6):
-            state = await self._read_state(attempts=2)
-            if state == want:
-                break
-            await asyncio.sleep(0.8)
-        if state == want:
-            return ToolResult(True, f"monitor: {want}", {"monitor": want})
-        if state is not None:
-            return ToolResult(
-                False, f"rejected: monitor still {state}", {"monitor": state}
-            )
-        return ToolResult(False, "rejected: monitor state unconfirmed")
-
-
-# ---------------------------------------------------------------------------
 # TV brightness (lyra-web viewer, local HTTP)
 # ---------------------------------------------------------------------------
 
@@ -290,8 +208,7 @@ class TvVolumeTool:
     driven over ADB: STREAM_MUSIC on the TV runs 0..100, so percent
     IS the index. Sets go through `media volume --set` and are
     verified by a dumpsys readback, like every other tool here.
-    This is the TV's speaker volume -- not the box's speaking
-    volume (MediaVolumeTool) and not the screen brightness
+    This is the TV's speaker volume -- not the screen brightness
     (TvTool)."""
 
     ADB_TARGET = "192.168.12.132:5555"
@@ -470,95 +387,6 @@ class AlarmTool:
     async def clear_morning_note(self) -> ToolResult:
         self._alarm.clear_morning_note()
         return ToolResult(True, "morning_note: cleared", self.summary())
-
-
-# ---------------------------------------------------------------------------
-# Media volume (the speaker box's everyday volume)
-# ---------------------------------------------------------------------------
-
-
-class MediaVolumeTool:
-    """The box's EVERYDAY volume -- distinct from the alarm's
-    ring_volume (AlarmTool): plain "volume" sentences land here,
-    "alarm volume" sentences land there, and the two never alias.
-
-    The box object is resolved per call through the same box_getter
-    the Alarm uses (the supervisor's current connection; the box
-    itself owns the value -- NVS on the satlink firmware, the media
-    player entity on ESPHome -- and reports it via the media_volume
-    cache both transports maintain from hello/status frames).
-    set/get confirmations are composed from the readback AFTER the
-    action, like every other tool (D2): a readback that contradicts
-    the set is reported as what the volume actually is."""
-
-    def __init__(self, box_getter) -> None:
-        self._box_getter = box_getter
-
-    def _connected_box(self):
-        box = self._box_getter()
-        if box is None or not box.is_connected:
-            return None
-        return box
-
-    async def set_volume(self, volume: float) -> ToolResult:
-        box = self._connected_box()
-        if box is None:
-            return ToolResult(False, "rejected: speaker box not connected", {})
-        try:
-            box.media_set_volume(volume)
-        except Exception as exc:
-            _LOGGER.warning("media volume set failed: %s", exc)
-            return ToolResult(False, "rejected: speaker box unreachable", {})
-        readback = box.media_volume
-        if readback is not None and abs(readback - volume) <= 0.01:
-            return ToolResult(
-                True,
-                f"volume set: {_pct(readback)} percent",
-                {"volume": readback},
-            )
-        if readback is not None:
-            return ToolResult(
-                False,
-                f"rejected: volume is {_pct(readback)} percent",
-                {"volume": readback},
-            )
-        return ToolResult(False, "rejected: volume unconfirmed", {})
-
-    async def get_volume(self) -> ToolResult:
-        box = self._connected_box()
-        if box is None:
-            return ToolResult(False, "rejected: speaker box not connected", {})
-        readback = box.media_volume
-        if readback is None:
-            return ToolResult(False, "rejected: volume unconfirmed", {})
-        return ToolResult(
-            True,
-            f"volume: {_pct(readback)} percent",
-            {"volume": readback},
-        )
-
-    async def adjust_volume(self, delta_points: int) -> ToolResult:
-        """Relative change ("turn it down", "a bit louder"): read
-        the box's LIVE volume, shift by delta_points, clamp 0..100,
-        set, and speak the post-set readback in the same absolute
-        form get_volume uses ("volume: 40 percent"). A
-        contradicting readback passes set_volume's honest failure
-        through untouched."""
-        box = self._connected_box()
-        if box is None:
-            return ToolResult(False, "rejected: speaker box not connected", {})
-        current = box.media_volume
-        if current is None:
-            return ToolResult(False, "rejected: volume unconfirmed", {})
-        target = min(100, max(0, _pct(current) + delta_points))
-        result = await self.set_volume(target / 100.0)
-        if not result.ok:
-            return result
-        return ToolResult(
-            True,
-            f"volume: {_pct(result.state['volume'])} percent",
-            result.state,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -767,135 +595,3 @@ class WeatherTool:
             _LOGGER.warning("weather fetch/digest failed: %s", exc)
             return ToolResult(False, "I couldn't get the weather.")
         return ToolResult(True, text, {})
-
-
-# ---------------------------------------------------------------------------
-# Firmware update (satlink OTA push)
-# ---------------------------------------------------------------------------
-
-class FirmwareTool:
-    """Speaker-box firmware updates, pushed over the sat link.
-
-    The transfer itself is SatBoxClient.ota_push; this tool is its
-    gate and its API shape. A ~1.5 MB image at 8192 B per frame can
-    take the better part of a minute, and the /tool handler cancels
-    any call that outlives its timeout -- a cancelled push would
-    strand the box mid-image -- so update() validates, gates,
-    starts the push as a background task on the core's loop, and
-    returns immediately; update_status() reports the last/current
-    transfer (idle / running / done / failed + detail).
-
-    Gates, all refused before anything is sent: the image path must
-    be absolute, live under one of the allowed roots, and be an
-    existing non-empty file; the box must be connected on a
-    transport that can take a push (satlink -- the ESPHome client
-    has no ota_push); no update may already be running; the alarm
-    must not be ringing; and the voice session must be idle (an OTA
-    reboots the box -- never mid-ring, never mid-turn).
-    SatBoxClient re-checks the busy conditions on its own side
-    before the first byte moves.
-    """
-
-    DEFAULT_ROOTS = ("~/Documents/LyraOS/firmware/sat",)
-
-    def __init__(self, *, box_getter, alarm, session,
-                 allowed_roots=None) -> None:
-        self._box_getter = box_getter
-        self._alarm = alarm
-        self._session = session
-        roots = allowed_roots if allowed_roots is not None else self.DEFAULT_ROOTS
-        self._roots = tuple(Path(r).expanduser().resolve() for r in roots)
-        self._task: asyncio.Task | None = None
-        self._status: dict = {"status": "idle", "detail": None, "path": None}
-
-    # -- gating -------------------------------------------------------
-
-    def _resolve_image(self, raw) -> tuple[Path | None, str | None]:
-        if not isinstance(raw, str) or not raw.strip():
-            return None, "args.path (the firmware image path) is required"
-        path = Path(raw.strip()).expanduser()
-        if not path.is_absolute():
-            return None, "the firmware image path must be absolute"
-        path = path.resolve()
-        if not any(path == root or root in path.parents for root in self._roots):
-            return None, (
-                "firmware images must live under "
-                + " or ".join(str(r) for r in self._roots)
-            )
-        if not path.is_file():
-            return None, f"no firmware image at {path}"
-        if path.stat().st_size <= 0:
-            return None, f"firmware image {path} is empty"
-        return path, None
-
-    def _busy_reason(self) -> str | None:
-        if self._alarm is not None and self._alarm.summary().get("ringing"):
-            return "the alarm is ringing"
-        if self._session is not None and self._session.state != "idle":
-            return "a voice turn is in progress"
-        return None
-
-    # -- actions --------------------------------------------------------
-
-    async def update(self, raw_path) -> ToolResult:
-        if self._status["status"] == "running":
-            return ToolResult(
-                False, "rejected: firmware update already running",
-                dict(self._status),
-            )
-        path, error = self._resolve_image(raw_path)
-        if error is not None:
-            return ToolResult(False, f"rejected: firmware update: {error}", {})
-        box = self._box_getter()
-        if box is None or not box.is_connected:
-            return ToolResult(False, "rejected: speaker box not connected", {})
-        if not hasattr(box, "ota_push"):
-            return ToolResult(
-                False,
-                "rejected: firmware update needs the satlink transport",
-                {},
-            )
-        busy = self._busy_reason()
-        if busy is not None:
-            return ToolResult(False, f"rejected: firmware update: {busy}", {})
-        assert path is not None  # _resolve_image paired the error
-        self._status = {
-            "status": "running",
-            "detail": f"pushing {path.name} ({path.stat().st_size} bytes)",
-            "path": str(path),
-        }
-        self._task = asyncio.create_task(
-            self._run(box, path), name="lyra-firmware-update"
-        )
-        _LOGGER.info("firmware update started: %s", path)
-        return ToolResult(
-            True,
-            "firmware update started: box reboots into the new image when it lands",
-            dict(self._status),
-        )
-
-    async def _run(self, box, path: Path) -> None:
-        try:
-            result = await box.ota_push(path)
-        except Exception as exc:
-            _LOGGER.error("firmware update failed: %s", exc)
-            self._status = {
-                "status": "failed", "detail": str(exc), "path": str(path),
-            }
-            return
-        self._status = {
-            "status": "done",
-            "detail": (
-                f"{result.size} bytes in {result.chunks} chunks, "
-                f"sha256 {result.sha256}; box rebooting"
-            ),
-            "path": str(path),
-        }
-        _LOGGER.info("firmware update complete: %s", self._status["detail"])
-
-    def update_status(self) -> ToolResult:
-        status = dict(self._status)
-        text = f"firmware update: {status['status']}"
-        if status.get("detail"):
-            text += f"; {status['detail']}"
-        return ToolResult(status["status"] != "failed", text, status)

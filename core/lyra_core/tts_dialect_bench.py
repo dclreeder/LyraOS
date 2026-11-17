@@ -1,19 +1,18 @@
-"""TTS event dialect bench (2026-11-11 fix): the ESPHome firmware's
-voice_assistant.cpp reads data arg "text" on VOICE_ASSISTANT_TTS_START
-and "url" on VOICE_ASSISTANT_TTS_END; the core used to send them the
-other way round, so every reply bailed silently on the box (firmware
-log: "No text in TTS_START event" / "No url in TTS_END event").
+"""TTS event dialect bench (2026-11-11 fix): the client event
+surface reads data arg "text" on TTS_START and "url" on TTS_END;
+the core used to send them the other way round, so every reply
+bailed silently on the box (firmware log: "No text in TTS_START
+event" / "No url in TTS_END event"). Part 1 (the BoxClient payload
+unit check) was removed with the box, 2026-11-16; what remains is
+the session-level dialect check, which is transport-agnostic.
 
-Part 1 -- BoxClient unit check against a fake _send: exact event types
-and payload keys/values for evt_tts_start / evt_tts_end.
-
-Part 2 -- session level, fake box + fake driver + fake verify gate:
+Session level, fake client + fake driver + fake verify gate:
 a matched command must produce evt_tts_start(reply text) followed by
 evt_tts_end(reply URL); the D5 garbled path speaks the D5 line the
 same way; the no-match line rides the same TTS pair; the
 verify-fail (silent drop) path must emit NO TTS events at all.
 
-The real box is never contacted. Run:
+No hardware is contacted. Run:
   python -m lyra_core.tts_dialect_bench
 """
 from __future__ import annotations
@@ -22,41 +21,13 @@ import asyncio
 from types import SimpleNamespace
 
 from .audio_http import AudioHttpServer
-from .box_client import BoxClient, VoiceAssistantEventType
 from .config import CoreConfig
 from .router import DIDNT_CATCH, NOT_UNDERSTOOD
 from .session import VoiceSession
 
 
 # ---------------------------------------------------------------------------
-# Part 1 -- BoxClient payload unit check
-# ---------------------------------------------------------------------------
-
-def part_1() -> None:
-    print("== Part 1: BoxClient TTS payloads ==")
-    cfg = CoreConfig.load()
-
-    async def _noop_audio(data: bytes) -> None:
-        pass
-
-    box = BoxClient(cfg, on_audio=_noop_audio)
-    sent: list = []
-    box._send = lambda event_type, data=None: sent.append((event_type, data))  # type: ignore[method-assign]
-    box.evt_tts_start("It's 17:05.")
-    box.evt_tts_end("http://192.168.12.144:8099/audio/abc123.wav")
-    assert sent == [
-        (VoiceAssistantEventType.VOICE_ASSISTANT_TTS_START, {"text": "It's 17:05."}),
-        (
-            VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END,
-            {"url": "http://192.168.12.144:8099/audio/abc123.wav"},
-        ),
-    ], sent
-    print(f"  sent: {sent}")
-    print("Part 1: PASS")
-
-
-# ---------------------------------------------------------------------------
-# Part 2 -- session level with fakes
+# Session level with fakes
 # ---------------------------------------------------------------------------
 
 class FakeBox:
@@ -127,7 +98,7 @@ def _names(box) -> list:
 
 
 async def part_2() -> None:
-    print("== Part 2: session TTS dialect by outcome ==")
+    print("== Session TTS dialect by outcome ==")
     cfg = CoreConfig.load()
 
     # A -- matched command: hook (router) returns the spoken confirmation.
@@ -205,11 +176,10 @@ async def part_2() -> None:
     assert driver.synthesized == [] and session.last_tts_url is None
     assert "error" in names and names[-1] == "run_end", names
     print("  D verify-fail: silent drop, zero TTS events")
-    print("Part 2: PASS")
+    print("PASS")
 
 
 async def amain() -> None:
-    part_1()
     await part_2()
     print("tts_dialect_bench OK: all assertions pass")
 

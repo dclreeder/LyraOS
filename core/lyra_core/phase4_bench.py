@@ -1,18 +1,18 @@
 """Phase 4 bench: the core API (POST /tool, POST /announce) against a
-bench HTTP instance on an alternate port, with a fake box announce
-recorder -- the production service (which holds :8099 and the box)
-is never touched and never speaks.
+bench HTTP instance on an alternate port, with a fake announce
+recorder -- the production service (which holds :8099) is never
+touched and never speaks.
 
 Run: python -m lyra_core.phase4_bench
 
 Composition mirrors production_main, with two substitutions:
-- the announce callable records instead of driving the box;
+- the announce callable records instead of speaking;
 - the Alarm runs on a throwaway state/secrets pair in a temp dir
   (production alarm_state.json is never opened).
 
-Hardware contact is READ-ONLY: light state (Shelly GetStatus) and
-monitor state (getvcp) against the real tools; the weather call is
-the live Open-Meteo fetch. Nothing is toggled; no audio is played.
+Hardware contact is READ-ONLY: light state (Shelly GetStatus)
+against the real tool; the weather call is the live Open-Meteo
+fetch. Nothing is toggled; no audio is played.
 """
 from __future__ import annotations
 
@@ -30,13 +30,10 @@ from .alarm import Alarm, ShellyLight
 from .api import CoreApi
 from .audio_http import AudioHttpServer
 from .config import CoreConfig
-from .alarm_bench import FakeBox
 from .tools import (
     AlarmTool,
     ClockTool,
     LightTool,
-    MediaVolumeTool,
-    MonitorTool,
     WeatherTool,
 )
 
@@ -85,8 +82,6 @@ async def amain() -> int:
         cfg.alarm.state_path = str(tmp / "alarm_state.json")
         cfg.alarm.secrets_path = str(tmp / "alarm_secrets.json")
         alarm = Alarm(cfg, box_getter=lambda: None, http=http)
-        media_calls: list = []
-        media_box = FakeBox(media_calls)
         announced: list[str] = []
 
         async def fake_announce(text: str) -> None:
@@ -96,9 +91,7 @@ async def amain() -> int:
             http=http,
             token=TOKEN,
             light=LightTool(ShellyLight(cfg.alarm.light_host, cfg.alarm.light_id)),
-            monitor=MonitorTool(),
             alarm_tool=AlarmTool(alarm),
-            media_volume=MediaVolumeTool(box_getter=lambda: media_box),
             clock=ClockTool(cfg.router.timezone),
             weather=WeatherTool(
                 cfg.router.weather_latitude,
@@ -161,12 +154,6 @@ async def amain() -> int:
             and body.get("state", {}).get("on") is False,
             f"{status} {body}",
         )
-        status, body = await post("/tool", {"tool": "monitor", "action": "state"})
-        check(
-            "tool monitor state (real getvcp read) -> 200",
-            status == 200 and body.get("ok") is True and "monitor" in body.get("state", {}),
-            f"{status} {body}",
-        )
         status, body = await post("/tool", {"tool": "alarm", "action": "summary"})
         check(
             "tool alarm summary -> migrated state",
@@ -205,56 +192,17 @@ async def amain() -> int:
             and body.get("confirmation") == "Alarm volume is 80 percent.",
             f"{status} {body}",
         )
-        status, body = await post(
-            "/tool",
-            {"tool": "media_volume", "action": "set", "args": {"percent": 40}},
-        )
-        check(
-            "tool media_volume set 40 -> box set_volume(0.40) + readback confirmation",
-            status == 200
-            and body.get("ok") is True
-            and body.get("confirmation") == "Volume set to 40 percent."
-            and body.get("state", {}).get("volume") == 0.4
-            and ("box.set_volume", 0.4) in media_calls,
-            f"{status} {body} {media_calls}",
-        )
-        status, body = await post(
-            "/tool", {"tool": "media_volume", "action": "get"}
-        )
-        check(
-            "tool media_volume get -> 40 percent",
-            status == 200
-            and body.get("confirmation") == "Volume is 40 percent.",
-            f"{status} {body}",
-        )
-        status, body = await post(
-            "/tool",
-            {
-                "tool": "media_volume",
-                "action": "media_volume_set",
-                "args": {"volume": 0.25},
-            },
-        )
-        check(
-            "tool media_volume media_volume_set {volume: 0.25} (alias + fraction arg)",
-            status == 200
-            and body.get("state", {}).get("volume") == 0.25
-            and ("box.set_volume", 0.25) in media_calls,
-            f"{status} {body} {media_calls}",
-        )
-        status, _ = await post(
-            "/tool", {"tool": "media_volume", "action": "set"}
-        )
-        check(
-            "tool media_volume set without percent/volume -> 400",
-            status == 400,
-            f"{status}",
-        )
+        status, _ = await post("/tool", {"tool": "media_volume", "action": "get"})
+        check("tool media_volume (removed with the box) -> 400", status == 400, f"{status}")
+        status, _ = await post("/tool", {"tool": "monitor", "action": "state"})
+        check("tool monitor (removed) -> 400", status == 400, f"{status}")
+        status, _ = await post("/tool", {"tool": "firmware", "action": "update_status"})
+        check("tool firmware (removed with the box) -> 400", status == 400, f"{status}")
         status, body = await post(
             "/tool", {"tool": "alarm", "action": "ring_volume_get"}
         )
         check(
-            "alarm ring volume untouched by media sets (still bench-state 80)",
+            "alarm ring volume still bench-state 80",
             status == 200
             and body.get("confirmation") == "Alarm volume is 80 percent.",
             f"{status} {body}",

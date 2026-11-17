@@ -1,23 +1,19 @@
-"""Pre-window checklist (--preflight): everything the seat-swap proof
-needs, verified WITHOUT connecting to the speaker box.
+"""Stack checklist (--preflight): the localmic-era core's
+prerequisites, verified without starting the service.
 
-Checks: config loads (secrets file stat'ed only — the Noise PSK is
-resolved at connect time and is never read here), the three Wyoming
-services describe OK, the Whisper/Kokoro engine ports answer, and the
-core's HTTP audio endpoint binds, serves /healthz, and round-trips a
-stored WAV byte-identically. Ends by printing the exact window
-procedure from the approved plan (Phase 1) and the Phase 1a design
-notes, for the operator running the window.
+Checks: config loads, the three Wyoming services describe OK, the
+Whisper/Kokoro engine ports answer, and the core's HTTP audio
+endpoint binds, serves /healthz, and round-trips a stored WAV
+byte-identically. (The speaker-box seat-swap procedure this file
+was written for was retired with the box, 2026-11-16.)
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import io
-import os
 import urllib.request
 import wave
-from pathlib import Path
 
 from .audio_http import AudioHttpServer
 from .config import CoreConfig
@@ -26,33 +22,6 @@ from .pipeline import PipelineDriver
 # The shared engine services behind the Wyoming wrappers (single-instance
 # rule): whisper.cpp and the Kokoro HTTP wrapper on the Fedora.
 ENGINE_PORTS = (("whisper", "127.0.0.1", 8093), ("kokoro", "127.0.0.1", 8091))
-
-WINDOW_PROCEDURE = """\
-WINDOW PROCEDURE — seat-swap proof (approved plan, Phase 1; Phase 1a design SS2/SS3)
-  0. Timing: evening window, >= 2 h clear of the 06:00 alarm; target <= 15 min total.
-     No firmware build, no flash, at any point in the window.
-  1. BEFORE anything is disabled: capture one live HA-driven session's device
-     DEBUG log and diff box_client's pipeline-event data payloads against HA's
-     (Phase 1a design SS3.2). Fix any drift first — while HA still owns the seat.
-  2. Disable HA's Lyra Flex ESPHome entry. The box's voice assistant admits
-     exactly ONE subscriber — first-come, never stolen — so the seat must be
-     free before the core subscribes; a second subscribe is refused and logged
-     on the device, and HA voice stays dead until its entry reloads.
-  3. Start the core under its supervisor: it connects (Noise), verifies the
-     device identity, and subscribes to the voice assistant. The box's
-     streamed-wake hook fires on subscription and starts continuous mic
-     streaming on its own — no controller-side start is needed.
-  4. ONE spoken command, end to end. Verify: beam lock engages on the wake and
-     releases on STT VAD end; LED phases track (listening -> thinking ->
-     reply); the spoken reply plays. Nothing else is tested in this window.
-  5. Rollback, IN THIS ORDER: the core unsubscribes, then disconnects FIRST
-     (the only clean seat release). Never kill the core's socket or process
-     to free the seat.
-  6. Re-enable HA's Lyra Flex entry and verify the rollback: HA's satellite
-     returns to idle and one HA-handled command works. HA re-subscribes only
-     on a fresh connection cycle, so allow it a full reconnect.
-"""
-
 
 def _fetch(url: str) -> tuple[int, str, bytes]:
     with urllib.request.urlopen(url, timeout=15) as resp:
@@ -92,20 +61,12 @@ async def run_preflight() -> int:
         if not ok:
             failures.append(label)
 
-    # 1. Config loads; secrets file presence/permissions only.
+    # 1. Config loads.
     cfg = CoreConfig.load()
     check(True, "config loads",
-          f"box {cfg.box.host}:{cfg.box.port} ({cfg.box.expected_name!r}), "
+          f"transport {cfg.transport!r}, "
           f"wake {cfg.wyoming.wake_uri}, stt {cfg.wyoming.stt_uri}, "
           f"tts {cfg.wyoming.tts_uri}, http :{cfg.http.port}")
-    secrets = Path(cfg.box.secrets_file).expanduser()
-    if secrets.exists():
-        mode = oct(os.stat(secrets).st_mode & 0o777)
-        check(mode == "0o600", "box secrets file present (stat only, PSK not read)",
-              f"{secrets} mode {mode}")
-    else:
-        check(False, "box secrets file present (stat only, PSK not read)",
-              f"missing: {secrets}")
 
     driver = PipelineDriver(cfg)
 
@@ -149,9 +110,8 @@ async def run_preflight() -> int:
             server.stop()
 
     print()
-    print(WINDOW_PROCEDURE)
     if failures:
         print(f"PREFLIGHT: FAIL ({len(failures)} check(s) failed: {', '.join(failures)})")
         return 1
-    print("PREFLIGHT: PASS — all checks green; the box was NOT contacted.")
+    print("PREFLIGHT: PASS — all checks green.")
     return 0

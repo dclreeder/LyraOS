@@ -64,7 +64,7 @@ def _stamped(command: str) -> str:
 
 _FALLBACK_BRIEF = """You are Lyra, a voice assistant in a speaker box in Daniel's bedroom. Daniel speaks to you out loud, and your replies are spoken aloud back to him. Speak in plain sentences, never lists or markdown, and when a tool gives you data, summarize it in a sentence or two instead of reciting it line by line.
 
-The tools are your hands: they control the bedroom ceiling light, the PC monitor, your own speaking volume (the volume tools), and the alarm clock with its separate ring volume (the alarm tools), and they can fetch the time, the date, and the weather. Calling a tool is how anything actually happens, and each tool result tells you what happened. The time zone is America/New_York. On weekdays Daniel's alarm rings at 06:00 and he leaves for work around 06:45."""
+The tools are your hands: they control the bedroom ceiling light and the alarm clock with its separate ring volume (the alarm tools), and they can fetch the time, the date, and the weather. Calling a tool is how anything actually happens, and each tool result tells you what happened. The time zone is America/New_York. On weekdays Daniel's alarm rings at 06:00 and he leaves for work around 06:45."""
 
 _SOUL_PATH = Path(__file__).resolve().parent.parent / "SOUL.md"
 
@@ -112,9 +112,6 @@ TOOL_SCHEMAS: list[dict] = [
     _fn("light_adjust", "Change the ceiling light brightness by signed points.",
         {"delta_points": _DELTA}, ["delta_points"]),
     _fn("light_get_state", "Get the ceiling light's current on/off state and brightness.", {}, []),
-    _fn("monitor_on", "Turn the PC monitor on.", {}, []),
-    _fn("monitor_off", "Turn the PC monitor off.", {}, []),
-    _fn("monitor_get_state", "Get the PC monitor's current power state.", {}, []),
     _fn("alarm_set", "Set the alarm time (24-hour HH:MM).",
         {"time": {"type": "string", "description": "HH:MM, 24-hour."}}, ["time"]),
     _fn("alarm_enable", "Enable the alarm.", {}, []),
@@ -122,21 +119,16 @@ TOOL_SCHEMAS: list[dict] = [
     _fn("alarm_kill", "Kill the alarm: stops a ring, or cancels a pending snooze.", {}, []),
     _fn("alarm_snooze", "Snooze the alarm (only works while it is ringing).", {}, []),
     _fn("alarm_get_summary", "Get the alarm's time, enabled state, repeat, ring volume and whether it is ringing.", {}, []),
-    _fn("alarm_volume_set", "Set the ALARM RING volume (not the speaking volume).",
+    _fn("alarm_volume_set", "Set the ALARM RING volume.",
         {"percent": _PCT}, ["percent"]),
     _fn("alarm_volume_get", "Get the ALARM RING volume.", {}, []),
-    _fn("volume_set", "Set your everyday speaking volume.",
-        {"percent": _PCT}, ["percent"]),
-    _fn("volume_adjust", "Change your speaking volume by signed points.",
-        {"delta_points": _DELTA}, ["delta_points"]),
-    _fn("volume_get", "Get your current speaking volume.", {}, []),
     _fn("time_now", "Get the current time.", {}, []),
     _fn("date_today", "Get today's date.", {}, []),
     _fn("weather_report", "Get weather data for home; compose the spoken answer from the data. Pick the period that matches the question: overview for a general ask, now for the next few hours, today/tomorrow for that day, week for the days ahead. Use focus when the question is mainly about rain, temperature, or wind.", {"period": {"type": "string", "enum": ["overview", "now", "today", "tomorrow", "week"]}, "focus": {"type": "string", "enum": ["overview", "rain", "temperature", "wind"]}}, []),
     _fn("tv_set_brightness", "Set the brightness of the TV screen that shows your avatar. 100 is full brightness; lower dims the screen, for example at night.", {"percent": _PCT}, ["percent"]),
     _fn("tv_adjust_brightness", "Change the TV screen brightness by signed points.", {"delta_points": _DELTA}, ["delta_points"]),
     _fn("tv_get_brightness", "Get the TV screen's current brightness.", {}, []),
-    _fn("tv_set_volume", "Set the volume of the TV's own speakers. This is the television's volume, not your speaking volume and not the screen brightness.", {"percent": _PCT}, ["percent"]),
+    _fn("tv_set_volume", "Set the volume of the TV's own speakers. This is the television's volume, not the screen brightness.", {"percent": _PCT}, ["percent"]),
     _fn("tv_adjust_volume", "Change the TV's speaker volume by signed points.", {"delta_points": _DELTA}, ["delta_points"]),
     _fn("tv_get_volume", "Get the TV's current speaker volume.", {}, []),
 ]
@@ -392,9 +384,7 @@ class FreeRouter:
         cfg,
         *,
         light,
-        monitor,
         alarm_tool,
-        media_volume,
         clock,
         weather,
         tv=None,
@@ -404,9 +394,7 @@ class FreeRouter:
     ) -> None:
         self._cfg = cfg
         self._light = light
-        self._monitor = monitor
         self._alarm = alarm_tool
-        self._media_volume = media_volume
         self._clock = clock
         self._weather = weather
         self._tv = tv
@@ -639,15 +627,6 @@ class FreeRouter:
             if state.get("on") and isinstance(state.get("brightness"), int):
                 line += f" at {state['brightness']} percent"
             return {"ok": True, "result": line + ".", "state": state}
-        if name == "monitor_on":
-            return self._wrap(await self._monitor.turn_on())
-        if name == "monitor_off":
-            return self._wrap(await self._monitor.turn_off())
-        if name == "monitor_get_state":
-            state = await self._monitor.get_state()
-            if state is None:
-                return {"ok": False, "result": "I couldn't confirm the monitor state.", "state": {}}
-            return {"ok": True, "result": f"Monitor is {state}.", "state": {"monitor": state}}
         if name == "alarm_set":
             return self._wrap(await self._alarm.set_alarm(str(args["time"])))
         if name == "alarm_enable":
@@ -672,12 +651,6 @@ class FreeRouter:
             return self._wrap(await self._alarm.set_ring_volume(_as_int(args["percent"]) / 100.0))
         if name == "alarm_volume_get":
             return self._wrap(await self._alarm.get_ring_volume())
-        if name == "volume_set":
-            return self._wrap(await self._media_volume.set_volume(_as_int(args["percent"]) / 100.0))
-        if name == "volume_adjust":
-            return self._wrap(await self._media_volume.adjust_volume(_as_int(args["delta_points"])))
-        if name == "volume_get":
-            return self._wrap(await self._media_volume.get_volume())
         if name == "time_now":
             return self._wrap(self._clock.time_result())
         if name == "date_today":

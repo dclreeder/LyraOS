@@ -63,7 +63,7 @@ from zoneinfo import ZoneInfo
 from aioesphomeapi.model import MediaPlayerState
 
 from .audio_http import AudioHttpServer
-from .box_client import BoxClient
+from .localmic import LocalMicClient
 from .config import CoreConfig
 
 _LOGGER = logging.getLogger("lyra_core.alarm")
@@ -326,7 +326,7 @@ class ShellyLight:
         return await self.get_status()
 
 
-BoxGetter = Callable[[], BoxClient | None]
+BoxGetter = Callable[[], LocalMicClient | None]
 
 
 class AlarmButtonFlasher:
@@ -1118,7 +1118,7 @@ class Alarm:
             self._save_state()
         _LOGGER.info("alarm: TV ring stopped; TV volume restored")
 
-    async def _wait_for_box(self) -> BoxClient | None:
+    async def _wait_for_box(self) -> LocalMicClient | None:
         """Poll the box getter for up to self._box_wait_s: long
         enough for a supervisor reconnect racing a catch-up fire to
         land, short enough that a genuinely absent box misses

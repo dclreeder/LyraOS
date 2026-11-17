@@ -6,11 +6,10 @@ module, run by lyra-core.service since the cutover on 2026-11-11:
 
     python -m lyra_core.production_main
 
-It composes the session, supervisor, alarm, phrase router and core
-API against the real speaker box (Home Assistant was retired the
-same day). Anything but --preflight prints the usage and exits
-non-zero, so an accidental bare invocation can never take the
-box's seat.
+It composes the session, supervisor, alarm, free router and core
+API on the localmic transport. Anything but --preflight prints
+the usage and exits non-zero, so an accidental bare invocation
+can never start a second core.
 """
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ import sys
 
 USAGE = (
     "usage: python -m lyra_core --preflight\n"
-    "  --preflight   run the preflight checklist (never contacts the box)\n"
+    "  --preflight   run the stack checklist (does not start the core)\n"
     "Production runs under lyra-core.service as\n"
     "python -m lyra_core.production_main; there is intentionally\n"
     "no run mode in this module."

@@ -1,11 +1,4 @@
 {
-  "box": {
-    "host": "192.168.12.98",
-    "port": 6053,
-    "expected_name": "lyra-flex",
-    "secrets_file": "~/Documents/esphome-probe/production/secrets.yaml",
-    "secrets_key": "api_key"
-  },
   "wyoming": {
     "wake_uri": "tcp://127.0.0.1:10400",
     "stt_uri": "tcp://127.0.0.1:10300",
@@ -29,11 +22,5 @@
     "weather_latitude": 30.3639618,
     "weather_longitude": -81.7529823
   },
-  "transport": "esphome",
-  "satlink": {
-    "bind_host": "192.168.12.144",
-    "port": 9876,
-    "expected_device_id": "lyra-satgadget-01",
-    "keepalive_s": 5.0
-  }
+  "transport": "localmic"
 }

@@ -53,7 +53,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 
 from .audio_http import AudioHttpServer
-from .box_client import ERROR_STT_NO_TEXT, BoxClient
+from .localmic import LocalMicClient
 from .config import CoreConfig
 from .endpointer import VAD_END, VAD_START, Endpointer
 import io
@@ -65,6 +65,11 @@ _LOGGER = logging.getLogger("lyra_core.session")
 
 RATE, WIDTH, CHANNELS = 16000, 2, 1
 CANNED_REPLY = "Lyra core bench check complete."
+
+# VA error code reported through evt_error when a captured turn
+# produced no speech (the firmware-era code name, kept so event
+# consumers see the same string they always have).
+ERROR_STT_NO_TEXT = "stt-no-text-recognized"
 
 
 # Observer hook: (kind, detail) — kinds: wake_forward (first chunk),
@@ -185,7 +190,7 @@ class VoiceSession:
         self._clip_prefix = b""
         self._utterance_preroll_len = 0
         self.last_verify = None
-        self._box: BoxClient | None = None
+        self._box: LocalMicClient | None = None
         self._state = STATE_IDLE
         self._utterance = bytearray()
         self._vad_started = False
@@ -204,11 +209,11 @@ class VoiceSession:
     def state(self) -> str:
         return self._state
 
-    def attach_box(self, box: BoxClient) -> None:
-        """Attach the (freshly connected, VA-subscribed) box client."""
+    def attach_box(self, box: LocalMicClient) -> None:
+        """Attach the (freshly connected) client."""
         self._box = box
         self._set_state(STATE_IDLE)
-        _LOGGER.info("box attached; session idle")
+        _LOGGER.info("client attached; session idle")
 
     def detach_box(self) -> None:
         """Connection lost or supervisor stopping: drop any live run."""
@@ -216,11 +221,11 @@ class VoiceSession:
         self._ep.end_capture()
         self._box = None
         self._set_state(STATE_IDLE)
-        _LOGGER.info("box detached; session reset to idle")
+        _LOGGER.info("client detached; session reset to idle")
 
-    def make_box_client(self) -> BoxClient:
-        """Composition factory: a BoxClient whose callbacks land here."""
-        return BoxClient(
+    def make_client(self) -> LocalMicClient:
+        """Composition factory: a LocalMicClient whose callbacks land here."""
+        return LocalMicClient(
             self._cfg,
             on_audio=self.handle_audio,
             on_start=self.handle_start,

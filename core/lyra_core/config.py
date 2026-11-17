@@ -1,9 +1,7 @@
 """Lyra core configuration.
 
 JSON (stdlib-only) so every core module can load it under any interpreter.
-Secrets are never stored in the core config: the box's ESPHome Noise PSK is
-resolved lazily from the ESPHome production secrets file at connect time
-(seat-swap phase) and is never touched by config parsing or the bench.
+Secrets are never stored in the core config.
 """
 from __future__ import annotations
 
@@ -13,31 +11,6 @@ from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = CORE_DIR / "config.json"
-
-
-@dataclass
-class BoxConfig:
-    host: str = "192.168.12.98"
-    port: int = 6053
-    expected_name: str = "lyra-flex"
-    # ESPHome production secrets file (0600, stays on the Fedora) and the
-    # key inside it that lyra-flex.yaml references as `!secret api_key`.
-    secrets_file: str = "~/Documents/esphome-probe/production/secrets.yaml"
-    secrets_key: str = "api_key"
-
-
-@dataclass
-class SatlinkConfig:
-    # Custom-firmware sat link (Stage 1, 2026-11-11): the core
-    # LISTENS here and the box (sat7 firmware, compiled defaults
-    # CONFIG_LYRA_SAT_SERVER_HOST/PORT) connects to it. Single
-    # client. expected_device_id is a sanity check on the box's
-    # hello, not an auth mechanism -- the link is LAN-plain, like
-    # the archived sat_link.
-    bind_host: str = "192.168.12.144"
-    port: int = 9876
-    expected_device_id: str = "lyra-satgadget-01"
-    keepalive_s: float = 5.0
 
 
 @dataclass
@@ -106,14 +79,12 @@ class RouterConfig:
 
 @dataclass
 class CoreConfig:
-    # The ONE box-transport switch (Stage 1): "esphome" drives the
-    # box over the ESPHome API (BoxClient); "satlink" listens for
-    # the custom sat7 firmware's PCM link (SatBoxClient). Defaults
-    # to esphome until the satlink cutover is ordered; the ESPHome
-    # path stays fully intact for rollback either way.
-    transport: str = "esphome"
-    box: BoxConfig = field(default_factory=BoxConfig)
-    satlink: SatlinkConfig = field(default_factory=SatlinkConfig)
+    # The core's one transport: "localmic" (2026-11-16) -- the
+    # session's client is a PipeWire capture of Fedora's default
+    # audio source (lyra_core.localmic). The speaker-box transports
+    # (ESPHome API, satlink) were removed with the box the same day;
+    # production_main refuses any other value.
+    transport: str = "localmic"
     wyoming: WyomingConfig = field(default_factory=WyomingConfig)
     http: HttpConfig = field(default_factory=HttpConfig)
     alarm: AlarmConfig = field(default_factory=AlarmConfig)
@@ -129,8 +100,6 @@ class CoreConfig:
             if isinstance(raw.get("transport"), str):
                 cfg.transport = raw["transport"]
             for section_name, section in (
-                ("box", cfg.box),
-                ("satlink", cfg.satlink),
                 ("wyoming", cfg.wyoming),
                 ("http", cfg.http),
                 ("alarm", cfg.alarm),
@@ -140,21 +109,3 @@ class CoreConfig:
                     if hasattr(section, key):
                         setattr(section, key, value)
         return cfg
-
-    def box_noise_psk(self) -> str:
-        """Resolve the box's Noise PSK from the ESPHome secrets file.
-
-        Called ONLY when a box connection is actually attempted (seat-swap
-        phase and later) — never at config load, never by the bench. The
-        secrets file is flat `key: value` YAML; a line scan is sufficient
-        and avoids a PyYAML dependency.
-        """
-        path = Path(self.box.secrets_file).expanduser()
-        prefix = self.box.secrets_key + ":"
-        for line in path.read_text().splitlines():
-            stripped = line.strip()
-            if stripped.startswith(prefix):
-                value = stripped[len(prefix):].strip().strip('"').strip("'")
-                if value:
-                    return value
-        raise RuntimeError(f"secret {self.box.secrets_key!r} not found in {path}")

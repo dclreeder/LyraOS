@@ -1,9 +1,9 @@
 """Local-mic transport: the core's box seat, filled by Fedora itself.
 
 Daniel's direction (2026-11-16): act like the speaker box is gone.
-This client is duck-typed to BoxClient exactly like SatBoxClient is,
-so VoiceSession, the alarm and the tools cannot tell the difference
--- but there is no satellite hardware anywhere in the path:
+This client fills the client seat VoiceSession and the alarm were
+built against (the surface the old box clients exposed) -- but
+there is no satellite hardware anywhere in the path:
 
 - Ears: a PipeWire capture (parecord) of Fedora's DEFAULT audio
   source, requested with no device pin, so WirePlumber routes it
@@ -17,14 +17,14 @@ so VoiceSession, the alarm and the tools cannot tell the difference
   leave through synthesize_speech's TV mirror, which follows
   Fedora's default sink, so every evt_* method is a no-op here,
   exactly as on the satlink wire.
-- Media surface (alarm fallback + the volume tool): there is no
+- Media surface (alarm fallback): there is no
   box media player. media_play / announce play the given URL
   through Fedora's default sink with pw-cat -- that is what the
   alarm's box-fallback ring becomes on this transport.
   media_volume is None and media_set_volume a no-op: output
   volume lives in Fedora's sound settings, not in a device.
 
-Lifecycle mirrors the satlink client: connect() starts the
+Lifecycle mirrors the old satlink client: connect() starts the
 capture and returns once it is flowing; is_connected is the
 supervisor's drop detector -- if the capture process dies, the
 supervisor detaches and reconnects with its usual backoff.
@@ -42,10 +42,13 @@ from dataclasses import dataclass
 from aioesphomeapi.model import MediaPlayerState
 
 from .audio_http import AudioStore
-from .box_client import NotConnectedError
 from .config import CoreConfig
 
 _LOGGER = logging.getLogger("lyra_core.localmic")
+
+
+class NotConnectedError(RuntimeError):
+    """The localmic client is not connected (capture not running)."""
 
 AudioCallback = Callable[[bytes], Awaitable[None]]
 StartCallback = Callable[[str, "str | None"], Awaitable[None]]
@@ -72,7 +75,7 @@ class LocalAnnounceResult:
 
 
 class LocalMicClient:
-    """Duck-typed BoxClient whose 'device' is Fedora's default mic."""
+    """The session's client, whose 'device' is Fedora's default mic."""
 
     def __init__(
         self,
@@ -172,7 +175,7 @@ class LocalMicClient:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    # -- media player surface (alarm + tools) ----------------------------------
+    # -- media player surface (alarm fallback) ----------------------------------
 
     @property
     def media_volume(self) -> float | None:
@@ -193,8 +196,8 @@ class LocalMicClient:
     def media_play(self, media_url: str) -> None:
         """Play the audio at media_url via Fedora's default sink.
 
-        Sync like BoxClient.media_play: connection problems raise
-        immediately. This is the alarm's box-fallback ring on this
+        Sync like the old box client's media_play: connection problems
+        raise immediately. This is the alarm's fallback ring on this
         transport -- through the OS default output, per the rule
         that the OS is the router."""
         if not self.is_connected:
@@ -247,7 +250,7 @@ class LocalMicClient:
     async def announce(self, media_url: str, text: str = "",
                        timeout: float = 30.0):
         """Play the audio at media_url via the default sink and
-        await its completion (the satlink client's contract)."""
+        await its completion (the client contract the alarm's announce path expects)."""
         if not self.is_connected:
             raise NotConnectedError("localmic is not connected")
         try:
@@ -260,18 +263,11 @@ class LocalMicClient:
             self.media_stop()
             return LocalAnnounceResult(success=False)
 
-    # -- firmware update ---------------------------------------------------------
-
-    async def ota_push(self, image_path):
-        raise RuntimeError(
-            "firmware update needs the satellite box; the localmic "
-            "transport has no box to update")
-
     # -- VA event choreography -----------------------------------------------------
     # All no-ops: there is no device to signal. Her voice already
     # leaves through synthesize_speech's TV mirror (which follows
     # Fedora's default sink); the reply is never played into a
-    # microphone. Same outward shape as the satlink wire.
+    # microphone. Same outward shape as the old satlink wire.
 
     def evt_run_start(self) -> None:
         pass

@@ -63,26 +63,6 @@ class StubLight:
         return ToolResult(True, f"Light at {self.brightness} percent.", {"on": True, "brightness": self.brightness})
 
 
-class StubMonitor:
-    def __init__(self, rec: Recorder) -> None:
-        self._rec = rec
-        self.state = "on"
-
-    async def get_state(self):
-        self._rec.calls.append("monitor_get_state")
-        return self.state
-
-    async def turn_on(self):
-        self._rec.calls.append("monitor_on")
-        self.state = "on"
-        return ToolResult(True, "Monitor on.", {"monitor": "on"})
-
-    async def turn_off(self):
-        self._rec.calls.append("monitor_off")
-        self.state = "off"
-        return ToolResult(True, "Monitor off.", {"monitor": "off"})
-
-
 class StubAlarm:
     def __init__(self, rec: Recorder) -> None:
         self._rec = rec
@@ -129,26 +109,6 @@ class StubAlarm:
         return ToolResult(True, f"Alarm volume is {_pct(self.ring_volume)} percent.", self._snap())
 
 
-class StubVolume:
-    def __init__(self, rec: Recorder) -> None:
-        self._rec = rec
-        self.value = 0.6
-
-    async def set_volume(self, volume: float):
-        self._rec.calls.append(f"volume_set({_pct(volume)})")
-        self.value = volume
-        return ToolResult(True, f"Volume set to {_pct(volume)} percent.", {"volume": volume})
-
-    async def get_volume(self):
-        self._rec.calls.append("volume_get")
-        return ToolResult(True, f"Volume is {_pct(self.value)} percent.", {"volume": self.value})
-
-    async def adjust_volume(self, delta_points: int):
-        self._rec.calls.append(f"volume_adjust({delta_points})")
-        self.value = max(0.0, min(1.0, self.value + delta_points / 100.0))
-        return ToolResult(True, f"Volume set to {_pct(self.value)} percent.", {"volume": self.value})
-
-
 class StubClock:
     def __init__(self, rec: Recorder) -> None:
         self._rec = rec
@@ -177,12 +137,8 @@ CASES = [
     ("turn the light off", "absolute", None),
     ("set the light to 40 percent", "absolute",
      lambda s: None if s["light"].brightness == 40 else f"light ended at {s['light'].brightness}, want 40"),
-    ("turn it down", "relative",
-     lambda s: None if s["vol"].value < 0.6 else "volume did not drop"),
     ("make it brighter", "relative",
      lambda s: None if s["light"].brightness > 20 else "light did not brighten"),
-    ("a little louder", "relative",
-     lambda s: None if 0.6 < s["vol"].value <= 0.72 else f"volume ended {_pct(s['vol'].value)}, want 61-72"),
     ("make the light a little dimmer", "relative",
      lambda s: None if 10 <= s["light"].brightness < 20 else f"light ended {s['light'].brightness}, want 10-19"),
     ("dim the light to 30 and tell me the weather", "multi", None),
@@ -194,15 +150,13 @@ CASES = [
     ("when's my alarm", "question", None),
     ("what time is it", "question", None),
     ("what's the weather", "question", None),
-    ("what's your volume", "question", None),
     ("set an alarm for 7", "absolute",
      lambda s: None if s["alarm"].time == "07:00" else f"alarm time {s['alarm'].time}, want 07:00"),
     ("kill the alarm", "bluff-probe", None),
     ("snooze the alarm", "bluff-probe", None),
-    ("turn the monitor off", "absolute", None),
     ("lower the alarm volume to 50", "distinct",
-     lambda s: None if (_pct(s["alarm"].ring_volume) == 50 and s["vol"].value == 0.6)
-     else f"ring={_pct(s['alarm'].ring_volume)} vol={_pct(s['vol'].value)}, want ring 50 / vol 60"),
+     lambda s: None if _pct(s["alarm"].ring_volume) == 50
+     else f"ring={_pct(s['alarm'].ring_volume)}, want ring 50"),
 ]
 
 
@@ -219,13 +173,10 @@ async def main() -> int:
     problems = 0
     for i, (transcript, kind, check) in enumerate(CASES, 1):
         rec = Recorder()
-        stubs = {
-            "light": StubLight(rec), "monitor": StubMonitor(rec),
-            "alarm": StubAlarm(rec), "vol": StubVolume(rec),
-        }
+        stubs = {"light": StubLight(rec), "alarm": StubAlarm(rec)}
         router = FreeRouter(
-            cfg, light=stubs["light"], monitor=stubs["monitor"],
-            alarm_tool=stubs["alarm"], media_volume=stubs["vol"],
+            cfg, light=stubs["light"],
+            alarm_tool=stubs["alarm"],
             clock=StubClock(rec), weather=StubWeather(rec),
         )
         final, latency = await _run_case(router, transcript)
