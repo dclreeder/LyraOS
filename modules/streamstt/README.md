@@ -6,9 +6,14 @@ session for `nvidia/nemotron-3.5-asr-streaming-0.6b` (GGUF in
 127.0.0.1:8097. It exists because parakeet.cpp's streaming surface is
 its C API, not the HTTP server the batch Parakeet TDT path uses.
 
-Used by: Lyra's RTC mode only (`core/lyra_core/stream_stt.py` +
-`rtc.py`), since 2026-11-18. WakeGate keeps the batch TDT path; if
-this sidecar is down, RTC falls back to Endpointer + TDT per session.
+Used by: Lyra's RTC mode and the phone call feature
+(`core/lyra_core/stream_stt.py` + `rtc.py` +
+`production_main.py`'s call transcription), since 2026-11-18.
+WakeGate keeps the batch TDT path; if this sidecar is down, RTC
+falls back to Endpointer + TDT per session and call turns fall
+back to TDT per utterance. The server serves ONE connection at
+a time: a second connection waits in the backlog until the
+first closes, and clients time out into their fallback.
 
 Build: `./build.sh` (links the parakeet.cpp build tree; output in
 `build/`, gitignored). Run: `lyra-nemotron-stream.service`.
