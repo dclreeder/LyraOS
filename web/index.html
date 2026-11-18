@@ -86,7 +86,7 @@
   const buf = new Uint8Array(256);
   app.ticker.add(() => {
     let target = 0;
-    if (analyser && audioEl && !audioEl.paused) {
+    if (analyser && ((audioEl && !audioEl.paused) || window._rtcTap)) {
       analyser.getByteTimeDomainData(buf);
       let sum = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
       const rms = Math.sqrt(sum / buf.length);
@@ -95,7 +95,7 @@
     }
     mouth += (target - mouth) * (target > mouth ? 0.85 : 0.28);
     try { model.internalModel.coreModel.setParameterValueById('ParamMouthOpenY', mouth); } catch (e) {}
-    try { const tgt = window._callArm ? 1 : 0, cur = window._armFade || 0, stp = 1 / 18; window._armFade = Math.abs(tgt - cur) < stp ? tgt : cur + Math.sign(tgt - cur) * stp; const cm = model.internalModel.coreModel; cm.setPartOpacityById('PartArmB', window._armFade); cm.setPartOpacityById('PartArmA', 1 - window._armFade); } catch (e) {}
+    try { const cm = model.internalModel.coreModel; cm.setPartOpacityById('PartArmB', 0); cm.setPartOpacityById('PartArmA', 1); } catch (e) {} // no arms in any mode (Daniel 2026-11-18): the standard bust-up is her only presentation
     // life layer: breathing, sway and blinks fill the gaps between motions
     if (!motionPlaying()) {
       try {
@@ -127,6 +127,30 @@
       }
     } catch (e) {}
   }, 150);
+  // --- RTC lip sync (2026-11-18): in rtc mode her voice arrives
+  // as a WebRTC stream, not a mirror job -- but the mouth reads
+  // this one analyser, so the RTC client below taps the remote
+  // stream into the same graph (analyser -> gain -> destination)
+  // and mutes its own element. One contract: the mouth follows
+  // whatever audio this page renders, on every speech path.
+  window._rtcSrc = null;
+  window._attachRtcAudio = (stream) => {
+    try {
+      ensureAudio();
+      if (actx.state === 'suspended') actx.resume();
+      window._detachRtcAudio();
+      const srcNode = actx.createMediaStreamSource(stream);
+      srcNode.connect(analyser);
+      window._rtcSrc = srcNode;
+      window._rtcTap = true;
+      if (window._gain) window._gain.gain.value = 1;
+    } catch (e) {}
+  };
+  window._detachRtcAudio = () => {
+    try { if (window._rtcSrc) window._rtcSrc.disconnect(); } catch (e) {}
+    window._rtcSrc = null;
+    window._rtcTap = false;
+  };
 })();
 </script><style>
 #clock { position: fixed; top: 26px; right: 38px; text-align: right; z-index: 5;
@@ -172,7 +196,6 @@ setInterval(pollRing, 700); pollRing();
 (function(){
 
   var LAT=30.3322, LON=-81.6557;
-  var DAY='assets/day-scene-loop.mp4', NIGHT='assets/night-sky-loop.mp4';
   var rad=Math.PI/180, dayMs=864e5, J1970=2440588, J2000=2451545, e=rad*23.4397;
   function toJulian(d){return d.valueOf()/dayMs-0.5+J1970;}
   function fromJulian(j){return new Date((j+0.5-J1970)*dayMs);}
@@ -199,21 +222,6 @@ setInterval(pollRing, 700); pollRing();
   function apply(){ var d = desired(); window._isNight = !d; if (el) el.style.opacity = d ? '1' : '0'; }
   apply();
   setInterval(apply, 60000);
-})();
-</script>
-<script>
-// Video-call pose (2026-11-15): while the call page reports a live
-// call, Lyra holds her phone up -- Arm B (both fists raised) fades in
-// via window._callArm and the phone prop shows at her raised hand.
-(function(){
-  async function tick(){
-    try {
-      var r = await fetch('/callstate', {cache: 'no-store'});
-      var j = await r.json();
-      window._callArm = !!j.active;
-    } catch (e) {}
-  }
-  tick(); setInterval(tick, 2000);
 })();
 </script>
 <script>
@@ -302,8 +310,10 @@ setInterval(pollRing, 700); pollRing();
 // display; with the panel off this page keeps running and she is
 // still heard on whatever speaker is default).
 (function(){
-  var pc = null, micStream = null, audioEl = null, connecting = false;
+  var pc = null, micStream = null, audioEl = null, connecting = false, remoteStream = null;
   function stopRtc(){
+    if (window._detachRtcAudio) window._detachRtcAudio();
+    remoteStream = null;
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
     if (micStream) { micStream.getTracks().forEach(function(t){ t.stop(); }); micStream = null; }
     if (audioEl) { audioEl.srcObject = null; }
@@ -317,9 +327,12 @@ setInterval(pollRing, 700); pollRing();
       pc = new RTCPeerConnection();
       micStream.getTracks().forEach(function(t){ pc.addTrack(t, micStream); });
       pc.ontrack = function(ev){
+        remoteStream = ev.streams[0];
         if (!audioEl) { audioEl = new Audio(); audioEl.autoplay = true; }
-        audioEl.srcObject = ev.streams[0];
+        audioEl.muted = true;  // the WebAudio graph renders her voice (and drives the mouth); the element is only a sink
+        audioEl.srcObject = remoteStream;
         audioEl.play().catch(function(){});
+        if (window._attachRtcAudio) window._attachRtcAudio(remoteStream);
       };
       pc.onconnectionstatechange = function(){
         if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed')) stopRtc();
@@ -343,6 +356,7 @@ setInterval(pollRing, 700); pollRing();
     try {
       var j = await (await fetch('/roomstate', {cache: 'no-store'})).json();
       if (j.mode === 'rtc') startRtc(); else if (pc || connecting) stopRtc();
+      if (remoteStream && pc && pc.connectionState === 'connected' && !window._rtcTap && window._attachRtcAudio) window._attachRtcAudio(remoteStream);
     } catch (e) {}
   }
   setInterval(tick, 1500); tick();

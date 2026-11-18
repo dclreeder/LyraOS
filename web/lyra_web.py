@@ -113,11 +113,12 @@ def set_dim(b):
 # ring older than 20 min is stale (the core's hard stop is 15) and is
 # dropped on read.
 # Call state (2026-11-15): the call page posts {active: true} when a
-# call starts and re-posts it every 10 s as a heartbeat; the TV page
-# polls GET /callstate and, while a call is live, flips Lyra to her
-# Arm B pose (both fists up) with a phone prop at her hand -- she is
-# on a video call, holding her phone up. A heartbeat older than 25 s
-# reads as no call, so a crashed call page cannot strand the pose.
+# call starts and re-posts it every 10 s as a heartbeat; /roomstate
+# reports it and the one display's room layers light the phone on
+# the dresser (the room2 phone delta). (The Arm B pose that used
+# to key off this state was removed 2026-11-18: no arms in any
+# mode.) A heartbeat older than 25 s reads as no call, so a
+# crashed call page cannot strand the state.
 CALL_STATE_PATH = os.path.join(ROOT, 'call_state.json')
 _call_hb = [0.0]
 def get_call_state():

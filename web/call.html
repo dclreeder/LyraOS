@@ -6,8 +6,8 @@
 html,body{margin:0;padding:0;background:#05070f;overflow:hidden;height:100%;
   font-family:system-ui,'Segoe UI',sans-serif;-webkit-user-select:none;user-select:none}
 canvas{display:block}
-#bgwrap{position:fixed;inset:0;overflow:hidden;z-index:0}
-.bgv{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#bgwrap{position:fixed;inset:0;overflow:hidden;z-index:0;animation:drift 240s ease-in-out infinite}
+@keyframes drift{0%{transform:scale(1.07) translate(0,0)}25%{transform:scale(1.07) translate(-12px,6px)}50%{transform:scale(1.07) translate(0,10px)}75%{transform:scale(1.07) translate(12px,4px)}100%{transform:scale(1.07) translate(0,0)}}
 #c{position:relative;z-index:1}
 #ui{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;flex-direction:column;
   align-items:center;gap:10px;padding:14px 18px calc(20px + env(safe-area-inset-bottom));
@@ -30,7 +30,20 @@ canvas{display:block}
 <script src="libs/live2dcubismcore.min.js"></script>
 <script src="libs/cubism4.min.js"></script>
 </head><body>
-<div id="bgwrap"><video id="bgvid" class="bgv" src="assets/day-scene-loop.mp4" autoplay muted loop playsinline></video></div>
+<style>
+#roombg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#roombg-off{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .8s ease}
+#roombg-sleep{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 1.2s ease}
+#c{transition:opacity 1.2s ease}
+.roomlayer{position:absolute;pointer-events:none;transition:opacity .8s ease}
+#daywin{left:26%;top:3%;width:41.5%;height:72%;background:radial-gradient(circle at 72% 20%, rgba(255,244,190,.95), rgba(255,244,190,0) 42%),linear-gradient(180deg,#79bfe8 0%,#cfeafb 58%,#a9cba0 100%);opacity:0;transition:opacity 1.5s ease}
+@keyframes sgpulse{0%,100%{opacity:.45}50%{opacity:1}}
+#phonedelta{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .6s ease}
+</style>
+<div id="bgwrap"><img id="roombg" src="assets/room2-base.webp" alt=""><img id="roombg-off" src="assets/room2-lightoff.webp" alt=""><img id="roombg-sleep" src="assets/room2-sleep.webp" alt="">
+<div id="daywin"></div>
+
+<img id="phonedelta" src="assets/room2-phonedelta.webp" alt=""></div>
 <canvas id="c"></canvas>
 <div id="ui">
   <div id="caps"><div class="cap me" id="capme"></div><div class="cap" id="capher"></div></div>
@@ -290,14 +303,14 @@ canvas{display:block}
 })();
 </script>
 <script>
-// Day/night background rotation: day scene between sunrise and sunset,
-// night sky otherwise. Times computed in-page for Jacksonville, FL;
-// re-checked every minute, swap fades through black.
+// Room window day/night (2026-11-15): the painted room's window
+// shows a day sky between sunrise and sunset (Jacksonville, computed
+// in-page, the same SunCalc the old scene swap used) and the painted
+// night sky otherwise; the layer fades over 1.5 s, re-checked every
+// minute.
 (function(){
+
   var LAT=30.3322, LON=-81.6557;
-  var DAY='assets/day-scene-loop.mp4', NIGHT='assets/night-sky-loop.mp4';
-  var vid=document.getElementById('bgvid');
-  if(!vid) return;
   var rad=Math.PI/180, dayMs=864e5, J1970=2440588, J2000=2451545, e=rad*23.4397;
   function toJulian(d){return d.valueOf()/dayMs-0.5+J1970;}
   function fromJulian(j){return new Date((j+0.5-J1970)*dayMs);}
@@ -319,20 +332,32 @@ canvas{display:block}
     var Jrise=Jnoon-(Jset-Jnoon);
     return {sunrise:fromJulian(Jrise), sunset:fromJulian(Jset)};
   }
-  var cur=DAY;
-  function desired(){ var n=new Date(), t=getSunTimes(n); return (n>t.sunrise&&n<t.sunset)?DAY:NIGHT; }
-  function play(){ var p=vid.play(); if(p&&p.catch) p.catch(function(){}); }
-  function apply(first){
-    var want=desired();
-    if(want===cur) return;
-    cur=want;
-    if(first){ vid.src=want; play(); return; }
-    vid.style.transition='opacity 1.5s ease';
-    vid.style.opacity='0';
-    setTimeout(function(){ vid.src=want; play(); vid.style.opacity='1'; },1500);
+  var el = document.getElementById('daywin');
+  function desired(){ var n=new Date(), t=getSunTimes(n); return (n>t.sunrise&&n<t.sunset); }
+  function apply(){ var d = desired(); window._isNight = !d; if (el) el.style.opacity = d ? '1' : '0'; }
+  apply();
+  setInterval(apply, 60000);
+})();
+</script>
+<script>
+// Room state layers (2026-11-18): the call page shows the SAME
+// room as the TV display -- one display service (lyra-web +
+// /roomstate), no call-specific background. Same layer rules as
+// index.html; only the sleep canvas-fade is omitted, because
+// this page is an active conversation surface.
+(function(){
+  var off=document.getElementById('roombg-off'),
+      slp=document.getElementById('roombg-sleep'), pg=document.getElementById('phonedelta');
+  function set(el, on){ if (el) el.style.opacity = on ? '1' : '0'; }
+  async function tick(){
+    try {
+      var j = await (await fetch('/roomstate', {cache: 'no-store'})).json();
+      set(off, !!(j.light && j.light.on === false));
+      set(pg, !!j.call_active || (j.mode === 'rtc' && !!j.rtc_connected));
+      set(slp, !!j.sleep);
+    } catch (e) {}
   }
-  apply(true);
-  setInterval(function(){ apply(false); },60000);
+  setInterval(tick, 1200); tick();
 })();
 </script>
 </body></html>
