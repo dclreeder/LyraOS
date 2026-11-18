@@ -144,6 +144,16 @@ canvas{display:block}
   // below remains whole as the fallback when the peer connection
   // cannot be established.
   let pc = null, dc = null, remoteSrc = null, herText = '';
+  const PAGE_BUILD = '__PAGE_BUILD__';   // lyra-web stamps the served build here
+  function beacon(event, extra) {
+    // The server journal is the only place a phone's engage and
+    // fallback decisions are visible -- a silent fallback hid a
+    // stale page for a whole evening (2026-11-18). Fire and forget.
+    try {
+      fetch('/call/clientlog', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(Object.assign({event: event, build: PAGE_BUILD, ua: navigator.userAgent}, extra || {}))}).catch(() => {});
+    } catch (e) {}
+  }
   let preRoll = [], chunks = [], silenceS = 0, speechS = 0, utterS = 0;
   const SR_OUT = 16000;
 
@@ -312,7 +322,7 @@ canvas{display:block}
     // runs the legacy flow on the same mic stream.
     return new Promise((resolve) => {
       let settled = false;
-      const done = (ok) => { if (!settled) { settled = true; resolve(ok); } };
+      const done = (ok, reason) => { if (!settled) { settled = true; resolve({ok: !!ok, reason: reason || ''}); } };
       let mypc = null;
       try {
         mypc = new RTCPeerConnection(); pc = mypc;
@@ -326,8 +336,8 @@ canvas{display:block}
           else if (mypc.connectionState === 'failed' || mypc.connectionState === 'closed') {
             const wasLive = (callMode === 'stream');
             teardownStreaming();
-            if (wasLive && inCall) { callMode = null; startLegacy(); }
-            done(false);
+            if (wasLive && inCall) { callMode = null; beacon('fallback', {reason: 'mid-call connection ' + mypc.connectionState}); startLegacy(); }
+            done(false, 'connection ' + mypc.connectionState);
           }
         };
         (async () => {
@@ -348,11 +358,11 @@ canvas{display:block}
             await mypc.setRemoteDescription(ans);
           } catch (e) {
             if (pc === mypc) teardownStreaming();
-            done(false);
+            done(false, 'signaling: ' + ((e && e.message) || e));
           }
         })();
-        setTimeout(() => { if (!settled) { if (pc === mypc) teardownStreaming(); done(false); } }, 9000);
-      } catch (e) { done(false); }
+        setTimeout(() => { if (!settled) { if (pc === mypc) teardownStreaming(); done(false, 'connect timeout'); } }, 9000);
+      } catch (e) { done(false, 'RTCPeerConnection: ' + ((e && e.message) || e)); }
     });
   }
   function startLegacy() {
@@ -374,7 +384,22 @@ canvas{display:block}
   }
   async function startCall() {
     ensureAudio();
+    // Self-heal a stale page (kept-open tab / browser cache): if the
+    // build lyra-web would serve now differs from the build this page
+    // was served as, reload once so the tap lands on the fresh client
+    // instead of silently running an old one.
+    try {
+      const v = await (await fetch('/call/version', {cache: 'no-store'})).json();
+      if (v && v.build && PAGE_BUILD !== '__PAGE_BUILD__' && String(v.build) !== String(PAGE_BUILD)
+          && !sessionStorage.getItem('lyra_build_reload')) {
+        sessionStorage.setItem('lyra_build_reload', '1');
+        beacon('stale_page', {reason: 'served build ' + v.build});
+        location.reload();
+        return;
+      }
+    } catch (e) {}
     inCall = true; state = 'starting';
+    beacon('engage');
     postCallState(true);
     if (callHb) clearInterval(callHb);
     callHb = setInterval(() => postCallState(true), 10000);
@@ -390,11 +415,13 @@ canvas{display:block}
     btn.classList.add('on'); btn.innerHTML = '&#128244;';
     hintEl.textContent = 'Just talk — she answers when you pause. Her voice plays here, and on the TV too if it is on.';
     setStatus('Connecting…');
-    const ok = await tryStreaming();
+    const res = await tryStreaming();
     if (!inCall) return;
-    if (ok) {
+    if (res.ok) {
       callMode = 'stream'; state = 'streaming'; setStatus('Listening…');
+      beacon('stream_connected');
     } else {
+      beacon('fallback', {reason: res.reason || 'unknown'});
       startLegacy();
     }
   }

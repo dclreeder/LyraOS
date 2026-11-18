@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Lyra web viewer server: static pages, /mirror speech jobs, /ring, /dim, the streamed /call proxy to the core, and the /rtc/offer signaling proxy."""
-import base64, json, os, threading, time, urllib.request, urllib.error, urllib.parse
+import base64, json, os, sys, threading, time, urllib.request, urllib.error, urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.path.expanduser('~/Documents/LyraOS/web')
 _lock = threading.Lock(); _counter = [0]
@@ -13,6 +13,17 @@ except Exception: pass
 # dashboard reads). The core transcribes and returns a call id at
 # once; the reply is then synthesized sentence by sentence and the
 # page polls /call/poll for the sentences as they land.
+def log(msg):
+    # This server silences the stock request log (log_message below);
+    # the lines written here are the deliberate ones -- call signaling
+    # and client beacons -- so a real phone's behavior is diagnosable
+    # from the journal alone (2026-11-18: a phone silently ran the
+    # legacy call flow for a whole evening and nothing anywhere had
+    # recorded whether its streaming offer was ever attempted).
+    print('lyra-web: ' + msg, file=sys.stderr, flush=True)
+def _call_page_build():
+    try: return str(int(os.path.getmtime(os.path.join(ROOT, 'call.html'))))
+    except Exception: return '0'
 def core_token():
     with open(os.path.expanduser('~/Documents/LyraOS/core/alarm_secrets.json')) as f:
         return json.load(f)['kill_token']
@@ -173,6 +184,26 @@ def _write_job(wav, silent):
 class H(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw): super().__init__(*a, directory=ROOT, **kw)
     def log_message(self, *a): pass
+    def end_headers(self):
+        # HTML must revalidate on every load: a phone that kept a
+        # stale call page silently lost the streaming client for a
+        # whole evening (2026-11-18). If-Modified-Since still makes
+        # an unchanged page a cheap 304.
+        pth = urllib.parse.urlparse(self.path).path
+        if pth.endswith('.html') or pth == '/':
+            self.send_header('Cache-Control', 'no-cache')
+        super().end_headers()
+    def _serve_call_page(self):
+        try:
+            with open(os.path.join(ROOT, 'call.html'), 'rb') as f: data = f.read()
+        except Exception:
+            return super().do_GET()
+        data = data.replace(b'__PAGE_BUILD__', _call_page_build().encode())
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
     def _json(self, code, obj):
         data = json.dumps(obj).encode()
         self.send_response(code); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
@@ -190,6 +221,8 @@ class H(SimpleHTTPRequestHandler):
                 try: return self._json(e.code, json.loads(e.read()))
                 except Exception: return self._json(e.code, {'error': 'core error'})
             except Exception as e: return self._json(502, {'error': str(e)})
+        if u.path == '/call/version': return self._json(200, {'build': _call_page_build()})
+        if u.path == '/call.html': return self._serve_call_page()
         if u.path == '/callstate': return self._json(200, get_call_state())
         if u.path == '/roomstate': return self._json(200, room_state())
         if u.path == '/alarm':
@@ -211,16 +244,31 @@ class H(SimpleHTTPRequestHandler):
                 except Exception: return self._json(e.code, {'error': 'core error'})
             except Exception as e: return self._json(502, {'error': str(e)})
         if self.path == '/call/offer':
+            t0 = time.time()
             try:
                 n = int(self.headers.get('Content-Length') or 0)
                 if n <= 0 or n > 256 * 1024: return self._json(413, {'error': 'bad size'})
                 payload = self.rfile.read(n)
                 code, obj = call_offer(payload)
+                log('call/offer: %d bytes -> core %d (%.2fs)' % (n, code, time.time() - t0))
                 return self._json(code, obj)
             except urllib.error.HTTPError as e:
+                log('call/offer: core HTTP %d (%.2fs)' % (e.code, time.time() - t0))
                 try: return self._json(e.code, json.loads(e.read()))
                 except Exception: return self._json(e.code, {'error': 'core error'})
-            except Exception as e: return self._json(502, {'error': str(e)})
+            except Exception as e:
+                log('call/offer: proxy error: %s' % e)
+                return self._json(502, {'error': str(e)})
+        if self.path == '/call/clientlog':
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                if n <= 0 or n > 16 * 1024: return self._json(413, {'error': 'bad size'})
+                evt = json.loads(self.rfile.read(n) or b'{}')
+                log('call client: event=%s build=%s reason=%s ua=%s' % (
+                    evt.get('event'), evt.get('build'),
+                    evt.get('reason') or '-', (evt.get('ua') or '')[:90]))
+                return self._json(200, {'ok': True})
+            except Exception as e: return self._json(400, {'error': str(e)})
         if self.path == '/rtc/offer':
             try:
                 n = int(self.headers.get('Content-Length') or 0)
