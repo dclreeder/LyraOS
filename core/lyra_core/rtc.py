@@ -43,6 +43,18 @@ matters is the core's own anyway:
   mid-session, the session falls back to the Endpointer +
   PipelineDriver.transcribe_audio (Parakeet TDT) path,
   unchanged. WakeGate never uses the streamer.
+
+The phone call feature (2026-11-18, Daniel: "the phone call is
+supposed to be duplex") runs on this same machinery: a second
+RtcServer instance, always accepting, whose sessions carry
+via="call", a mirroring speaker (her voice also reaches the TV
+mirror, as the call feature has always done), and no rtc_state
+publishing. The call page attaches a data channel; the session
+emits his finalized-so-far text as it forms, her reply sentences
+as they generate, and barge-in events over it. The mode-gated
+server above is untouched by this: a call works in any mode, and
+the two servers share the one sidecar by the existing fallback
+rule (whoever cannot connect runs on TDT).
 """
 from __future__ import annotations
 
@@ -50,6 +62,7 @@ import array
 import asyncio
 import collections
 import io
+import json
 import logging
 import math
 import time
@@ -225,10 +238,11 @@ class _RtcSpeaker:
     dropped instead of played."""
 
     def __init__(self, driver: PipelineDriver, session: "_RtcSession",
-                 generation: int) -> None:
+                 generation: int, mirror: bool = False) -> None:
         self._driver = driver
         self._session = session
         self._generation = generation
+        self._mirror = mirror
         self._queue: asyncio.Queue = asyncio.Queue()
         self._worker: asyncio.Task | None = None
         self._resampler = av.AudioResampler(
@@ -251,7 +265,7 @@ class _RtcSpeaker:
                 return
             try:
                 wav_bytes, rate, _w, _c = await self._driver.synthesize_speech(
-                    sentence, mirror=False)
+                    sentence, mirror=self._mirror)
             except Exception:
                 _LOGGER.exception(
                     "rtc sentence synthesis failed: %r", sentence)
@@ -293,6 +307,8 @@ class _RtcSession:
         self._turn_task: asyncio.Task | None = None
         self._consume_task: asyncio.Task | None = None
         self._closed = False
+        self._event_sink = None
+        self._partial_sent = ""
         self.out_track = _PeerAudioTrack(self)
 
     # -- output side ------------------------------------------------
@@ -324,7 +340,30 @@ class _RtcSession:
         self._out.clear()
         if self._turn_task is not None and not self._turn_task.done():
             self._turn_task.cancel()
-        _LOGGER.info("rtc barge-in: reply interrupted by peer speech")
+        _LOGGER.info("%s barge-in: reply interrupted by peer speech",
+                     self._server.label)
+        self._emit({"type": "barge_in"})
+
+    # -- page events (the call's data channel) ------------------------
+
+    def attach_event_channel(self, channel) -> None:
+        """Wire the session's page events to a WebRTC data channel
+        (the phone call page). Events are JSON dicts: his
+        finalized-so-far text (partial), the dispatched transcript,
+        her reply sentences as they generate, reply completion,
+        and barge-in. The TV page creates no data channel, so RTC
+        mode sessions never emit."""
+        def _send(msg: dict) -> None:
+            try:
+                if channel.readyState == "open":
+                    channel.send(json.dumps(msg))
+            except Exception:
+                pass
+        self._event_sink = _send
+
+    def _emit(self, msg: dict) -> None:
+        if self._event_sink is not None:
+            self._event_sink(msg)
 
     # -- input side ---------------------------------------------------
 
@@ -340,15 +379,16 @@ class _RtcSession:
         client = await StreamSttClient.connect()
         if client is None:
             _LOGGER.warning(
-                "rtc: stream sidecar unreachable; session falls back "
-                "to Endpointer + Parakeet TDT")
+                "%s: stream sidecar unreachable; session falls back "
+                "to Endpointer + Parakeet TDT", self._server.label)
             return
         if self._closed:
             await client.close()
             return
         client.on_failure = self._on_stream_failure
         self._stream = client
-        _LOGGER.info("rtc: Nemotron streaming STT armed for this session")
+        _LOGGER.info("%s: Nemotron streaming STT armed for this session",
+                     self._server.label)
 
     def _on_stream_failure(self) -> None:
         """The sidecar died mid-session: fall back to the legacy
@@ -359,8 +399,8 @@ class _RtcSession:
         if self._closed:
             return
         _LOGGER.warning(
-            "rtc: stream sidecar lost mid-session; falling back to "
-            "Endpointer + Parakeet TDT")
+            "%s: stream sidecar lost mid-session; falling back to "
+            "Endpointer + Parakeet TDT", self._server.label)
         if self._stream_dispatched:
             return
         if self._pending_pcm is not None:
@@ -414,6 +454,15 @@ class _RtcSession:
         if stream is None or stream.failed:
             return
         await stream.feed(pcm)
+        if self._event_sink is not None and not stream.failed:
+            # His words, as they finalize: the call page renders
+            # them incrementally instead of one batch at turn end.
+            text = stream.text
+            if text != self._partial_sent:
+                self._partial_sent = text
+                if text.strip():
+                    self._emit({"type": "partial",
+                                "text": text.strip()})
         if (not self._utter_streaming and not stream.text
                 and stream.audio_fed >= STREAM_IDLE_RESET_S
                 and now - self._last_loud_at >= 1.0):
@@ -487,7 +536,8 @@ class _RtcSession:
         self._utter_stream_start = stream.audio_fed
         if final is None:
             _LOGGER.warning(
-                "rtc stream flush failed; session on the legacy path now")
+                "%s stream flush failed; session on the legacy path now",
+                self._server.label)
             pending, self._pending_pcm = self._pending_pcm, None
             self._utter_streaming = False
             if pending is not None:
@@ -508,14 +558,16 @@ class _RtcSession:
             # its final drain; the new utterance queues behind it by
             # simply being dropped -- the peer can repeat it. (In
             # practice the cancel above makes this rare.)
-            _LOGGER.info("rtc utterance dropped: a turn is still running")
+            _LOGGER.info("%s utterance dropped: a turn is still running",
+                         self._server.label)
             return
         self._turn_task = asyncio.ensure_future(
             self._run_turn_pcm(pcm, self._generation))
 
     def _start_turn_text(self, transcript: str) -> None:
         if self._turn_busy():
-            _LOGGER.info("rtc utterance dropped: a turn is still running")
+            _LOGGER.info("%s utterance dropped: a turn is still running",
+                         self._server.label)
             return
         self._turn_task = asyncio.ensure_future(
             self._run_transcript(transcript, self._generation,
@@ -527,33 +579,47 @@ class _RtcSession:
                 pcm, rate=UTTER_RATE, width=2, channels=1)
             if not transcript:
                 _LOGGER.info(
-                    "rtc utterance transcribed empty; staying silent")
+                    "%s utterance transcribed empty; staying silent",
+                    self._server.label)
                 return
             await self._run_transcript(
                 transcript, generation, source="parakeet-tdt")
         except asyncio.CancelledError:
             raise
         except Exception:
-            _LOGGER.exception("rtc turn failed")
+            _LOGGER.exception("%s turn failed", self._server.label)
 
     async def _run_transcript(self, transcript: str, generation: int,
                               source: str) -> None:
         try:
-            _LOGGER.info("rtc transcript [%s]: %r", source, transcript)
+            _LOGGER.info("%s transcript [%s]: %r",
+                         self._server.label, source, transcript)
+            self._emit({"type": "transcript", "text": transcript,
+                        "source": source})
             speaker = _RtcSpeaker(
-                self._server.driver, self, generation)
+                self._server.driver, self, generation,
+                mirror=self._server.mirror)
+
+            async def _feed(sentence: str) -> None:
+                # Her words stream too: the page sees each sentence
+                # as it is generated, before it is synthesized.
+                self._emit({"type": "reply_sentence", "text": sentence})
+                await speaker.feed(sentence)
+
             reply = await self._server.command(
-                transcript, on_sentence=speaker.feed, via="rtc")
+                transcript, on_sentence=_feed, via=self._server.via)
             await speaker.drain()
             if not speaker.used and reply:
                 # Nothing streamed (a router early-return line):
                 # speak the whole reply as one sentence.
-                await speaker.feed(str(reply))
+                await _feed(str(reply))
                 await speaker.drain()
+            self._emit({"type": "reply_done",
+                        "text": str(reply) if reply else ""})
         except asyncio.CancelledError:
             raise
         except Exception:
-            _LOGGER.exception("rtc turn failed")
+            _LOGGER.exception("%s turn failed", self._server.label)
 
     async def close(self) -> None:
         self._closed = True
@@ -578,11 +644,25 @@ class RtcServer:
     manager flips that with the mode, so a stray offer in WakeGate
     or Sleep gets a clean refusal, never a session. One peer at a
     time: a fresh offer replaces the previous peer (the page
-    rejoining after a hiccup is the normal case)."""
+    rejoining after a hiccup is the normal case).
 
-    def __init__(self, driver: PipelineDriver, command) -> None:
+    The phone call feature runs a second instance of this class
+    (via="call", mirror=True, publish_state=False) whose
+    `accepting` is simply always on: a call is not a mode, so its
+    offers are honored in WakeGate, RTC, and Sleep alike, and it
+    never touches rtc_state.json -- that file is the TV mode's
+    published fact, not the call's."""
+
+    def __init__(self, driver: PipelineDriver, command, *,
+                 via: str = "rtc", label: str = "rtc",
+                 mirror: bool = False,
+                 publish_state: bool = True) -> None:
         self.driver = driver
         self.command = command
+        self.via = via
+        self.label = label
+        self.mirror = mirror
+        self.publish_state = publish_state
         self.accepting = False
         self._session: _RtcSession | None = None
 
@@ -599,6 +679,12 @@ class RtcServer:
         session = _RtcSession(self, pc)
         self._session = session
 
+        @pc.on("datachannel")
+        def _on_datachannel(channel) -> None:
+            _LOGGER.info("%s peer data channel: %s",
+                         self.label, channel.label)
+            session.attach_event_channel(channel)
+
         @pc.on("track")
         def _on_track(track: MediaStreamTrack) -> None:
             _LOGGER.info("rtc peer track: %s", track.kind)
@@ -610,9 +696,11 @@ class RtcServer:
             _LOGGER.info("rtc peer connection state: %s",
                          pc.connectionState)
             if pc.connectionState == "connected":
-                write_rtc_state(True)
+                if self.publish_state:
+                    write_rtc_state(True)
             elif pc.connectionState in ("disconnected", "failed", "closed"):
-                write_rtc_state(False)
+                if self.publish_state:
+                    write_rtc_state(False)
                 if pc.connectionState in ("failed", "closed"):
                     asyncio.ensure_future(self._close_session())
 
@@ -638,7 +726,8 @@ class RtcServer:
         session, self._session = self._session, None
         if session is not None:
             await session.close()
-            write_rtc_state(False)
+            if self.publish_state:
+                write_rtc_state(False)
 
     async def stop(self) -> None:
         """Mode exit: refuse new offers and tear the peer down."""

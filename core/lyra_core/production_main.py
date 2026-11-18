@@ -297,6 +297,15 @@ async def amain() -> int:
     # manager owns when it may accept offers and when the room
     # capture runs. See lyra_core.mode for the state contract.
     rtc_server = RtcServer(driver, router.handle)
+    # The phone call's own RTC server (2026-11-18): the same
+    # session machinery as RTC mode, but not a mode -- always
+    # accepting, via="call", its speaker mirroring to the TV (the
+    # call feature's long-standing behavior), and no rtc_state
+    # publishing. Daniel: the phone call is supposed to be duplex.
+    call_rtc_server = RtcServer(
+        driver, router.handle, via="call", label="call",
+        mirror=True, publish_state=False)
+    call_rtc_server.accepting = True
     mode_mgr = _ModeManager(seat, rtc_server)
 
     async def _rtc_offer(sdp: str, sdp_type: str) -> dict:
@@ -304,6 +313,13 @@ async def amain() -> int:
         if mode_mgr.current != mode_store.RTC:
             return {"error": "rtc mode is not active", "status": 409}
         return await rtc_server.handle_offer(sdp, sdp_type)
+
+    async def _call_offer(sdp: str, sdp_type: str) -> dict:
+        """Call signaling: NOT mode-gated. A phone call is not a
+        mode -- it connects while the house is in WakeGate (the
+        normal case) and never disturbs the TV page's RTC
+        plumbing or the room capture."""
+        return await call_rtc_server.handle_offer(sdp, sdp_type)
 
     async def _announce(text: str) -> None:
         """Phase 4 /announce: Kokoro -> TV mirror. synthesize_speech
@@ -331,6 +347,14 @@ async def amain() -> int:
     # streaming sidecar first (see _call_transcribe below), with
     # Parakeet TDT as the fallback -- Daniel, 2026-11-18: the
     # phone call is supposed to be duplex.
+    # Later the same day the call became a true streaming session:
+    # the page is a WebRTC peer of the call RTC server (see
+    # _call_offer above) -- his words stream to the sidecar live
+    # and render on the page as they finalize, her replies stream
+    # sentence by sentence, and speech over her reply barges in.
+    # The /call/start + /call/poll shape below remains as the
+    # page's fallback when the streaming transport cannot be
+    # established, and _call_transcribe remains its ears.
     _call_lock = threading.Lock()
     _call_entries: dict[str, dict] = {}
 
@@ -550,6 +574,7 @@ async def amain() -> int:
         call_start=_call_start,
         call_poll=_call_poll,
         rtc_offer=_rtc_offer,
+        call_offer=_call_offer,
         tv=tv_tool,
         tv_volume=tv_volume_tool,
     )
@@ -594,6 +619,7 @@ async def amain() -> int:
         await _shutdown.wait()
     finally:
         watch_task.cancel()
+        await call_rtc_server.stop()
         await mode_mgr.shutdown()
         await alarm.stop()
         status_task.cancel()

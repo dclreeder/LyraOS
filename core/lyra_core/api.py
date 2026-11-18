@@ -30,6 +30,10 @@ this module by the production composition, and is never logged.
   rejected 400 (the standing announcements rule), as are empty
   texts and texts over the length cap.
 
+- POST /call/offer  (WebRTC signaling for the phone call's
+  streaming transport, 2026-11-18: the call page is a peer of the
+  composition's call RTC server; NOT mode-gated -- a call is not
+  a mode)
 - POST /call/start  (raw WAV utterance in the body; returns at once
   with a call id once the utterance is transcribed)
 - GET /call/poll  (the call turn's reply sentences, synthesized and
@@ -83,6 +87,7 @@ _LOGGER = logging.getLogger("lyra_core.api")
 TOOL_PATH = "/tool"
 ANNOUNCE_PATH = "/announce"
 CALL_START_PATH = "/call/start"
+CALL_OFFER_PATH = "/call/offer"
 RTC_OFFER_PATH = "/rtc/offer"
 CALL_POLL_PATH = "/call/poll"
 ANNOUNCE_MAX_CHARS = 200
@@ -152,6 +157,7 @@ class CoreApi:
         announce: AnnounceFn,
         call_start: CallStartFn | None = None,
         rtc_offer: RtcOfferFn | None = None,
+        call_offer: RtcOfferFn | None = None,
         call_poll: CallPollFn | None = None,
         tv: TvTool | None = None,
         tv_volume: TvVolumeTool | None = None,
@@ -165,6 +171,7 @@ class CoreApi:
         self._announce = announce
         self._call_start = call_start
         self._rtc_offer = rtc_offer
+        self._call_offer = call_offer
         self._call_poll = call_poll
         self._tv = tv
         self._tv_volume = tv_volume
@@ -191,6 +198,13 @@ class CoreApi:
             self._http.add_post_route(RTC_OFFER_PATH, self._serve_rtc_offer)
             _LOGGER.info(
                 "core API registered: POST %s (token auth)", RTC_OFFER_PATH
+            )
+        if self._call_offer is not None:
+            self._http.add_post_route(
+                CALL_OFFER_PATH, self._serve_call_offer)
+            _LOGGER.info(
+                "core API registered: POST %s (token auth)",
+                CALL_OFFER_PATH
             )
         _LOGGER.info(
             "core API registered: POST %s, POST %s (token auth)",
@@ -487,11 +501,18 @@ class CoreApi:
     # the offer is refused with its status.
 
     def _serve_rtc_offer(self, query: dict, body: bytes) -> tuple[int, str, bytes]:
+        return self._serve_offer(query, body, self._rtc_offer, "/rtc/offer")
+
+    def _serve_call_offer(self, query: dict, body: bytes) -> tuple[int, str, bytes]:
+        return self._serve_offer(query, body, self._call_offer, "/call/offer")
+
+    def _serve_offer(self, query: dict, body: bytes,
+                     offer_fn, path: str) -> tuple[int, str, bytes]:
         if not self._authorized(query):
-            _LOGGER.warning("core API /rtc/offer: rejected (bad token)")
+            _LOGGER.warning("core API %s: rejected (bad token)", path)
             return _json(403, {"ok": False, "error": "forbidden"})
-        if self._rtc_offer is None or self._loop is None:
-            return _json(503, {"ok": False, "error": "rtc not available"})
+        if offer_fn is None or self._loop is None:
+            return _json(503, {"ok": False, "error": "offer not available"})
         try:
             payload = _parse_json_body(body)
         except _BadRequest as exc:
@@ -501,16 +522,16 @@ class CoreApi:
             return _json(400, {"ok": False, "error": "sdp required"})
         sdp_type = payload.get("type") or "offer"
         future = asyncio.run_coroutine_threadsafe(
-            self._rtc_offer(sdp, str(sdp_type)), self._loop)
+            offer_fn(sdp, str(sdp_type)), self._loop)
         try:
             result = future.result(timeout=_RTC_OFFER_TIMEOUT_S)
         except concurrent.futures.TimeoutError:
             future.cancel()
-            _LOGGER.error("core API /rtc/offer: timed out; future cancelled")
-            return _json(504, {"ok": False, "error": "rtc offer timed out"})
+            _LOGGER.error("core API %s: timed out; future cancelled", path)
+            return _json(504, {"ok": False, "error": "offer timed out"})
         except Exception as exc:
-            _LOGGER.error("core API /rtc/offer: failed: %s", exc)
-            return _json(500, {"ok": False, "error": "rtc offer failed"})
+            _LOGGER.error("core API %s: failed: %s", path, exc)
+            return _json(500, {"ok": False, "error": "offer failed"})
         if isinstance(result, dict) and result.get("error"):
             return _json(int(result.get("status") or 409),
                          {"ok": False, "error": result["error"]})
