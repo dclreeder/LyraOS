@@ -1,8 +1,8 @@
 """Phase 2 verify-then-fire gate: the training pipeline, in-path.
 
 The core transcribes the COMBINED wake+command clip directly through
-the shared whisper.cpp service (:8093) — the collector's own
-``whisper_transcribe``, not the Wyoming STT spool/claim path — runs the
+the shared Parakeet service (:8096) — the collector's own
+``parakeet_transcribe``, not the Wyoming STT spool/claim path — runs the
 production collector's classifier on that transcript in-process, and
 the verdict gates the turn (see session.py's verify stage):
 
@@ -292,9 +292,9 @@ class VerifyGate:
         if len(audio) == 0:
             transcript = ""
         else:
-            # The production direct call to whisper.cpp :8093 — the same
+            # The production direct call to Parakeet :8096 — the same
             # function the STT server uses to verify spooled clips.
-            transcript = await collector.whisper_transcribe(audio)
+            transcript = await collector.parakeet_transcribe(audio)
         verdict = collector.classify_wake_transcription(transcript)
         score = gate_score
         if score is None:

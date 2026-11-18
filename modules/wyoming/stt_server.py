@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Wyoming ASR server: thin bridge to the Fedora's whisper.cpp service.
+"""Wyoming ASR server: thin bridge to the Parakeet transcription service.
 
 Audio streams in over Wyoming (16 kHz / 16-bit / mono), is assembled
-into a WAV in memory, and is POSTed to the shared whisper.cpp server
-at 127.0.0.1:8093 (/inference, multipart field 'file'). This process
-loads no model of its own; the single whisper instance stays in the
-lyra-whisper service.
+into a WAV in memory, and is POSTed to parakeet-server at
+127.0.0.1:8096 (/v1/audio/transcriptions, multipart field 'file').
+This process loads no model of its own; the single Parakeet instance
+stays in the parakeet-server service (~/Documents/parakeet.cpp).
+Backend history: whisper.cpp (:8093) until 2026-11-17, when Daniel
+ordered Lyra swapped to Parakeet and Whisper pulled from the project.
 """
 import asyncio
 import io
@@ -27,22 +29,22 @@ from wyoming.info import AsrModel, AsrProgram, Attribution, Describe, Info
 from wyoming.server import AsyncEventHandler, AsyncServer
 
 _LOGGER = logging.getLogger("lyra-stt")
-WHISPER_URL = "http://127.0.0.1:8093/inference"
+PARAKEET_URL = "http://127.0.0.1:8096/v1/audio/transcriptions"
 
 INFO = Info(
     asr=[
         AsrProgram(
-            name="lyra-whisper",
+            name="lyra-parakeet",
             attribution=Attribution(name="Lyra (local)", url=""),
             installed=True,
-            description="Whisper large-v3-turbo via the Fedora whisper.cpp service",
+            description="Parakeet TDT 0.6B v2 via the parakeet-server service",
             version="1.0",
             models=[
                 AsrModel(
-                    name="large-v3-turbo",
-                    attribution=Attribution(name="OpenAI Whisper", url=""),
+                    name="parakeet-tdt-0.6b-v2",
+                    attribution=Attribution(name="NVIDIA Parakeet", url=""),
                     installed=True,
-                    description="large-v3-turbo (whisper.cpp on the Fedora GPU)",
+                    description="tdt-0.6b-v2 q8_0 (parakeet.cpp on the Fedora GPU)",
                     version=None,
                     languages=["en"],
                 )
@@ -107,13 +109,13 @@ class SttHandler(AsyncEventHandler):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
                 resp = await client.post(
-                    WHISPER_URL,
+                    PARAKEET_URL,
                     files={"file": ("audio.wav", wav_bytes, "audio/wav")},
                 )
                 resp.raise_for_status()
                 text = (resp.json().get("text") or "").strip()
         except Exception:
-            _LOGGER.exception("whisper.cpp request failed")
+            _LOGGER.exception("parakeet request failed")
             text = ""
         _LOGGER.info("Transcript (%s): %r", self.language, text)
         await self.write_event(Transcript(text=text, language=self.language).event())
@@ -131,7 +133,7 @@ class SttHandler(AsyncEventHandler):
             try:
                 wake_audio = collector.read_wav(wake_wav)
                 combined = np.concatenate([wake_audio, command_audio])
-                text = await collector.whisper_transcribe(combined)
+                text = await collector.parakeet_transcribe(combined)
                 verdict = collector.classify_wake_transcription(text)
                 collector.file_clip(verdict, meta["gate_score"], text,
                                     meta["ts"], combined)

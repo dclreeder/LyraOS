@@ -60,7 +60,7 @@ PYTHONPATH.
   no reply (silent drop).
 - `lyra_core/verify.py` — the verify-then-fire gate, in-path: the
   combined wake+command clip is transcribed directly through the
-  shared whisper.cpp (:8093) and classified by the PRODUCTION
+  shared Parakeet service (:8096) and classified by the PRODUCTION
   clip_collector (imported, not forked); verdicts file clips to
   the training pool in live mode, and the gate claims + discards
   its own wake-server spool entry — selected by the spool second

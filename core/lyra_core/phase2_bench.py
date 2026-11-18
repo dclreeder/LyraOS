@@ -1,8 +1,8 @@
 """Phase 2 bench: verify-then-fire, proven at mock-session level.
 
 The training pipeline in-path: the session's verify gate transcribes
-the COMBINED wake+command clip via whisper.cpp :8093 DIRECTLY (the
-production collector's own whisper_transcribe — not the Wyoming STT
+the COMBINED wake+command clip via Parakeet :8096 DIRECTLY (the
+production collector's own parakeet_transcribe — not the Wyoming STT
 spool/claim path), classifies it with the production collector's
 classifier in-process, and the verdict gates the turn. The gate runs
 DRY-RUN: classification is real, filing is computed by the real
@@ -66,7 +66,7 @@ SILENCE_1S = b"\x00\x00" * 16000
 
 class CountingDriver(PipelineDriver):
     """Counts Wyoming STT/TTS usage: in verify mode the STT count must
-    stay zero (the gate transcribes via :8093 directly)."""
+    stay zero (the gate transcribes via Parakeet :8096 directly)."""
 
     def __init__(self, cfg: CoreConfig) -> None:
         super().__init__(cfg)

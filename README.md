@@ -8,8 +8,10 @@ Services stay separate processes; they ship, install, and back up as one system.
 - web/         lyra-web: TV viewer + call page (:8095), kiosk + route-apply
 - dashboard/   home dashboard (:8098)
 - modules/     shared engines, single-instance rule: tts (Kokoro :8091),
-               whisper (:8093), wakeword (models +
-               training + clip pool), wyoming (Wyoming bridges: wake/stt/tts)
+               wakeword (models + training + clip pool), wyoming
+               (Wyoming bridges: wake/stt/tts). STT is Parakeet --
+               external by design (~/Documents/parakeet.cpp, :8096),
+               swapped in 2026-11-17; Whisper removed the same day.
 - services/    systemd unit files (user services) + drop-ins
 - config/      templates only -- real secrets stay OUTSIDE the tree:
                ~/Documents/APIKeys/.env, core/alarm_secrets.json

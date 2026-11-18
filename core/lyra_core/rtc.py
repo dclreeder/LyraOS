@@ -35,7 +35,7 @@ matters is the core's own anyway:
 - Speech is Kokoro via PipelineDriver.synthesize_speech with the
   TV mirror suppressed: the peer track is her voice path in this
   mode, and the mirror would double-play every line on the page.
-- STT is the same Whisper path as the call feature
+- STT is the same Parakeet path as the call feature
   (PipelineDriver.transcribe_audio).
 """
 from __future__ import annotations

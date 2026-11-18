@@ -35,7 +35,7 @@ this module by the production composition, and is never logged.
 - GET /call/poll  (the call turn's reply sentences, synthesized and
   delivered one by one as they are generated)
   One dashboard-call turn (2026-11-15): the composition's call
-  callback runs Whisper -> the free router -> Kokoro and returns
+  callback runs Parakeet -> the free router -> Kokoro and returns
   {"ok": true, "transcript": ..., "reply": ..., "wav_b64": ...}.
   The reply WAV also reaches the TV through synthesize_speech's
   mirror, like every spoken line. This route carries a larger

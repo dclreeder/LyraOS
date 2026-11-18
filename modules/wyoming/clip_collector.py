@@ -10,7 +10,7 @@ _append_clip_ledger, miss-miner):
 - verify pass  -> data/clips/positives/   wake_positive_<ts>_<score>.wav
 - verify fail  -> data/clips/negatives/   wake_negative_<ts>_<score>.wav
 - verify maybe -> data/clips/wake_maybe/  wake_maybe_<ts>_<score>.wav
-- Whisper heard the phrase but the gate never fired (sub-threshold
+- Parakeet heard the phrase but the gate never fired (sub-threshold
   near-miss with a 'pass' transcript) -> data/clips/missed triggers/
   missed_trigger_<ts>_<score>.wav, ledger verdict 'missed'.
 - Every save appends one JSON line to data/clips/clips_ledger.jsonl
@@ -20,7 +20,7 @@ Flow: the wake server spools each detection (wake-phrase audio +
 gate score) here; the STT server claims the spool entry when the
 command transcription completes, concatenates wake + command audio
 (positives keep attached command audio), verifies the combined clip
-through the shared Whisper service (:8093), classifies the
+through the shared Parakeet service (:8096), classifies the
 transcript, and files it. Detections never claimed by STT are
 finalized wake-only by the wake server's janitor.
 """
@@ -44,7 +44,13 @@ MAYBE_DIR = os.path.join(CLIP_DIR, "wake_maybe")
 MISSED_DIR = os.path.join(CLIP_DIR, "missed triggers")
 LEDGER = os.path.join(CLIP_DIR, "clips_ledger.jsonl")
 SPOOL_DIR = os.path.expanduser("~/Documents/LyraOS/modules/wyoming/collector_spool")
-WHISPER_URL = "http://127.0.0.1:8093/inference"
+# STT backend (2026-11-17): Parakeet TDT 0.6B v2 served by
+# parakeet-server (parakeet-server.service, :8096; OpenAI-compatible
+# endpoint). Parakeet's home is ~/Documents/parakeet.cpp -- it lives
+# outside this tree on purpose. Whisper (whisper.cpp, :8093) was
+# removed from the project 2026-11-17 at Daniel's order; this is
+# the only transcription backend now.
+PARAKEET_URL = "http://127.0.0.1:8096/v1/audio/transcriptions"
 SAMPLE_RATE = 16000
 
 # --- Verification classifier (verbatim from localsat_service.py) ---
@@ -129,7 +135,7 @@ def file_missed(gate_score: float, transcript: str, ts: str,
                  gate_score, dest, transcript)
     return dest
 
-# --- Whisper verification (same call shape as stt_server.py) ---
+# --- Parakeet verification (same call shape as stt_server.py) ---
 
 def wav_bytes(audio_i16: np.ndarray) -> bytes:
     buf = io.BytesIO()
@@ -140,11 +146,11 @@ def wav_bytes(audio_i16: np.ndarray) -> bytes:
         wf.writeframes(np.ascontiguousarray(audio_i16, dtype="<i2").tobytes())
     return buf.getvalue()
 
-async def whisper_transcribe(audio_i16: np.ndarray) -> str:
+async def parakeet_transcribe(audio_i16: np.ndarray) -> str:
     data = wav_bytes(audio_i16)
     async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
         resp = await client.post(
-            WHISPER_URL, files={"file": ("audio.wav", data, "audio/wav")})
+            PARAKEET_URL, files={"file": ("audio.wav", data, "audio/wav")})
         resp.raise_for_status()
         return (resp.json().get("text") or "").strip()
 

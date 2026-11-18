@@ -10,11 +10,11 @@ fall below REARM before another Detection can be emitted.
 
 Collector (2026-11-10, clip_collector.py): every detection is spooled
 (wake-phrase audio + gate score) for the STT server to finalize into
-the training pool with the command audio attached and a Whisper
+the training pool with the command audio attached and a Parakeet
 verification transcript. Sub-threshold near-misses (peak in
 [NEAR_MISS_FLOOR, THRESHOLD)) are collected as complete phrases --
 the trailing snapshot plus a post-roll that runs until the speaker
-finishes -- and Whisper-verified: a confirmed phrase files as a
+finishes -- and Parakeet-verified: a confirmed phrase files as a
 missed trigger, a Lyra-like transcript files as a maybe. Unclaimed detections are finalized
 wake-only by the janitor. The live gate stays at THRESHOLD (0.8);
 near-miss handling never fires a Detection.
@@ -100,7 +100,7 @@ async def _finalize_stale() -> None:
     for meta, wake_wav in collector.claim_stale_detections(JANITOR_STALE_SECONDS):
         try:
             audio = collector.read_wav(wake_wav)
-            text = await collector.whisper_transcribe(audio)
+            text = await collector.parakeet_transcribe(audio)
             verdict = collector.classify_wake_transcription(text)
             collector.file_clip(verdict, meta["gate_score"], text,
                                 meta["ts"], audio)
@@ -159,7 +159,7 @@ class _NearMissCollection:
     wake phrase near its end), plus every chunk that arrives after
     it until the speaker finishes. Fed chunk-by-chunk from the
     event handler, so the audio/detection loop never waits on it;
-    only the Whisper verification runs as a task."""
+    only the Parakeet verification runs as a task."""
 
     def __init__(self, peak: float, snapshot: np.ndarray, rate: int) -> None:
         self.peak = peak
@@ -239,7 +239,7 @@ class WakeHandler(AsyncEventHandler):
 
     async def _verify_near_miss(self, peak: float, audio: np.ndarray) -> None:
         try:
-            text = await collector.whisper_transcribe(audio)
+            text = await collector.parakeet_transcribe(audio)
             verdict = collector.classify_wake_transcription(text)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             if verdict == "pass":

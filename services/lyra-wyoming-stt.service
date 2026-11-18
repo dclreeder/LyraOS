@@ -1,7 +1,7 @@
 [Unit]
-Description=Lyra STT Wyoming bridge to whisper.cpp (Fedora)
-After=network.target lyra-whisper.service
-Wants=lyra-whisper.service
+Description=Lyra STT Wyoming bridge to Parakeet (Fedora)
+After=network.target parakeet-server.service
+Wants=parakeet-server.service
 
 [Service]
 ExecStart=/home/dclreeder/Documents/LyraOS/modules/wyoming/venv/bin/python /home/dclreeder/Documents/LyraOS/modules/wyoming/stt_server.py

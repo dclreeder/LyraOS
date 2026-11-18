@@ -18,7 +18,7 @@ Phase scope notes:
   The canned line survives only as the no-hook / hook-declines
   fallback, and on the gate-free Phase 1 path.
 - Phase 2 verify-then-fire: when a verify_gate is attached, the
-  combined wake+command clip is transcribed directly via whisper.cpp
+  combined wake+command clip is transcribed directly via Parakeet
   (the production collector's own call) and its classifier gates the
   turn — FAIL/MAYBE end the run silently (no TTS, no reply URL), PASS
   hands the wake-stripped command to on_command. Without a gate, the

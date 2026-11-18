@@ -16,6 +16,10 @@ DEFAULT_CONFIG_PATH = CORE_DIR / "config.json"
 @dataclass
 class WyomingConfig:
     wake_uri: str = "tcp://127.0.0.1:10400"
+    # Wyoming STT bridge (modules/wyoming/stt_server.py); its backend
+    # is Parakeet TDT 0.6B v2 on parakeet-server :8096 (home:
+    # ~/Documents/parakeet.cpp) since 2026-11-17 -- Whisper was
+    # removed from the project the same day at Daniel's order.
     stt_uri: str = "tcp://127.0.0.1:10300"
     tts_uri: str = "tcp://127.0.0.1:10200"
     wake_name: str = "hey_lyra_stable_v1"
