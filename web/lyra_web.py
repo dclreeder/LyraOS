@@ -31,6 +31,15 @@ def rtc_offer(payload):
                                  data=payload, headers={'Content-Type': 'application/json'})
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.status, json.loads(r.read())
+# Call signaling (2026-11-18): the call page is a WebRTC peer of
+# the core's call RTC server -- the same proxy shape as /rtc/offer,
+# but the core's /call/offer is not mode-gated: a call connects in
+# any mode.
+def call_offer(payload):
+    req = urllib.request.Request('http://127.0.0.1:8099/call/offer?t=' + core_token(),
+                                 data=payload, headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return r.status, json.loads(r.read())
 # Next-alarm line for the TV clock (2026-11-15): the core's alarm
 # tool summary, relayed server-side like the call proxy. The TV page
 # polls GET /alarm and renders the next fire under the clock.
@@ -196,6 +205,17 @@ class H(SimpleHTTPRequestHandler):
                 if n <= 0 or n > 8 * 1024 * 1024: return self._json(413, {'error': 'bad size'})
                 wav = self.rfile.read(n)
                 code, obj = call_start(wav)
+                return self._json(code, obj)
+            except urllib.error.HTTPError as e:
+                try: return self._json(e.code, json.loads(e.read()))
+                except Exception: return self._json(e.code, {'error': 'core error'})
+            except Exception as e: return self._json(502, {'error': str(e)})
+        if self.path == '/call/offer':
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                if n <= 0 or n > 256 * 1024: return self._json(413, {'error': 'bad size'})
+                payload = self.rfile.read(n)
+                code, obj = call_offer(payload)
                 return self._json(code, obj)
             except urllib.error.HTTPError as e:
                 try: return self._json(e.code, json.loads(e.read()))

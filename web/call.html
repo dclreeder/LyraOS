@@ -84,7 +84,7 @@ canvas{display:block}
   }
   setInterval(() => { if (!speaking && !motionPlaying()) playRandomMotion(); }, 900);
   // --- speech playback: reply WAV through the analyser, mouth from live RMS ---
-  let actx = null, analyser = null, audioEl = null, mouth = 0;
+  let actx = null, analyser = null, audioEl = null, mouth = 0, rtcTap = false;
   function ensureAudio() {
     if (actx) { actx.resume(); return; }
     actx = new (window.AudioContext || window.webkitAudioContext)();
@@ -98,7 +98,7 @@ canvas{display:block}
   const buf = new Uint8Array(256);
   app.ticker.add(() => {
     let target = 0;
-    if (analyser && audioEl && !audioEl.paused) {
+    if (analyser && ((audioEl && !audioEl.paused) || rtcTap)) {
       analyser.getByteTimeDomainData(buf);
       let sum = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
       const rms = Math.sqrt(sum / buf.length);
@@ -134,8 +134,16 @@ canvas{display:block}
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     hintEl.textContent = 'This page needs a secure (https) address for the microphone. Use the tailnet https link.';
   }
-  let state = 'off';           // off | listening | recording | sending | speaking
+  let state = 'off';           // off | starting | streaming | listening | recording | sending | speaking
+  let inCall = false, callMode = null;   // callMode: 'stream' | 'legacy'
   let stream = null, micSrc = null, proc = null;
+  // Streaming transport (2026-11-18): the call as a WebRTC peer of
+  // the core's call RTC server -- his words stream live and render
+  // as they finalize, her replies stream sentence by sentence,
+  // and talking over her barges in. The record/upload/poll flow
+  // below remains whole as the fallback when the peer connection
+  // cannot be established.
+  let pc = null, dc = null, remoteSrc = null, herText = '';
   let preRoll = [], chunks = [], silenceS = 0, speechS = 0, utterS = 0;
   const SR_OUT = 16000;
 
@@ -260,17 +268,98 @@ canvas{display:block}
   function postCallState(on) {
     try { fetch('/callstate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({active: on})}); } catch (e) {}
   }
-  async function startCall() {
-    ensureAudio();
-    postCallState(true);
-    if (callHb) clearInterval(callHb);
-    callHb = setInterval(() => postCallState(true), 10000);
+  // --- streaming transport: this page as a WebRTC peer ----------
+  function attachRemote(s) {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
-    } catch (e) {
-      hintEl.textContent = 'Microphone was not allowed. Check the browser prompt, and use the https link.';
-      return;
+      detachRemote();
+      remoteSrc = actx.createMediaStreamSource(s);
+      remoteSrc.connect(analyser);   // the graph renders her (and drives the mouth)
+      rtcTap = true;
+    } catch (e) {}
+  }
+  function detachRemote() {
+    try { if (remoteSrc) remoteSrc.disconnect(); } catch (e) {}
+    remoteSrc = null; rtcTap = false;
+  }
+  function teardownStreaming() {
+    detachRemote();
+    if (dc) { try { dc.close(); } catch (e) {} dc = null; }
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+  }
+  function onDcMessage(j) {
+    if (j.type === 'partial') {
+      capMe.textContent = j.text;   // his words, as they finalize
+    } else if (j.type === 'transcript') {
+      capMe.textContent = j.text;
+      capHer.textContent = ''; herText = '';
+      try { model.motion(idleGroups[Math.floor(Math.random() * idleGroups.length)]); } catch (e) {}
+    } else if (j.type === 'reply_sentence') {
+      speaking = true; setStatus('Lyra');
+      herText = herText ? herText + ' ' + j.text : j.text;
+      capHer.textContent = herText;   // her words, as they generate
+    } else if (j.type === 'reply_done') {
+      if (j.text) { herText = j.text; capHer.textContent = j.text; }
+      speaking = false;
+      if (state === 'streaming') setStatus('Listening…');
+    } else if (j.type === 'barge_in') {
+      speaking = false;
+      if (state === 'streaming') setStatus('Listening…');
     }
+  }
+  function tryStreaming() {
+    // Resolves true once the peer is connected; false when the
+    // streaming transport cannot be established -- the caller then
+    // runs the legacy flow on the same mic stream.
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (ok) => { if (!settled) { settled = true; resolve(ok); } };
+      let mypc = null;
+      try {
+        mypc = new RTCPeerConnection(); pc = mypc;
+        stream.getTracks().forEach(t => mypc.addTrack(t, stream));
+        dc = mypc.createDataChannel('call');
+        dc.onmessage = (ev) => { try { onDcMessage(JSON.parse(ev.data)); } catch (e) {} };
+        mypc.ontrack = (ev) => { if (ev.streams && ev.streams[0]) attachRemote(ev.streams[0]); };
+        mypc.onconnectionstatechange = () => {
+          if (pc !== mypc) return;
+          if (mypc.connectionState === 'connected') { done(true); }
+          else if (mypc.connectionState === 'failed' || mypc.connectionState === 'closed') {
+            const wasLive = (callMode === 'stream');
+            teardownStreaming();
+            if (wasLive && inCall) { callMode = null; startLegacy(); }
+            done(false);
+          }
+        };
+        (async () => {
+          try {
+            const offer = await mypc.createOffer();
+            await mypc.setLocalDescription(offer);
+            await new Promise(res => {
+              if (mypc.iceGatheringState === 'complete') return res();
+              const to = setTimeout(res, 3000);
+              mypc.onicegatheringstatechange = () => { if (mypc.iceGatheringState === 'complete') { clearTimeout(to); res(); } };
+            });
+            if (pc !== mypc) return;
+            const r = await fetch('/call/offer', {method: 'POST', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({sdp: mypc.localDescription.sdp, type: mypc.localDescription.type})});
+            if (!r.ok) throw new Error('offer refused ' + r.status);
+            const ans = await r.json();
+            if (pc !== mypc) return;
+            await mypc.setRemoteDescription(ans);
+          } catch (e) {
+            if (pc === mypc) teardownStreaming();
+            done(false);
+          }
+        })();
+        setTimeout(() => { if (!settled) { if (pc === mypc) teardownStreaming(); done(false); } }, 9000);
+      } catch (e) { done(false); }
+    });
+  }
+  function startLegacy() {
+    // The pre-streaming flow, kept whole as the fallback: browser
+    // VAD cuts an utterance, /call/start transcribes it, /call/poll
+    // streams the reply sentences back for playback.
+    callMode = 'legacy';
     micSrc = actx.createMediaStreamSource(stream);
     proc = actx.createScriptProcessor(4096, 1, 1);
     proc.onaudioprocess = handleAudio;
@@ -282,11 +371,37 @@ canvas{display:block}
       audioEl.play().catch(() => {});
     } catch (e) {}
     state = 'listening'; setStatus('Listening…');
+  }
+  async function startCall() {
+    ensureAudio();
+    inCall = true; state = 'starting';
+    postCallState(true);
+    if (callHb) clearInterval(callHb);
+    callHb = setInterval(() => postCallState(true), 10000);
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}});
+    } catch (e) {
+      hintEl.textContent = 'Microphone was not allowed. Check the browser prompt, and use the https link.';
+      inCall = false; state = 'off'; postCallState(false);
+      if (callHb) { clearInterval(callHb); callHb = null; }
+      return;
+    }
+    if (!inCall) { stream.getTracks().forEach(t => t.stop()); stream = null; return; }
     btn.classList.add('on'); btn.innerHTML = '&#128244;';
     hintEl.textContent = 'Just talk — she answers when you pause. Her voice plays here, and on the TV too if it is on.';
+    setStatus('Connecting…');
+    const ok = await tryStreaming();
+    if (!inCall) return;
+    if (ok) {
+      callMode = 'stream'; state = 'streaming'; setStatus('Listening…');
+    } else {
+      startLegacy();
+    }
   }
   function endCall() {
+    inCall = false; callMode = null;
     state = 'off';
+    teardownStreaming();
     if (callHb) { clearInterval(callHb); callHb = null; }
     postCallState(false);
     turnGen++;
@@ -299,7 +414,7 @@ canvas{display:block}
     setStatus('Tap to call');
     btn.classList.remove('on'); btn.innerHTML = '&#128222;';
   }
-  btn.addEventListener('click', () => { if (state === 'off') startCall(); else endCall(); });
+  btn.addEventListener('click', () => { if (!inCall) startCall(); else endCall(); });
 })();
 </script>
 <script>
