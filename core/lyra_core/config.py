@@ -69,7 +69,16 @@ class RouterConfig:
     # since 2026-11-17: LOCAL llama-server (lyra-llm.service) on
     # 127.0.0.1:8094 serving Gemma 4 12B (alias gemma4:12b,
     # Q4_K_M GGUF) on the RX 9060 XT via Vulkan -- Daniel's order.
-    # Previous backend (2026-11-16): Muse Ember 1.0, Meta Model
+    # TRIED AND REJECTED 2026-11-17 (same day): Hermes 3 Llama
+    # 3.1 8B lorablated (bartowski Q8_0, + Flash Attention +
+    # q8_0 KV flags) -- it emitted ZERO tool calls through the
+    # OpenAI tools payload (free_bench 0/18 calls, fabricated
+    # actions/results incl. honesty probes) and generated no
+    # faster (~35 tok/s vs Gemma ~31-33). Rolled back to Gemma
+    # the same evening; the Hermes GGUF stays in data/models
+    # but is NOT wired in. Do not re-swap without a tool-call
+    # fix. Backend before Gemma (2026-11-16): Muse Ember 1.0,
+    # Meta Model
     # API. ROLLBACK to Ember = restore these lines to:
     #   llm_url "https://api.meta.ai/v1", llm_model "muse-ember-1.0",
     #   api_key_path "~/Documents/APIKeys/.env",
