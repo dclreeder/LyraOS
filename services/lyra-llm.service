@@ -3,7 +3,7 @@ Description=Lyra LLM module - llama.cpp server (local LLM, production router bra
 After=network.target
 
 [Service]
-ExecStart=/home/dclreeder/Documents/LyraOS/modules/llm/llama.cpp/build/bin/llama-server -m /home/dclreeder/Documents/LyraOS/data/models/Hermes-3-Llama-3.1-8B-lorablated-Q8_0.gguf --host 127.0.0.1 --port 8094 -ngl 99 -c 32768 --alias hermes-3-llama-3.1-8b-lorablated --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0
+ExecStart=/home/dclreeder/Documents/LyraOS/modules/llm/llama.cpp/build/bin/llama-server -m /home/dclreeder/Documents/LyraOS/data/models/Qwen3.5-9B-Q8_0.gguf --host 127.0.0.1 --port 8094 -ngl 99 -c 32768 --alias qwen3.5-9b --chat-template-kwargs '{"enable_thinking":false}' --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0
 Restart=on-failure
 RestartSec=3
 

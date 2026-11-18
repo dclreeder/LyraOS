@@ -66,26 +66,25 @@ class AlarmConfig:
 class RouterConfig:
     # Free router (2026-11-11): the model runs the turn uncaged
     # through the tools layer; see lyra_core.free_router. Backend
-    # since 2026-11-17: LOCAL llama-server (lyra-llm.service) on
-    # 127.0.0.1:8094 serving Hermes 3 Llama 3.1 8B lorablated
-    # (alias hermes-3-llama-3.1-8b-lorablated, bartowski Q8_0
-    # GGUF, + Flash Attention + q8_0 KV cache) on the RX 9060 XT
-    # via Vulkan -- Daniel's order.
-    # TRIAL VERDICT 2026-11-17: Hermes emitted ZERO tool calls
-    # through the OpenAI tools payload (free_bench 0/18 calls,
-    # fabricated actions/results incl. honesty probes) and
-    # generated no faster (~35 tok/s vs Gemma ~31-33); it was
-    # rolled back to Gemma the same evening. Daniel then
-    # ordered it swapped in ANYWAY (2026-11-17 19:21, "I said
-    # swap it") -- his explicit override; Hermes is LIVE with
-    # the known consequence that tool control is not expected
-    # to work on it. ROLLBACK to Gemma = set llm_model back to
-    # "gemma4:12b" here, restore the Gemma ExecStart (model
-    # gemma-4-12b-it-Q4_K_M.gguf, alias gemma4:12b, no FA/KV
-    # flags) in lyra-llm.service, restart lyra-llm + lyra-core.
-    # Backend before Gemma (2026-11-16): Muse Ember 1.0,
-    # Meta Model
-    # API. ROLLBACK to Ember = restore these lines to:
+    # since 2026-11-17 (late): LOCAL llama-server (lyra-llm.service)
+    # on 127.0.0.1:8094 serving Qwen3.5-9B Q8_0 (alias qwen3.5-9b,
+    # unsloth GGUF) on the RX 9060 XT via Vulkan -- Daniel's order
+    # ("back to Qwen, same as before": this 9B was her brain
+    # 2026-11-12 to 2026-11-16). The server runs with
+    # --chat-template-kwargs '{"enable_thinking":false}' (Qwen3.5
+    # is hybrid-thinking; thinking is OFF -- verified
+    # reasoning_content empty) plus --flash-attn on and q8_0 K/V
+    # cache, per Daniel's orders.
+    # History, same day 2026-11-17: Gemma 4 12B (worked, ~31-33
+    # tok/s, some ~22 s turns), then Hermes 3 Llama 3.1 8B
+    # lorablated (ZERO tool calls, fabricated actions; swapped in
+    # anyway at Daniel's explicit override, then replaced by this
+    # swap hours later). BOTH of those GGUFs were DELETED at
+    # Daniel's order once this swap verified -- rolling back to a
+    # local model now means re-downloading it. The no-download
+    # fallback is the cloud backend from before Gemma
+    # (2026-11-16): Muse Ember 1.0, Meta Model API. ROLLBACK to
+    # Ember = restore these lines to:
     #   llm_url "https://api.meta.ai/v1", llm_model "muse-ember-1.0",
     #   api_key_path "~/Documents/APIKeys/.env",
     #   api_key_var "MUSE_MODEL_API_KEY" (reasoning_effort as-is)
@@ -95,7 +94,7 @@ class RouterConfig:
     # reads a dummy from the project-local llama_api_key.env
     # (NOT a secret -- see that file).
     llm_url: str = "http://127.0.0.1:8094/v1"
-    llm_model: str = "hermes-3-llama-3.1-8b-lorablated"
+    llm_model: str = "qwen3.5-9b"
     reasoning_effort: str = "minimal"
     api_key_path: str = "~/Documents/LyraOS/core/llama_api_key.env"
     api_key_var: str = "LLAMA_API_KEY"
