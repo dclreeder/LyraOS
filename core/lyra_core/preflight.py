@@ -20,8 +20,11 @@ from .config import CoreConfig
 from .pipeline import PipelineDriver
 
 # The shared engine services behind the Wyoming wrappers (single-instance
-# rule): Parakeet and the Kokoro HTTP wrapper on the Fedora.
-ENGINE_PORTS = (("parakeet", "127.0.0.1", 8096), ("kokoro", "127.0.0.1", 8091))
+# rule): Parakeet and the Kokoro HTTP wrapper on the Fedora, plus the
+# Nemotron streaming sidecar RTC uses. (A dead sidecar only degrades
+# RTC to its batch fallback, but the checklist should still show it.)
+ENGINE_PORTS = (("parakeet", "127.0.0.1", 8096), ("kokoro", "127.0.0.1", 8091),
+                ("nemotron-stream", "127.0.0.1", 8097))
 
 def _fetch(url: str) -> tuple[int, str, bytes]:
     with urllib.request.urlopen(url, timeout=15) as resp:
