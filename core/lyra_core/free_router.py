@@ -335,6 +335,15 @@ class FreeChatClient:
 _WS = re.compile(r"\s+")
 
 
+def _speakable(text: str) -> bool:
+    """A fragment is speakable iff it carries at least one letter
+    or digit. Emoji/punctuation-only fragments (a trailing '\U0001f60a'
+    is the observed case, 2026-11-18) strip to nothing at the TTS
+    stage and raise there; they must never be emitted as sentences
+    or spoken lines in the first place."""
+    return any(ch.isalnum() for ch in text)
+
+
 def sanitize_spoken(text: str) -> str:
     """Pipeline necessity only: the TTS stage needs a non-empty
     string. Whitespace is collapsed; the model's words are NOT
@@ -343,7 +352,10 @@ def sanitize_spoken(text: str) -> str:
     remains (the caller treats that as a FREE_FAIL)."""
     if not text:
         return ""
-    return _WS.sub(" ", text).strip()
+    text = _WS.sub(" ", text).strip()
+    if not _speakable(text):
+        return ""
+    return text
 
 
 def _as_int(value) -> int:
@@ -381,13 +393,16 @@ class _SentenceSplitter:
             if len(sent) < 4 or any(tail.endswith(a) for a in _ABBREV_TAILS):
                 start = m.end()
                 continue
-            self.pending.append(sent)
+            if _speakable(sent):
+                self.pending.append(sent)
             self._buf = self._buf[m.end():]
             start = 0
         if len(self._buf) > 240:
             cut = self._buf.rfind(", ", 40)
             if cut > 0:
-                self.pending.append(self._buf[:cut + 1].strip())
+                frag = self._buf[:cut + 1].strip()
+                if _speakable(frag):
+                    self.pending.append(frag)
                 self._buf = self._buf[cut + 2:]
 
     def release_ready(self) -> list[str]:
@@ -401,7 +416,7 @@ class _SentenceSplitter:
         self.pending = []
         tail = self._buf.strip()
         self._buf = ""
-        if tail:
+        if tail and _speakable(tail):
             out.append(tail)
         return out
 

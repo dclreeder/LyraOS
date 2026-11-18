@@ -511,6 +511,7 @@ class CoreApi:
         if not self._authorized(query):
             _LOGGER.warning("core API %s: rejected (bad token)", path)
             return _json(403, {"ok": False, "error": "forbidden"})
+        _LOGGER.info("core API %s: offer received (%d bytes)", path, len(body))
         if offer_fn is None or self._loop is None:
             return _json(503, {"ok": False, "error": "offer not available"})
         try:
