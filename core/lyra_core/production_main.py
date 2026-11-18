@@ -79,7 +79,6 @@ from .localmic import LocalMicClient
 from . import mode as mode_store
 from .rtc import RtcServer
 from .session import VoiceSession
-from .inbox import InboxLog
 from .tv_ring import TvRinger
 from .tools import (
     AlarmTool,
@@ -224,7 +223,10 @@ async def amain() -> int:
     http.start()
     driver = PipelineDriver(cfg)
     gate = VerifyGate(dry_run=False)
-    inbox = InboxLog()
+    # Daily conversation logging (Phase 0 inbox) REMOVED
+    # 2026-11-17 at Daniel's order: no InboxLog is constructed
+    # or wired anywhere -- the router and the alarm both
+    # default to no inbox, so no daily log is written.
     session = VoiceSession(cfg, driver, http, verify_gate=gate, on_event=_event_hook)
 
     if cfg.transport != "localmic":
@@ -253,7 +255,6 @@ async def amain() -> int:
         "transport: localmic (Fedora default source; no satellite box)"
     )
     alarm = Alarm(cfg, box_getter=lambda: session._box, http=http)
-    alarm._inbox = inbox
     # TV sounder (2026-11-15): the alarm rings through the TV; the
     # attached-client path (localmic: default sink) is the fallback.
     alarm.set_tv_ringer(TvRinger())
@@ -285,7 +286,6 @@ async def amain() -> int:
         weather=weather_tool,
         tv=tv_tool,
         tv_volume=tv_volume_tool,
-        inbox=inbox,
     )
     session._on_command = router.handle
     _LOGGER.info("FREE MODE live: %s", router.describe())
