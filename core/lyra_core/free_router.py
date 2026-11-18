@@ -621,8 +621,17 @@ class FreeRouter:
     async def _run_turn(self, command: str, on_sentence=None):
         deadline = time.monotonic() + FREE_DEADLINE_S
         history = [m for turn in self._history for m in turn]
+        system_content = load_soul()
+        # Model plumbing appended to her soul at turn time (kept
+        # OUT of SOUL.md itself): the current brain (Nemotron Nano
+        # 9B v2) thinks by default and takes "/no_think" in the
+        # system prompt as its reasoning-off control. Driven by
+        # RouterConfig.system_prompt_suffix; empty = no suffix.
+        suffix = getattr(self._cfg, "system_prompt_suffix", "")
+        if suffix:
+            system_content = f"{system_content}\n\n{suffix}"
         messages = [
-            {"role": "system", "content": load_soul()},
+            {"role": "system", "content": system_content},
             *history,
             {"role": "user", "content": _stamped(command)},
         ]

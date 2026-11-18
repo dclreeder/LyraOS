@@ -70,23 +70,36 @@ class AlarmConfig:
 class RouterConfig:
     # Free router (2026-11-11): the model runs the turn uncaged
     # through the tools layer; see lyra_core.free_router. Backend
-    # since 2026-11-17 (late): LOCAL llama-server (lyra-llm.service)
-    # on 127.0.0.1:8094 serving Qwen3.5-9B Q8_0 (alias qwen3.5-9b,
-    # unsloth GGUF) on the RX 9060 XT via Vulkan -- Daniel's order
-    # ("back to Qwen, same as before": this 9B was her brain
-    # 2026-11-12 to 2026-11-16). The server runs with
-    # --chat-template-kwargs '{"enable_thinking":false}' (Qwen3.5
-    # is hybrid-thinking; thinking is OFF -- verified
-    # reasoning_content empty) plus --flash-attn on and q8_0 K/V
-    # cache, per Daniel's orders.
+    # since 2026-11-17 (night): LOCAL llama-server (lyra-llm.service)
+    # on 127.0.0.1:8094 serving Nemotron Nano 9B v2 Q8_0 (alias
+    # nemotron-nano-9b-v2, bartowski GGUF) on the RX 9060 XT via
+    # Vulkan -- Daniel's order after a same-night trial: endpoint
+    # tool test returned properly parsed tool_calls, free_bench
+    # 2 flags / 0 prose-claims (against Qwen's 5-case prose-claim
+    # set), ~29.8 tok/s (a wash vs Qwen's ~31). The server runs
+    # with --jinja (the model's own chat template renders the
+    # tools and its native tool-call format) plus --flash-attn on
+    # and q8_0 K/V cache; the server auto-disables FA on one
+    # Mamba layer, expected for this hybrid architecture.
+    # Nemotron thinks by default; reasoning is OFF via the
+    # "/no_think" directive appended to the system prompt (see
+    # system_prompt_suffix below) -- verified reasoning_content
+    # empty.
+    # ROLLBACK to Qwen3.5-9B (her brain earlier the same day, and
+    # 2026-11-12 to 2026-11-16): its GGUF is still on disk
+    # (data/models/Qwen3.5-9B-Q8_0.gguf). Restore lyra-llm.service
+    # ExecStart to the Qwen file with --alias qwen3.5-9b and
+    # --chat-template-kwargs '{"enable_thinking":false}' (drop
+    # --jinja), llm_model back to "qwen3.5-9b",
+    # system_prompt_suffix back to "", restart lyra-llm +
+    # lyra-core.
     # History, same day 2026-11-17: Gemma 4 12B (worked, ~31-33
     # tok/s, some ~22 s turns), then Hermes 3 Llama 3.1 8B
     # lorablated (ZERO tool calls, fabricated actions; swapped in
-    # anyway at Daniel's explicit override, then replaced by this
-    # swap hours later). BOTH of those GGUFs were DELETED at
-    # Daniel's order once this swap verified -- rolling back to a
-    # local model now means re-downloading it. The no-download
-    # fallback is the cloud backend from before Gemma
+    # anyway at Daniel's explicit override, then replaced hours
+    # later). BOTH of those GGUFs were DELETED at Daniel's order
+    # -- rolling back to either means re-downloading it. The
+    # no-download fallback is the cloud backend from before Gemma
     # (2026-11-16): Muse Ember 1.0, Meta Model API. ROLLBACK to
     # Ember = restore these lines to:
     #   llm_url "https://api.meta.ai/v1", llm_model "muse-ember-1.0",
@@ -98,7 +111,15 @@ class RouterConfig:
     # reads a dummy from the project-local llama_api_key.env
     # (NOT a secret -- see that file).
     llm_url: str = "http://127.0.0.1:8094/v1"
-    llm_model: str = "qwen3.5-9b"
+    llm_model: str = "nemotron-nano-9b-v2"
+    # Appended to the loaded SOUL.md at turn time by
+    # free_router (never written into SOUL.md itself):
+    # Nemotron Nano 9B v2 thinks by default, and
+    # "/no_think" in the system prompt is its
+    # reasoning-off control. Model plumbing tied to the
+    # current brain -- set back to "" on a model change
+    # that does not use it (Qwen rollback: "").
+    system_prompt_suffix: str = "/no_think"
     reasoning_effort: str = "minimal"
     api_key_path: str = "~/Documents/LyraOS/core/llama_api_key.env"
     api_key_var: str = "LLAMA_API_KEY"
