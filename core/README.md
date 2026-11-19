@@ -35,9 +35,13 @@ PYTHONPATH.
   esphome venv, which has aioesphomeapi but not the wyoming
   package, and no second environment is introduced.
 - `lyra_core/pipeline.py` — HA's old client role against the
-  production Wyoming services (wake tcp://127.0.0.1:10400, STT
-  :10300, TTS :10200): describe / detect_wake / transcribe_audio /
-  synthesize_speech.
+  remaining Wyoming service (TTS :10200) and Parakeet (:8096,
+  direct HTTP): describe / detect_wake (the in-process gate) /
+  transcribe_audio / synthesize_speech.
+- `lyra_core/wake.py` — the wake-word gate in-process (since
+  2026-11-19): the recovered HeyLyraGate over the localmic stream,
+  the pending-detection registry the collector claims from, and
+  the stale sweep that files unclaimed detections wake-only.
 - `lyra_core/audio_http.py` — HTTP endpoint (stdlib
   ThreadingHTTPServer, one per bind address). Serves generated
   speech at `http://192.168.12.144:8099/audio/<id>.wav` — the URL
@@ -52,7 +56,7 @@ PYTHONPATH.
   beam lock releases on VAD_END, so the ~700 ms hangover matches
   HA's old behaviour. Self-check: `python -m lyra_core.endpointer`.
 - `lyra_core/session.py` — the composed voice session: box mic ->
-  wake server; on Detection, RUN_START/STT_START, capture +
+  in-process wake gate; on Detection, RUN_START/STT_START, capture +
   endpoint the utterance, verify (below), route, speak the
   confirmation via TTS + the HTTP endpoint, TTS_START/END,
   RUN_END — HA's event order and timing. Failed/maybe verifies
@@ -62,10 +66,9 @@ PYTHONPATH.
   combined wake+command clip is transcribed directly through the
   shared Parakeet service (:8096) and classified by the PRODUCTION
   clip_collector (imported, not forked); verdicts file clips to
-  the training pool in live mode, and the gate claims + discards
-  its own wake-server spool entry — selected by the spool second
-  the session stamps at Detection — so no turn is ever filed
-  twice.
+  the training pool in live mode, and the gate discards its own
+  pending-detection registry entry — the id the session held from
+  the moment the gate fired — so no turn is ever filed twice.
 - `lyra_core/router.py` — the LLM router: the shared local LLM
   (lyra-llm, Qwen3-4B-Instruct-2507) classifies each verified
   command into a closed set of 17 intents under a JSON-schema

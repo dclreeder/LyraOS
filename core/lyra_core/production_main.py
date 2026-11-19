@@ -9,8 +9,8 @@ code is modified.
   2026-11-11 with the spool double-file fix): verify-then-fire gating
   is live (fail/maybe turns end silently) and verified clips are
   filed to the training pool by the production collector. After each
-  verified turn the gate claims + discards its own wake-server spool
-  entry, so the spool janitor never files a core-handled turn twice.
+  verified turn the gate discards its own pending-detection registry
+  entry, so the stale sweep never files a core-handled turn twice.
 - The Fedora-native alarm (Phase 3) runs in this composition:
   persisted state + per-minute scheduler with the catch-up rule,
   Shelly light, 15-minute hard stop, snooze, and the authenticated
@@ -87,7 +87,8 @@ from .tools import (
     WeatherTool,
 )
 from .supervisor import CoreSupervisor
-from .verify import VerifyGate, finalize_spooled_detection
+from .verify import VerifyGate, finalize_pending_detection
+from .wake import run_detection_sweep
 
 _LOGGER = logging.getLogger("lyra_core.production")
 
@@ -216,11 +217,11 @@ async def _status_loop(session: VoiceSession, seat: _SupervisorSeat,
         sup = seat.supervisor
         _LOGGER.info(
             "status: mode=%s client_connected=%s session_state=%s "
-            "wake_link_up=%s ep_noise_floor=%s connects=%d attempts=%d",
+            "wake_ready=%s ep_noise_floor=%s connects=%d attempts=%d",
             mode_mgr.current,
             bool(client is not None and client.is_connected),
             session.state,
-            session._wake_link_up,
+            session._wake_ready,
             ("%.0f" % floor) if floor is not None else None,
             sup.successful_connects if sup is not None else 0,
             sup.connect_attempts if sup is not None else 0,
@@ -254,11 +255,12 @@ async def amain() -> int:
     hub = StatusHub()
     hub.subscribe(StatusPublisher())
     driver.on_speech = hub.note_speech
-    # Collector janitor (2026-11-19): the STT bridge finalized
+    # Collector finalize (2026-11-19): the STT bridge finalized
     # spooled wake detections after each transcription; the core
     # is the transcriber now, so the driver's hook runs the same
-    # finalize in-process (lyra_core.verify).
-    driver.on_transcribed = finalize_spooled_detection
+    # finalize in-process (lyra_core.verify) over the pending
+    # registry (lyra_core.wake).
+    driver.on_transcribed = finalize_pending_detection
     _session_processing = [False]
     _capture_speech = [False]
 
@@ -461,11 +463,17 @@ async def amain() -> int:
         health_monitor(hub), name="lyra-health")
     heartbeat_task = asyncio.create_task(
         _status_heartbeat(hub), name="lyra-status-heartbeat")
+    # Collector stale sweep: files detections no transcription ever
+    # claimed, wake-only, past the 120 s window (the deleted wake
+    # server's janitor, in-core since the gate moved in).
+    sweep_task = asyncio.create_task(
+        run_detection_sweep(), name="lyra-wake-sweep")
     try:
         await _shutdown.wait()
     finally:
         health_task.cancel()
         heartbeat_task.cancel()
+        sweep_task.cancel()
         await mode_mgr.shutdown()
         await alarm.stop()
         status_task.cancel()

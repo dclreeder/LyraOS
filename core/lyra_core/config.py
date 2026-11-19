@@ -15,8 +15,11 @@ DEFAULT_CONFIG_PATH = CORE_DIR / "config.json"
 
 @dataclass
 class WyomingConfig:
-    wake_uri: str = "tcp://127.0.0.1:10400"
-    # Speech-to-text is NOT a Wyoming service: the core POSTs
+    # Wake-word detection is NOT a service at all: it runs in the
+    # core process (lyra_core.wake, hey_lyra_stable_v1) since
+    # 2026-11-19 -- no wake URI remains. What is left in this
+    # config is TTS (Wyoming), Parakeet (HTTP) and the names.
+    # Speech-to-text is NOT a Wyoming service either: the core POSTs
     # WAVs directly to Parakeet TDT 0.6B v2 on parakeet-server
     # :8096 (home: ~/Documents/parakeet.cpp). The Wyoming STT
     # bridge that used to sit between them was removed 2026-11-19.

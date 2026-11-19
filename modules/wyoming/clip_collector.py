@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Clip collector for the Wyoming wake/STT path (Lyra, 2026-11-10).
+"""Clip collector for the wake path (Lyra, 2026-11-10).
 
 Implements the wakeword module's clip-save contract
-(~/Documents/LyraOS/modules/wakeword/README.md) for the split Wyoming
-architecture, mirroring the deleted bridge's filing logic
+(~/Documents/LyraOS/modules/wakeword/README.md), mirroring the
+deleted bridge's filing logic
 (localsat_service.py: classify_wake_transcription, _file_wake_clip,
 _append_clip_ledger, miss-miner):
 
@@ -16,13 +16,17 @@ _append_clip_ledger, miss-miner):
 - Every save appends one JSON line to data/clips/clips_ledger.jsonl
   (ts, verdict, gate_score, transcript, path relative to clips dir).
 
-Flow: the wake server spools each detection (wake-phrase audio +
-gate score) here; the STT server claims the spool entry when the
-command transcription completes, concatenates wake + command audio
-(positives keep attached command audio), verifies the combined clip
-through the shared Parakeet service (:8096), classifies the
-transcript, and files it. Detections never claimed by STT are
-finalized wake-only by the wake server's janitor.
+Flow (in-core since 2026-11-19): the core's wake detector
+(lyra_core.wake) registers each detection (wake-phrase audio +
+gate score) in the pending registry; when a command transcription
+completes, the core claims the entry, concatenates wake + command
+audio (positives keep attached command audio), verifies the
+combined clip through the shared Parakeet service (:8096),
+classifies the transcript, and files it. Detections never claimed
+are finalized wake-only by the core's stale sweep. (Until
+2026-11-19 the same flow ran through an on-disk spool between the
+Wyoming wake and STT servers; the spool and its claim protocol
+are gone.)
 """
 import io
 import json
@@ -43,7 +47,6 @@ NEGATIVE_DIR = os.path.join(CLIP_DIR, "negatives")
 MAYBE_DIR = os.path.join(CLIP_DIR, "wake_maybe")
 MISSED_DIR = os.path.join(CLIP_DIR, "missed triggers")
 LEDGER = os.path.join(CLIP_DIR, "clips_ledger.jsonl")
-SPOOL_DIR = os.path.expanduser("~/Documents/LyraOS/modules/wyoming/collector_spool")
 # STT backend (2026-11-17): Parakeet TDT 0.6B v2 served by
 # parakeet-server (parakeet-server.service, :8096; OpenAI-compatible
 # endpoint). Parakeet's home is ~/Documents/parakeet.cpp -- it lives
@@ -158,67 +161,3 @@ def read_wav(path: str) -> np.ndarray:
     with wave.open(path, "rb") as wf:
         frames = wf.readframes(wf.getnframes())
     return np.frombuffer(frames, dtype="<i2").astype(np.int16)
-
-# --- Detection spool (wake server -> STT server handoff) ---
-
-def spool_detection(ts: str, gate_score: float, wake_audio_i16: np.ndarray) -> None:
-    os.makedirs(SPOOL_DIR, exist_ok=True)
-    _write_wav(os.path.join(SPOOL_DIR, f"{ts}_wake.wav"), wake_audio_i16)
-    meta = {"ts": ts, "gate_score": gate_score}
-    with open(os.path.join(SPOOL_DIR, f"{ts}.json"), "w") as fh:
-        json.dump(meta, fh)
-    _LOGGER.info("Detection spooled ts=%s score=%.3f", ts, gate_score)
-
-def _claim(meta_path: str):
-    """Atomically claim a spool entry; returns (meta, wake_wav_path)
-    or None if another process claimed it first."""
-    claimed = meta_path + f".claimed-{os.getpid()}"
-    try:
-        os.rename(meta_path, claimed)
-    except FileNotFoundError:
-        return None
-    try:
-        with open(claimed) as fh:
-            meta = json.load(fh)
-    finally:
-        os.unlink(claimed)
-    return meta, os.path.join(SPOOL_DIR, f"{meta['ts']}_wake.wav")
-
-def claim_latest_detection(max_age_s: float):
-    """Claim the newest unclaimed spool entry younger than max_age_s."""
-    try:
-        names = sorted(n for n in os.listdir(SPOOL_DIR) if n.endswith(".json"))
-    except FileNotFoundError:
-        return None
-    now = datetime.now().timestamp()
-    for name in reversed(names):
-        path = os.path.join(SPOOL_DIR, name)
-        if now - os.path.getmtime(path) > max_age_s:
-            continue
-        got = _claim(path)
-        if got is not None:
-            return got
-    return None
-
-def claim_stale_detections(older_than_s: float):
-    """Claim every spool entry older than older_than_s (janitor)."""
-    out = []
-    try:
-        names = sorted(n for n in os.listdir(SPOOL_DIR) if n.endswith(".json"))
-    except FileNotFoundError:
-        return out
-    now = datetime.now().timestamp()
-    for name in names:
-        path = os.path.join(SPOOL_DIR, name)
-        if now - os.path.getmtime(path) < older_than_s:
-            continue
-        got = _claim(path)
-        if got is not None:
-            out.append(got)
-    return out
-
-def discard_wake_wav(wake_wav_path: str) -> None:
-    try:
-        os.unlink(wake_wav_path)
-    except FileNotFoundError:
-        pass

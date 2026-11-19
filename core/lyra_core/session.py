@@ -3,7 +3,7 @@ driver into one turn-owning module (Phase 1c).
 
 Flow (HA's pipeline order and timing):
 
-  box mic stream --(this session)--> Wyoming wake server (continuous)
+  box mic stream --(this session)--> in-process wake gate (continuous)
   Detection -> RUN_START, STT_START -> capture the utterance from the
   stream, endpointed by the core-side endpointer (STT_VAD_START /
   STT_VAD_END as speech starts / the ~700 ms hangover expires)
@@ -32,8 +32,8 @@ Phase scope notes:
 - An empty transcript ends the run as ERROR "stt-no-text-recognized"
   (nothing on the local transport consumes that code: no error
   LED phase exists there).
-- While a run is active the mic stream is NOT forwarded to the wake
-  server (HA diverts the stream to the STT stage the same way), and
+- While a run is active the mic stream is NOT fed to the wake
+  gate (HA diverts the stream to the STT stage the same way), and
   further Detections are ignored — the core-side equivalent of the
   firmware's duplicate_wake_up_detected guard.
 - The utterance sent to STT includes a short pre-roll (audio from just
@@ -49,7 +49,6 @@ import asyncio
 import inspect
 import logging
 import time
-from datetime import datetime
 from collections import deque
 from collections.abc import Awaitable, Callable
 
@@ -60,7 +59,7 @@ from .endpointer import VAD_END, VAD_START, Endpointer
 import io
 import wave
 from .pipeline import PipelineDriver, PipelineError, silent_wav_like, speech_route
-from .wyoming_client import WyomingConnection, audio_chunk, audio_start, detect
+from .wake import PendingDetection, WakeDetector
 
 _LOGGER = logging.getLogger("lyra_core.session")
 
@@ -180,9 +179,9 @@ class VoiceSession:
         # clip_ring_s of idle audio; at a Detection it is snapshotted as
         # the combined clip's wake prefix — the collector's clip shape.
         self._verify_gate = verify_gate
-        # Spool-name second of the accepted Detection (item N);
-        # stamped in _on_detection, consumed by _verify_stage.
-        self._detection_spool_ts: str | None = None
+        # The accepted Detection's registry entry; set in
+        # _on_detection, consumed by _verify_stage.
+        self._detection_entry: PendingDetection | None = None
         self._on_command = on_command
         self._clip_ring_max = int(RATE * WIDTH * CHANNELS * clip_ring_s)
         self._clip_ring: deque[bytes] = deque()
@@ -197,9 +196,8 @@ class VoiceSession:
         self._vad_started = False
         self._capture_deadline: asyncio.Task | None = None
         self._process_task: asyncio.Task | None = None
-        self._wake_conn: WyomingConnection | None = None
-        self._wake_task: asyncio.Task | None = None
-        self._wake_link_up = False
+        self._wake: WakeDetector | None = None
+        self._wake_ready = False
         self._forward_notified = False
         self.last_transcript: str | None = None
         self.last_tts_url: str | None = None
@@ -236,54 +234,21 @@ class VoiceSession:
     # -- lifecycle -------------------------------------------------------------
 
     async def start(self) -> None:
-        """Open the wake-server link (Detect + AudioStart) and read it."""
-        if self._wake_task is not None:
+        """Build the in-process wake detector and arm it."""
+        if self._wake is not None:
             return
-        self._wake_task = asyncio.create_task(
-            self._wake_link_loop(), name="lyra-wake-link"
+        self._wake = WakeDetector(wake_name=self._cfg.wyoming.wake_name)
+        self._wake_ready = True
+        _LOGGER.info(
+            "wake detector up (in-process, %s)", self._cfg.wyoming.wake_name
         )
 
     async def stop(self) -> None:
-        """Stop the wake link. Box disconnect is the supervisor's job
-        (unsubscribe-then-disconnect is the only seat-release path)."""
-        if self._wake_task is not None:
-            self._wake_task.cancel()
-            try:
-                await self._wake_task
-            except asyncio.CancelledError:
-                pass
-            self._wake_task = None
+        """Drop the wake detector. Box disconnect is the supervisor's
+        job (unsubscribe-then-disconnect is the only seat-release path)."""
+        self._wake = None
+        self._wake_ready = False
         self._cancel_capture_tasks()
-
-    async def _wake_link_loop(self) -> None:
-        """Maintain the wake connection: connect, read Detections, and
-        reconnect with backoff if the service link drops."""
-        cfg = self._cfg.wyoming
-        backoff = 1.0
-        while True:
-            try:
-                async with await WyomingConnection.connect(cfg.wake_uri) as conn:
-                    self._wake_conn = conn
-                    self._wake_link_up = True
-                    backoff = 1.0
-                    await conn.send(detect([cfg.wake_name]))
-                    await conn.send(audio_start(RATE, WIDTH, CHANNELS))
-                    _LOGGER.info("wake link up (%s)", cfg.wake_uri)
-                    while True:
-                        event = await conn.receive()
-                        if event is None:
-                            break
-                        if event.type == "detection":
-                            self._on_detection(event.data)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # link failure: log, back off, retry
-                _LOGGER.warning("wake link error: %s", exc)
-            finally:
-                self._wake_conn = None
-                self._wake_link_up = False
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 30.0)
 
     # -- box callbacks -----------------------------------------------------------
 
@@ -325,7 +290,7 @@ class VoiceSession:
                 self._preroll_bytes -= len(self._preroll.popleft())
             # Floor tracking only while idle; events are capture-scoped.
             self._ep.feed(data)
-            await self._forward_to_wake(data)
+            self._feed_wake(data)
         elif self._state == STATE_CAPTURING:
             self._utterance.extend(data)
             for vad_event in self._ep.feed(data):
@@ -344,32 +309,40 @@ class VoiceSession:
         # PROCESSING: audio is dropped (HA diverts it to the STT stage;
         # here the utterance is already captured).
 
-    async def _forward_to_wake(self, data: bytes) -> None:
-        conn = self._wake_conn
-        if conn is None or not self._wake_link_up:
+    def _feed_wake(self, data: bytes) -> None:
+        """Feed one idle chunk to the in-process gate; a Detection
+        starts a run. The gate is sample-driven and cheap per chunk
+        (its mel front end runs per 1280 samples), so this stays on
+        the audio callback path like the Wyoming send did."""
+        det = self._wake
+        if det is None:
             return
         try:
-            await conn.send(audio_chunk(RATE, WIDTH, CHANNELS, data))
-        except Exception as exc:  # the link loop will notice and reconnect
-            _LOGGER.debug("wake forward failed: %s", exc)
+            entry = det.feed(data)
+        except Exception:
+            _LOGGER.exception("wake detector feed failed")
             return
         if not self._forward_notified:
             self._forward_notified = True
             self._notify("wake_forward", {"bytes": len(data)})
+        if entry is not None:
+            self._on_detection(det.event_data(), entry)
 
     # -- run choreography ---------------------------------------------------------
 
-    def _on_detection(self, data: dict) -> None:
+    def _on_detection(
+        self, data: dict, entry: PendingDetection | None = None
+    ) -> None:
         if self._state != STATE_IDLE or self._box is None:
             _LOGGER.debug("detection ignored in state %s", self._state)
             return
         self._notify("detection", dict(data))
-        # Item N (dial-in 2026-11-11): stamp the spool second for
-        # this turn. The wake server names its spool entry with the
-        # same local second (same host clock); the verify gate uses
-        # the name to read + claim THIS turn's entry, not the
-        # newest one that happens to be there.
-        self._detection_spool_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # The registry entry the gate registered at fire time; the
+        # verify stage hands its score + id to the verify gate so a
+        # filed turn discards exactly its own entry. (Benches inject
+        # a bare detection with no entry; verify then files at 0.0,
+        # as it did when no spool entry matched.)
+        self._detection_entry = entry
         self._capture_started_at = time.monotonic()
         self._set_state(STATE_CAPTURING)
         self._clip_prefix = b"".join(self._clip_ring)
@@ -538,7 +511,7 @@ class VoiceSession:
         """Phase 2 verify-then-fire gate. Builds the combined clip
         (Detection-time ring snapshot + the utterance past its pre-roll;
         a no-speech capture verifies the snapshot alone — the in-path
-        equivalent of the collector janitor's wake-only pass), verifies
+        equivalent of the collector sweep's wake-only pass), verifies
         it through the gate, and:
         - PASS -> returns (combined transcript, reply text): the
           on_command hook (if any) sees the wake-stripped command and
@@ -551,10 +524,13 @@ class VoiceSession:
             combined = self._clip_prefix
         else:
             combined = self._clip_prefix + pcm[self._utterance_preroll_len:]
+        entry = self._detection_entry
         result = await self._verify_gate.verify(
-            bytes(combined), spool_ts=self._detection_spool_ts
+            bytes(combined),
+            gate_score=entry.gate_score if entry is not None else None,
+            detection_id=entry.id if entry is not None else None,
         )
-        self._detection_spool_ts = None
+        self._detection_entry = None
         self.last_verify = result
         self._notify(
             "verify",

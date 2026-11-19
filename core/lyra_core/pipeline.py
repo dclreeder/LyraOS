@@ -1,11 +1,13 @@
-"""Pipeline driver: the core's client for the two production
-Wyoming services (wake :10400, TTS :10200) and Parakeet
-(:8096), which the core calls directly over HTTP -- the Wyoming STT
-bridge between them was removed 2026-11-19.
+"""Pipeline driver: the core's client for the one remaining
+Wyoming service (TTS :10200) and for Parakeet (:8096), which the
+core calls directly over HTTP -- the Wyoming STT bridge between
+them was removed 2026-11-19, and the wake service followed it the
+same day: detection runs in-process (lyra_core.wake).
 
-In production this driver carries the voice session's wake,
-transcription and synthesis round trips and RTC's transcription;
-the benches drive the same methods on recorded clips.
+In production this driver carries transcription and synthesis
+round trips and RTC's transcription; the benches drive the same
+methods on recorded clips, including detect_wake, which runs the
+same in-process gate the session uses live.
 """
 from __future__ import annotations
 
@@ -18,14 +20,11 @@ import urllib.request
 import wave
 
 from .config import CoreConfig
+from .wake import WakeDetector, wake_info
 from .wyoming_client import (
     WyomingConnection,
     WyomingEvent,
-    audio_chunk,
-    audio_start,
-    audio_stop,
     describe,
-    detect,
     synthesize,
 )
 
@@ -195,10 +194,10 @@ class PipelineDriver:
         # WakeGate and announce paths). None in benches.
         self.on_speech = None
         # Collector hook (2026-11-19): production_main points this
-        # at lyra_core.verify.finalize_spooled_detection;
+        # at lyra_core.verify.finalize_pending_detection;
         # transcribe_audio fires it (fire-and-forget) with the
         # transcribed PCM so the clip collector can finalize the
-        # spooled wake detection with the command audio attached --
+        # pending wake detection with the command audio attached --
         # the job the Wyoming STT bridge's janitor did after every
         # transcription, until the bridge was removed. None in
         # benches that do not wire it.
@@ -211,10 +210,11 @@ class PipelineDriver:
             return info.data
 
     async def describe_all(self) -> dict[str, dict]:
-        # Wake + TTS only: STT is Parakeet over HTTP now (see
-        # transcribe_audio) and has no Wyoming Info to describe.
+        # Wake is in-process (lyra_core.wake.wake_info); TTS is the
+        # one Wyoming service left to describe. STT is Parakeet
+        # over HTTP (see transcribe_audio) -- no Info there either.
         return {
-            "wake": await self.describe(self._cfg.wake_uri),
+            "wake": wake_info(),
             "tts": await self.describe(self._cfg.tts_uri),
         }
 
@@ -226,30 +226,27 @@ class PipelineDriver:
         channels: int = 1,
         grace_s: float = 15.0,
     ) -> dict | None:
-        """Stream a full clip to the wake server at ~real-time pace.
+        """Run a full clip through the in-process gate at ~real-time pace.
 
         Returns the Detection event's data dict, or None if the gate never
-        fired. The whole clip is always streamed (the live mic stream
-        doesn't stop at a detection), then we wait out the grace
-        window for the Detection the gate emits mid-stream.
+        fired. The whole clip is always fed (the live mic stream doesn't
+        stop at a detection); detection is synchronous in-process, so
+        the grace window the Wyoming round trip needed no longer
+        applies (the parameter stays for call-shape compatibility).
+        A fresh detector per call: the gate is stateful and a bench
+        clip is a self-contained stream, exactly as a fresh Wyoming
+        connection carried a fresh gate.
         """
-        cfg = self._cfg
+        detector = WakeDetector(wake_name=self._cfg.wake_name)
         chunk_samples = 1600  # 100 ms at 16 kHz
         chunk_bytes = chunk_samples * width * channels
-        async with await WyomingConnection.connect(cfg.wake_uri) as conn:
-            await conn.send(detect([cfg.wake_name]))
-            await conn.send(audio_start(rate, width, channels))
-            for offset in range(0, len(pcm), chunk_bytes):
-                await conn.send(
-                    audio_chunk(rate, width, channels, pcm[offset:offset + chunk_bytes])
-                )
-                await asyncio.sleep(0.09)
-            await conn.send(audio_stop())
-            try:
-                event = await _next_of_type(conn, "detection", timeout=grace_s)
-                return event.data
-            except PipelineError:
-                return None
+        found: dict | None = None
+        for offset in range(0, len(pcm), chunk_bytes):
+            entry = detector.feed(pcm[offset:offset + chunk_bytes])
+            if entry is not None and found is None:
+                found = detector.event_data()
+            await asyncio.sleep(0.09)
+        return found
 
     async def transcribe_audio(
         self,

@@ -2,8 +2,8 @@
 
 The core transcribes the COMBINED wake+command clip directly through
 the shared Parakeet service (:8096) — the collector's own
-``parakeet_transcribe``, not the Wyoming STT spool/claim path — runs the
-production collector's classifier on that transcript in-process, and
+``parakeet_transcribe`` — runs the production collector's classifier
+on that transcript in-process, and
 the verdict gates the turn (see session.py's verify stage):
 
 - fail  -> clip files to negatives/ + ledger; the turn ends silently
@@ -16,9 +16,10 @@ the verdict gates the turn (see session.py's verify stage):
 Reuse, not fork: classification AND filing are the production
 functions in ~/Documents/LyraOS/modules/wyoming/clip_collector.py, imported here. The
 only adapter is sys.path plumbing — clip_collector needs httpx/numpy,
-which the core's interpreter (the ESPHome venv) does not carry; the
-Wyoming services venv (same CPython 3.14) does, so its site-packages
-are appended as a fallback. Nothing about the logic is re-implemented.
+which the core's interpreter (the ESPHome venv) carries since
+2026-11-19 (installed for the in-process gate); the Wyoming services
+venv's site-packages (same CPython 3.14) remain appended as a
+fallback. Nothing about the logic is re-implemented.
 
 DRY-RUN (the default, and the only mode the Phase 2 benches use):
 classification and transcription run for real, but filing is computed
@@ -26,56 +27,35 @@ by the REAL collector.file_clip with its two side-effect primitives —
 _write_wav and append_ledger — temporarily swapped for recorders
 inside this process only. The destination path and the ledger entry
 are therefore exactly what production would produce, and nothing is
-written. (The production wake/STT processes are separate processes;
-the swap cannot leak into them.)
+written. (The swap is process-local and the swapped region contains
+no awaits, so no other task in this process can observe it.)
 
-SPOOL CLAIM+DISCARD (live mode only): the wake server spools every
-Detection for the STT-server claim path, which the core never uses;
-left alone, its janitor would file this turn a second time at 120 s
-(wake-only snapshot, possibly with a wrong verdict -- a genuine
-command clip in negatives/ would poison the pool). So in live mode,
-once a turn has been verified and filed here, the gate claims its
-own spool entry BY NAME (see SPOOL ASSOCIATION below: the
-collector's own atomic _claim on that entry, with
-collector.claim_latest_detection as the no-name fallback) and
-discards the wake wav
-(collector.discard_wake_wav -- the STT server's finally-path). The
-claim's atomic rename removes the meta the janitor looks for, so a
+REGISTRY DISCARD (live mode only): every Detection is registered
+in the pending registry (lyra_core.wake) at the instant the
+in-process gate fires, and an entry left unclaimed is filed
+wake-only by the stale sweep at 120 s (possibly with a wrong
+verdict -- a genuine command clip in negatives/ would poison the
+pool). So in live mode, once a turn has been verified and filed
+here, verify() discards its own registry entry (by id), and a
 core-handled turn is filed exactly once: here. If verification or
-filing raises, no claim runs and the janitor's wake-only filing
+filing raises, no discard runs and the sweep's wake-only filing
 remains the fallback, as for any unclaimed detection. Dry-run
-never claims: benches leave the spool exactly as they found it.
+never discards: benches leave the registry exactly as they found
+it.
 
-Gate score: the Wyoming Detection event carries no score, so the
-score is read back from the wake server's spool meta (a plain read
-— never the rename-based claim) for the detection the spool
-recorded moments earlier.
-
-SPOOL ASSOCIATION (dial-in 2026-11-11, item N): selecting “the
-newest spool entry” is racy — a detection spooled while this turn
-is being verified could lend this turn its score, and the claim
-could steal that newer entry and discard its wav. The fix uses
-data the gate already has: the wake server names each spool entry
-with the local second of its detection, and the session stamps
-each accepted Detection with the local second it arrived (same
-host clock). verify() receives that stamp as `spool_ts` and both
-the score read and the claim select the entry BY NAME (this
-second, or one second earlier for a boundary straddle) — the claim
-via the collector's own atomic _claim primitive on that specific
-entry. The newest-entry behaviour survives only as the fallback
-when no named entry exists. No collector or spool-format changes.
+Gate score: the session was there when the gate fired, so it
+hands verify() the score (and the registry id) directly -- no
+read-back, no name association, no race with a newer detection.
 """
 from __future__ import annotations
 
 import glob
-import json
 import logging
 import re
 import string
 import sys
-import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -94,6 +74,8 @@ except ImportError:  # core interpreter lacks httpx/numpy: borrow the venv's
 
 import numpy as np
 
+from .wake import REGISTRY
+
 _LOGGER = logging.getLogger("lyra_core.verify")
 
 # Clip filing timestamps follow the project's zone explicitly, like
@@ -101,14 +83,6 @@ _LOGGER = logging.getLogger("lyra_core.verify")
 # naive local now(), which silently depends on the process TZ.
 _FILING_TZ = ZoneInfo("America/New_York")
 
-
-def _prev_second(ts: str) -> str | None:
-    """The spool-name second before `ts` (or None if unparseable)."""
-    try:
-        dt = datetime.strptime(ts, "%Y%m%d_%H%M%S") - timedelta(seconds=1)
-    except ValueError:
-        return None
-    return dt.strftime("%Y%m%d_%H%M%S")
 
 _KEEP = set(string.ascii_lowercase + string.digits)
 
@@ -188,119 +162,22 @@ class VerifyGate:
     def dry_run(self) -> bool:
         return self._dry_run
 
-    def _spool_gate_score(self, spool_ts: str | None = None) -> float | None:
-        """Read-only peek at the spool meta (never a claim): the
-        wake server spooled this turn's Detection just before the core
-        saw it. With `spool_ts` (item N), read THIS turn's named
-        entry (this second, or one earlier on a boundary straddle);
-        if it is gone, return None rather than borrowing a neighbor
-        detection's score. Without it, the legacy newest-fresh scan.
-        Returns None when nothing fresh is there."""
-        if spool_ts is not None:
-            for name in (spool_ts, _prev_second(spool_ts)):
-                if name is None:
-                    continue
-                try:
-                    meta = json.loads(
-                        (Path(collector.SPOOL_DIR) / f"{name}.json").read_text()
-                    )
-                    return float(meta["gate_score"])
-                except Exception:
-                    continue
-            return None
-        try:
-            metas = sorted(
-                Path(collector.SPOOL_DIR).glob("*.json"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-        except OSError:
-            return None
-        for meta_path in metas:
-            try:
-                if time.time() - meta_path.stat().st_mtime > 60:
-                    break
-                meta = json.loads(meta_path.read_text())
-                return float(meta["gate_score"])
-            except Exception:
-                continue
-        return None
-
-    def claim_and_discard_spool(self, spool_ts: str | None = None) -> None:
-        """Claim this turn's spool entry and discard its wake wav.
-
-        Mirrors the STT server's claim path (claim_latest_detection
-        with max_age_s=120 -- the janitor's own staleness threshold,
-        so a verified turn always wins the race) and its discard
-        (discard_wake_wav, the STT server's finally-path). Never
-        raises: a failed claim leaves the entry for the janitor,
-        which is the pre-fix behaviour, not a new failure.
-        """
-        if spool_ts is not None:
-            # Item N: claim THIS turn's entry by name, via the
-            # collector's own atomic claim primitive, so a newer
-            # detection spooled during this turn's verify is never
-            # stolen. If the named entry is already gone, someone
-            # else handled it -- do not fall through to claiming a
-            # different (newer) entry in that case.
-            for name in (spool_ts, _prev_second(spool_ts)):
-                if name is None:
-                    continue
-                meta_path = Path(collector.SPOOL_DIR) / f"{name}.json"
-                if not meta_path.exists():
-                    continue
-                try:
-                    got = collector._claim(str(meta_path))
-                except Exception:
-                    _LOGGER.exception("spool claim failed")
-                    return
-                if got is None:
-                    _LOGGER.warning(
-                        "spool entry %s claimed by someone else first", name
-                    )
-                    return
-                meta, wake_wav = got
-                collector.discard_wake_wav(wake_wav)
-                _LOGGER.info(
-                    "spool entry claimed + discarded (ts=%s)", meta.get("ts")
-                )
-                return
-            _LOGGER.warning(
-                "no spool entry named for ts=%s; using latest-claim fallback",
-                spool_ts,
-            )
-        try:
-            got = collector.claim_latest_detection(max_age_s=120)
-        except Exception:
-            _LOGGER.exception("spool claim failed")
-            return
-        if got is None:
-            _LOGGER.warning("no spool entry to claim after verify")
-            return
-        meta, wake_wav = got
-        collector.discard_wake_wav(wake_wav)
-        _LOGGER.info("spool entry claimed + discarded (ts=%s)", meta.get("ts"))
-
     async def verify(
         self,
         combined_pcm: bytes,
         *,
         gate_score: float | None = None,
-        spool_ts: str | None = None,
+        detection_id: int | None = None,
     ) -> VerifyResult:
         audio = np.frombuffer(combined_pcm, dtype="<i2").astype(np.int16)
         if len(audio) == 0:
             transcript = ""
         else:
-            # The production direct call to Parakeet :8096 — the same
-            # function the STT server uses to verify spooled clips.
+            # The production direct call to Parakeet :8096 — the
+            # same function the collector's other paths verify with.
             transcript = await collector.parakeet_transcribe(audio)
         verdict = collector.classify_wake_transcription(transcript)
-        score = gate_score
-        if score is None:
-            score = self._spool_gate_score(spool_ts)
-        if score is None:
-            score = 0.0
+        score = gate_score if gate_score is not None else 0.0
         ts = datetime.now(_FILING_TZ).strftime("%Y%m%d_%H%M%S")
         would_ledger: dict | None = None
         if self._dry_run:
@@ -323,10 +200,10 @@ class VerifyGate:
             )
         else:
             dest = collector.file_clip(verdict, score, transcript, ts, audio)
-        if not self._dry_run:
-            # Live: this turn is filed; keep the wake server's janitor
-            # from filing it a second time (see module docstring).
-            self.claim_and_discard_spool(spool_ts)
+        if not self._dry_run and detection_id is not None:
+            # Live: this turn is filed; drop its registry entry so
+            # the stale sweep does not file it again (module docstring).
+            REGISTRY.discard(detection_id)
         command = strip_wake_phrase(transcript) if verdict == "pass" else None
         return VerifyResult(
             verdict=verdict,
@@ -340,33 +217,28 @@ class VerifyGate:
         )
 
 
-async def finalize_spooled_detection(command_pcm: bytes) -> None:
-    """File the spooled wake detection with this command audio
-    attached -- the collector janitor's fresh-claim path. Until
+async def finalize_pending_detection(command_pcm: bytes) -> None:
+    """File the newest pending wake detection with this command
+    audio attached -- the collector's fresh-claim path. Until
     2026-11-19 this lived in the Wyoming STT bridge, which ran it
     after every transcription it served; the bridge is gone and
     the core is the transcriber now, so PipelineDriver's
     on_transcribed hook (wired in production_main and the session
     benches) calls this instead. In production the VerifyGate
-    files its own turns and claims their spool entries first, so
-    this finds nothing on gate-handled turns -- it is the backstop
-    for gate-less sessions, exactly as it was under the bridge.
-    Never raises."""
+    files its own turns and discards their registry entries first,
+    so this finds nothing on gate-handled turns -- it is the
+    backstop for gate-less sessions, exactly as it was under the
+    bridge. Never raises."""
     try:
-        got = collector.claim_latest_detection(max_age_s=120)
-        if got is None:
+        entry = REGISTRY.claim_latest(max_age_s=120)
+        if entry is None:
             return
-        meta, wake_wav = got
-        try:
-            wake_audio = collector.read_wav(wake_wav)
-            command_audio = np.frombuffer(
-                command_pcm, dtype="<i2").astype(np.int16)
-            combined = np.concatenate([wake_audio, command_audio])
-            text = await collector.parakeet_transcribe(combined)
-            verdict = collector.classify_wake_transcription(text)
-            collector.file_clip(verdict, meta["gate_score"], text,
-                                meta["ts"], combined)
-        finally:
-            collector.discard_wake_wav(wake_wav)
+        command_audio = np.frombuffer(
+            command_pcm, dtype="<i2").astype(np.int16)
+        combined = np.concatenate([entry.wake_audio, command_audio])
+        text = await collector.parakeet_transcribe(combined)
+        verdict = collector.classify_wake_transcription(text)
+        collector.file_clip(verdict, entry.gate_score, text,
+                            entry.ts, combined)
     except Exception:
         _LOGGER.exception("collector finalize failed")

@@ -1,7 +1,8 @@
 """Stack checklist (--preflight): the localmic-era core's
 prerequisites, verified without starting the service.
 
-Checks: config loads, the Wyoming services (wake + TTS) describe OK, the
+Checks: config loads, the services describe OK (wake in-process, TTS
+Wyoming), the
 Parakeet/Kokoro engine ports answer, and the core's HTTP audio
 endpoint binds, serves /healthz, and round-trips a stored WAV
 byte-identically. (The speaker-box seat-swap procedure this file
@@ -65,21 +66,22 @@ async def run_preflight() -> int:
     cfg = CoreConfig.load()
     check(True, "config loads",
           f"transport {cfg.transport!r}, "
-          f"wake {cfg.wyoming.wake_uri}, parakeet {cfg.wyoming.parakeet_url}, "
+          f"wake in-process ({cfg.wyoming.wake_name}), "
+          f"parakeet {cfg.wyoming.parakeet_url}, "
           f"tts {cfg.wyoming.tts_uri}, http :{cfg.http.port}")
 
     driver = PipelineDriver(cfg)
 
-    # 2. Wyoming services describe OK.
+    # 2. Services describe OK (wake in-process, TTS over Wyoming).
     try:
         infos = await driver.describe_all()
         names = {
             svc: [p.get("name", "?") for p in infos[svc].get(key, [])]
             for svc, key in (("wake", "wake"), ("tts", "tts"))
         }
-        check(all(names.values()), "Wyoming services describe OK", str(names))
+        check(all(names.values()), "services describe OK", str(names))
     except Exception as exc:
-        check(False, "Wyoming services describe OK", str(exc))
+        check(False, "services describe OK", str(exc))
 
     # 3. Engine ports answer (Parakeet / Kokoro behind the wrappers).
     for name, host, port in ENGINE_PORTS:
