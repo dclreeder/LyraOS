@@ -44,6 +44,17 @@ matters is the core's own anyway:
   PipelineDriver.transcribe_audio (Parakeet TDT) path,
   unchanged. WakeGate never uses the streamer.
 
+Echo is the system layer's job (2026-11-18): the mic feed
+arrives already echo-cancelled -- PipeWire's WebRTC AEC makes
+the echo-cancelled virtual source the default source, and the
+page captures the default mic like everything else -- so
+barge-in in this module is the plain conversational rule: a
+speech onset while she is talking interrupts her. The
+word-matching echo guard that used to judge onsets against her
+playback text was removed once the AEC measured clean (30 dB
+down, no echo transcripts); it lives in git history if the
+room ever proves it necessary again.
+
 The phone call feature (2026-11-18, Daniel: "the phone call is
 supposed to be duplex") runs on this same machinery: a second
 RtcServer instance, always accepting, whose sessions carry
@@ -65,7 +76,6 @@ import io
 import json
 import logging
 import math
-import re
 import time
 import wave
 from fractions import Fraction
@@ -95,13 +105,6 @@ STREAM_CONFIRM_S = 0.35      # quiet + no-new-text window ending a streamed turn
 STREAM_TAIL_S = 0.10         # audio that must be fed past the last finalized word
 STREAM_IDLE_RESET_S = 8.0    # silent streamed audio before a hygiene reset
 STREAM_SEG_GRACE_S = 0.35    # grace for late finals after the segmenter cuts
-BARGE_CONFIRM_S = 0.60       # max hold on a barge candidate awaiting text proof
-BARGE_ENERGY_S = 0.30        # sustained over-ceiling energy fast-paths a barge
-BARGE_GRACE_S = 0.80       # post-utterance hold for an inconclusive candidate
-ECHO_CEILING_MARGIN = 1.6    # candidate energy vs the tracked echo ceiling
-ECHO_TAIL_S = 3.0            # a played sentence guards this long after it ends
-ECHO_MIN_MATCH = 3           # matched words that prove an utterance is echo
-ECHO_COVERAGE = 0.7          # transcript coverage proving echo at dispatch
 
 
 def _pcm_frame(pcm: bytes, rate: int) -> av.AudioFrame:
@@ -120,43 +123,6 @@ def _frame_pcm(frame) -> bytes:
     drags the wyoming venv's numpy into the process. Plane bytes
     sliced to the frame's sample count are the same data."""
     return bytes(frame.planes[0])[: frame.samples * 2]
-
-_WORD_RE = re.compile(r"[a-z0-9']+")
-
-
-def _words_of(text: str) -> list[str]:
-    return _WORD_RE.findall(
-        text.lower().replace("’", "'").replace("‘", "'"))
-
-
-def _contiguous_run(needle: list[str], hay: list[str]) -> int:
-    """Longest run of consecutive needle words appearing
-    consecutively in hay."""
-    best = 0
-    for i in range(len(needle)):
-        for j in range(len(hay)):
-            if hay[j] == needle[i]:
-                run = 0
-                while (i + run < len(needle) and j + run < len(hay)
-                       and needle[i + run] == hay[j + run]):
-                    run += 1
-                best = max(best, run)
-    return best
-
-
-def _subseq_len(needle: list[str], hay: list[str]) -> int:
-    """How many of needle's words appear in hay in order (greedy
-    subsequence scan): the coverage numerator for echo checks."""
-    n = 0
-    for w in hay:
-        if n < len(needle) and w == needle[n]:
-            n += 1
-    return n
-
-
-def _bigrams(words: list[str]) -> set[tuple[str, str]]:
-    return {(words[i], words[i + 1]) for i in range(len(words) - 1)}
-
 
 class _Segmenter:
     """VAD segmentation over the peer's 16 kHz stream.
@@ -308,10 +274,8 @@ class _RtcSpeaker:
             sentence = await self._queue.get()
             if sentence is None:
                 for frame in self._resampler.resample(None):
-                    out = _frame_pcm(frame)
-                    self._session.append_out(out, self._generation)
-                    self._session.note_sentence_audio(
-                        len(out) // 2, self._generation)
+                    self._session.append_out(
+                        _frame_pcm(frame), self._generation)
                 return
             try:
                 wav_bytes, rate, _w, _c = await self._driver.synthesize_speech(
@@ -322,12 +286,9 @@ class _RtcSpeaker:
                 continue
             with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
                 pcm = wf.readframes(wf.getnframes())
-            self._session.note_sentence_begin(sentence, self._generation)
             for frame in self._resampler.resample(_pcm_frame(pcm, rate)):
-                out = _frame_pcm(frame)
-                self._session.append_out(out, self._generation)
-                self._session.note_sentence_audio(
-                    len(out) // 2, self._generation)
+                self._session.append_out(
+                    _frame_pcm(frame), self._generation)
 
     async def drain(self) -> None:
         if self._worker is not None:
@@ -362,13 +323,6 @@ class _RtcSession:
         self._closed = False
         self._event_sink = None
         self._partial_sent = ""
-        self._play_queue: collections.deque = collections.deque()
-        self._play_appending: list | None = None
-        self._played_tail: collections.deque = collections.deque()
-        self._utter_ctx: list[str] = []
-        self._barge_candidate: dict | None = None
-        self._echo_suppressed = False
-        self._echo_ceiling = 0.0
         self._status_playing = False
         self._status_listening = False
         self.out_track = _PeerAudioTrack(self)
@@ -377,16 +331,6 @@ class _RtcSession:
 
     def take_out_frame(self) -> bytes:
         n = FRAME_SAMPLES * 2
-        self._advance_playhead(min(len(self._out) // 2, FRAME_SAMPLES))
-        real = bytes(self._out[:n])
-        if real:
-            samples = array.array("h")
-            samples.frombytes(real[: len(real) - (len(real) % 2)])
-            if samples:
-                level = math.sqrt(
-                    sum(s * s for s in samples) / len(samples))
-                self._echo_ceiling = max(level,
-                                         self._echo_ceiling * 0.999)
         if len(self._out) >= n:
             data = bytes(self._out[:n])
             del self._out[:n]
@@ -408,7 +352,7 @@ class _RtcSession:
         status hub, on transitions only. Playback is tracked by
         the playhead (take_out_frame drains in real time), so this
         is her actually sounding on the peer, not a timer."""
-        playing = bool(self._play_queue) or len(self._out) > 0
+        playing = len(self._out) > 0
         if playing == self._status_playing:
             return
         self._status_playing = playing
@@ -422,8 +366,8 @@ class _RtcSession:
         on transitions only. Set at the segmenter's speech onset;
         cleared at every resolution (dispatch, discard, close).
         The hub ranks listening below speaking and thinking, so
-        an onset during her playback (a barge candidate, her own
-        echo included) never flips the light off blue; it shows
+        an onset during her playback (a barge-in onset) never
+        flips the light off blue; it shows
         only once playback has actually stopped and he is still
         speaking."""
         if active == self._status_listening:
@@ -432,58 +376,6 @@ class _RtcSession:
         hub = self._server.status
         if hub is not None:
             hub.set_listening(id(self), active)
-
-    # -- playback text tracking (the echo guard's window) ------------
-
-    def note_sentence_begin(self, sentence: str, generation: int) -> None:
-        """The speaker starts appending a sentence's audio: its
-        words become the playback queue's next entry, so the echo
-        guard knows what she is saying while she says it."""
-        if generation != self._generation or self._closed:
-            return
-        self._play_appending = [_words_of(sentence), 0]
-
-    def note_sentence_audio(self, samples: int, generation: int) -> None:
-        if (generation != self._generation or self._closed
-                or self._play_appending is None or samples <= 0):
-            return
-        words = self._play_appending[0]
-        if self._play_queue and self._play_queue[-1][0] is words:
-            w, left = self._play_queue[-1]
-            self._play_queue[-1] = (w, left + samples)
-        else:
-            self._play_queue.append((words, samples))
-
-    def _advance_playhead(self, samples: int) -> None:
-        """take_out_frame drains the out buffer in real time; walk
-        the playback queue by the samples actually drained, moving
-        finished sentences to the guard tail."""
-        while samples > 0 and self._play_queue:
-            words, left = self._play_queue[0]
-            if left <= samples:
-                samples -= left
-                self._play_queue.popleft()
-                self._played_tail.append((words, time.monotonic()))
-            else:
-                self._play_queue[0] = (words, left - samples)
-                samples = 0
-
-    def _guard_sentences(self, span: int = 2) -> list:
-        """Her recent/current sentences as word lists: finished ones
-        inside the tail window, then up to `span` queued ones."""
-        now = time.monotonic()
-        while (self._played_tail
-               and now - self._played_tail[0][1] > ECHO_TAIL_S):
-            self._played_tail.popleft()
-        sents = [list(w) for (w, _t) in self._played_tail]
-        sents += [list(w) for (w, _l) in list(self._play_queue)[:span]]
-        return sents
-
-    def _guard_words(self, span: int = 2) -> list[str]:
-        words: list[str] = []
-        for sent in self._guard_sentences(span):
-            words.extend(sent)
-        return words
 
     @property
     def speaking(self) -> bool:
@@ -496,251 +388,12 @@ class _RtcSession:
             return
         self._generation += 1
         self._out.clear()
-        self._play_queue.clear()
-        self._play_appending = None
         self._note_playing()
         if self._turn_task is not None and not self._turn_task.done():
             self._turn_task.cancel()
         _LOGGER.info("%s barge-in: reply interrupted by peer speech",
                      self._server.label)
         self._emit({"type": "barge_in"})
-
-    # -- echo-hardened barge-in ---------------------------------------
-    #
-    # A speech onset while she is talking is a CANDIDATE, not a
-    # verdict. In the TV room her own playback reaches the mic:
-    # the page requests AEC, but her voice renders through its
-    # WebAudio graph rather than the element an AEC can tap as a
-    # reference, so onset-only barge-in cut every reply ~2 s in
-    # during the 2026-11-18 live test. The candidate resolves on
-    # proof instead: the streamer's first finalized words are
-    # compared with the sentence at the playhead -- matching words
-    # mean echo (the barge is suppressed and the utterance dropped
-    # whole), clearly different words or energy sustained well
-    # above the tracked echo ceiling mean Daniel (the barge fires
-    # at once). The hold exists only while she is speaking; idle
-    # barge-in pays nothing. The phone call shares this machinery:
-    # handset playback is quiet, his words never match hers, and
-    # the candidate resolves real on his first differing words.
-
-    def _start_barge_candidate(self, now: float) -> None:
-        stream = self._stream
-        self._barge_candidate = {
-            "at": now,
-            "base": stream.text if stream is not None else "",
-            "above_since": None,
-            "peak": 0.0,
-            "held": False,
-            "hold_until": 0.0,
-            "dur": 0.0,
-            "snap": self._guard_words(span=2),
-        }
-        _LOGGER.info(
-            "%s barge candidate: onset during playback; holding "
-            "for echo check", self._server.label)
-
-    def _candidate_words(self) -> list[str]:
-        cand = self._barge_candidate
-        stream = self._stream
-        if cand is None or stream is None or stream.failed:
-            return []
-        text = stream.text
-        base = cand["base"]
-        if base and text.startswith(base):
-            text = text[len(base):]
-        return _words_of(text)
-
-    def _resolve_barge_real(self, why: str) -> None:
-        self._barge_candidate = None
-        _LOGGER.info("%s barge confirmed (%s)",
-                     self._server.label, why)
-        self.barge_in()
-
-    def _resolve_barge_echo(self, why: str) -> None:
-        self._barge_candidate = None
-        self._echo_suppressed = True
-        _LOGGER.info(
-            "%s barge suppressed (%s): the onset is her own "
-            "playback; utterance dropped as echo",
-            self._server.label, why)
-
-    async def _reset_stream_quietly(self) -> None:
-        stream = self._stream
-        if stream is not None and not stream.failed:
-            await stream.reset()
-
-    async def _judge_barge_candidate(self, now: float,
-                                     rms: float) -> None:
-        cand = self._barge_candidate
-        if cand is None:
-            return
-        cand["peak"] = max(cand.get("peak", 0.0), rms)
-        if cand.get("held"):
-            await self._judge_held_candidate(now)
-            return
-        words = self._candidate_words()
-        window = list(cand.get("snap") or []) + self._guard_words(span=1)
-        run = 0
-        if len(words) >= 2:
-            run = max(_contiguous_run(words, window),
-                      _contiguous_run(words[1:], window))
-        ceiling = self._echo_ceiling
-        if (ceiling > 0 and run < 2
-                and rms >= ceiling * ECHO_CEILING_MARGIN):
-            # Energy may fast-path a barge only while the words in
-            # hand show no echo evidence; a loud passage of her own
-            # story must not outrun the text check.
-            if cand["above_since"] is None:
-                cand["above_since"] = now
-            elif now - cand["above_since"] >= BARGE_ENERGY_S:
-                self._resolve_barge_real(
-                    "energy well above her echo level")
-                return
-        else:
-            cand["above_since"] = None
-        if len(words) < 2:
-            return
-        win_grams = _bigrams(window)
-        if run >= ECHO_MIN_MATCH:
-            self._resolve_barge_echo("words match her playback")
-            return
-        covered = _subseq_len(words, window)
-        if (len(words) >= 4 and covered >= ECHO_MIN_MATCH
-                and covered / len(words) >= 0.6):
-            self._resolve_barge_echo("words track her playback")
-            return
-        grams = _bigrams(words[1:])
-        if (len(words) >= 4 and grams and not (grams & win_grams)
-                and covered * 3 < len(words)):
-            self._resolve_barge_real("words differ from her playback")
-            return
-        if (now - cand["at"] >= BARGE_CONFIRM_S and len(words) >= 3
-                and grams and not (grams & win_grams)
-                and covered * 3 < len(words) and run == 0):
-            # run == 0 as well: this is the earliest, least-informed
-            # verdict, and a mid-garble echo can present three foreign
-            # words while one of them already matches her text (the
-            # "I owe from" garble of "...grown wild from..."). Any
-            # partial match buys the candidate more time; clearly
-            # foreign speech has run 0 throughout in practice, and
-            # the >= 4-word differ above still fires mid-utterance.
-            self._resolve_barge_real(
-                "no echo match within the confirm window")
-            return
-
-    async def _judge_held_candidate(self, now: float) -> None:
-        """Decide a candidate whose utterance ended while its words
-        were still inconclusive. The stream keeps feeding during the
-        grace hold, so late-finalized words are judged by the same
-        text rules; the utterance's dispatch waits with the decision."""
-        cand = self._barge_candidate
-        if cand is None:
-            return
-        words = self._candidate_words()
-        window = list(cand.get("snap") or []) + self._guard_words(span=2)
-        grams = _bigrams(words[1:])
-        run = 0
-        covered = 0
-        if words:
-            run = max(_contiguous_run(words, window),
-                      _contiguous_run(words[1:], window))
-            covered = _subseq_len(words, window)
-        if words and (run >= ECHO_MIN_MATCH or (
-                len(words) >= 4 and covered >= ECHO_MIN_MATCH
-                and covered / len(words) >= 0.6)):
-            self._resolve_barge_echo("late words match her playback")
-            self._pending_pcm = None
-            self._utter_streaming = False
-            self._note_listening(False)
-            asyncio.ensure_future(self._reset_stream_quietly())
-            return
-        if (len(words) >= 3 and grams and not (grams & _bigrams(window))
-                and covered * 3 < len(words)):
-            await self._release_held_as_real(
-                "late words differ from her playback", now)
-            return
-        if now >= cand.get("hold_until", 0.0):
-            if self._short_sentence_echo(cand):
-                self._resolve_barge_echo(
-                    "wordless utterance matches a short sentence "
-                    "she was playing")
-                self._pending_pcm = None
-                self._utter_streaming = False
-                self._note_listening(False)
-                asyncio.ensure_future(self._reset_stream_quietly())
-            else:
-                await self._release_held_as_real(
-                    "grace expired with no echo evidence", now)
-
-    async def _release_held_as_real(self, why: str, now: float) -> None:
-        """A held candidate turned out to be Daniel: execute the barge
-        and dispatch the held utterance as his turn."""
-        pcm = self._pending_pcm
-        self._resolve_barge_real(why)
-        stream = self._stream
-        if stream is not None and not stream.failed and stream.text:
-            await self._maybe_dispatch_stream(now)
-        elif pcm is not None:
-            self._pending_pcm = None
-            self._start_turn_pcm(pcm, self._utter_ctx)
-        else:
-            self._utter_streaming = False
-            self._note_listening(False)
-
-    def _short_sentence_echo(self, cand: dict) -> bool:
-        """Backstop for an utterance the streamer never transcribed:
-        it counts as her echo only if it was short, no louder than
-        her own playback level allows, and she was in fact playing
-        a short (<= 3 word) sentence at the time."""
-        if cand.get("dur", 0.0) > 2.2:
-            return False
-        if (cand.get("peak", 0.0)
-                > max(self._echo_ceiling, 1.0) * ECHO_CEILING_MARGIN):
-            return False
-        return any(len(s) <= 3 for s in self._guard_sentences(span=2))
-
-    def _final_judge_candidate(self) -> str:
-        """The candidate's utterance ended before the live judgment
-        resolved: decide on the text in hand. Echo evidence drops
-        it; anything else executes the (possibly moot) barge and
-        lets the dispatch guard re-check the final transcript."""
-        if self._barge_candidate is None:
-            return "none"
-        cand = self._barge_candidate
-        words = self._candidate_words()
-        window = list(cand.get("snap") or []) + self._guard_words(span=2)
-        run = 0
-        covered = 0
-        if words:
-            run = max(_contiguous_run(words, window),
-                      _contiguous_run(words[1:], window))
-            covered = _subseq_len(words, window)
-        if words and (run >= ECHO_MIN_MATCH or (
-                len(words) >= 4 and covered >= ECHO_MIN_MATCH
-                and covered / len(words) >= 0.6)):
-            self._resolve_barge_echo("final text matches her playback")
-            return "echo"
-        grams = _bigrams(words[1:])
-        if (len(words) >= 3 and grams and not (grams & _bigrams(window))
-                and covered * 3 < len(words)):
-            self._resolve_barge_real("final words differ from her playback")
-            return "real"
-        stream = self._stream
-        if stream is None or stream.failed:
-            self._resolve_barge_real("utterance ended unresolved")
-            return "real"
-        # No verdict from the words in hand (often none at all: a lone
-        # short word finalizes late). Do NOT default to real — that
-        # is exactly how her own "Sure." echo cut her off in the
-        # 2026-11-18 retest. Hold the decision for the grace window;
-        # late-finalized words decide it in _judge_held_candidate.
-        cand["held"] = True
-        cand["hold_until"] = time.monotonic() + BARGE_GRACE_S
-        cand["dur"] = time.monotonic() - cand["at"]
-        _LOGGER.info("%s barge candidate held: utterance ended with "
-                     "%d inconclusive word(s); deciding within %.1f s",
-                     self._server.label, len(words), BARGE_GRACE_S)
-        return "hold"
 
     # -- page events (the call's data channel) ------------------------
 
@@ -803,19 +456,10 @@ class _RtcSession:
             self._note_listening(False)
             return
         if self._pending_pcm is not None:
-            if self._barge_candidate is not None:
-                self._final_judge_candidate()
-            if (self._barge_candidate is not None
-                    and self._barge_candidate.get("held")):
-                # No late words are coming from a dead stream: the
-                # held utterance dispatches as real below.
-                self._resolve_barge_real("stream failed during barge hold")
             pending, self._pending_pcm = self._pending_pcm, None
             self._utter_streaming = False
             self._note_listening(False)
-            if self._echo_suppressed:
-                return
-            self._start_turn_pcm(pending, self._utter_ctx)
+            self._start_turn_pcm(pending)
         else:
             self._utter_streaming = False
 
@@ -842,18 +486,9 @@ class _RtcSession:
         rms = _Segmenter._rms(pcm)
         if rms >= self._seg.end_threshold():
             self._last_loud_at = now
-        if (self.speaking and self._barge_candidate is None
-                and not self._seg.in_utterance):
-            # Her echo at the mic, tracked while she talks and no
-            # onset is being judged: the level a real interruption
-            # must clearly beat. A slow-decaying max, so sentence
-            # gaps do not drop it mid-reply.
-            self._echo_ceiling = max(rms, self._echo_ceiling * 0.995)
         for kind, payload in self._seg.feed(pcm):
             if kind == "speech_start":
                 self._note_listening(True)
-                self._utter_ctx = self._guard_words(span=2)
-                self._echo_suppressed = False
                 was_speaking = self.speaking
                 stream = self._stream
                 self._utter_streaming = (
@@ -869,7 +504,12 @@ class _RtcSession:
                 self._utter_stream_start = (
                     stream.audio_fed if stream is not None else 0.0)
                 if was_speaking:
-                    self._start_barge_candidate(now)
+                    # Barge-in: an onset while she is talking IS the
+                    # interruption -- cancel the turn and let this
+                    # utterance become his. No echo judging: the
+                    # feed arrives echo-cancelled by PipeWire, so
+                    # her own voice does not reach this point.
+                    self.barge_in()
             elif kind == "speech_end":
                 # The segmenter discarded a too-short blip: the
                 # capture is over and nothing else resolves it.
@@ -880,9 +520,7 @@ class _RtcSession:
         if stream is None or stream.failed:
             return
         await stream.feed(pcm)
-        if (self._event_sink is not None and not stream.failed
-                and self._barge_candidate is None
-                and not self._echo_suppressed):
+        if self._event_sink is not None and not stream.failed:
             # His words, as they finalize: the call page renders
             # them incrementally instead of one batch at turn end.
             text = stream.text
@@ -899,30 +537,14 @@ class _RtcSession:
             # quiet boundary instead. Never mid-utterance.
             await stream.reset()
             return
-        if self._barge_candidate is not None:
-            await self._judge_barge_candidate(now, rms)
         await self._maybe_dispatch_stream(now)
 
     def _on_segmenter_utterance(self, pcm: bytes, now: float) -> None:
-        if self._barge_candidate is not None:
-            if self._final_judge_candidate() == "hold":
-                # Keep the PCM (and the stream): late-finalized words
-                # decide the candidate inside the grace hold.
-                if self._utter_streaming and not self._stream_dispatched:
-                    self._pending_pcm = pcm
-                    self._seg_done_at = now
-                return
-        if self._echo_suppressed:
-            self._utter_streaming = False
-            self._pending_pcm = None
-            self._note_listening(False)
-            asyncio.ensure_future(self._reset_stream_quietly())
-            return
         if not self._utter_streaming:
             # Legacy path: no stream armed for this utterance (the
             # sidecar was down, or it died and handed the utterance
             # back). Transcribe the buffered PCM exactly as before.
-            self._start_turn_pcm(pcm, self._utter_ctx)
+            self._start_turn_pcm(pcm)
             return
         if self._stream_dispatched:
             # The stream already turned this speech into a turn;
@@ -952,25 +574,12 @@ class _RtcSession:
         if (stream is None or stream.failed or not self._utter_streaming
                 or self._stream_dispatched):
             return
-        if (self._barge_candidate is not None
-                and self._barge_candidate.get("held")):
-            return  # the grace hold owns this utterance's dispatch
-        if self._echo_suppressed:
-            self._stream_dispatched = True
-            self._utter_streaming = False
-            self._pending_pcm = None
-            self._note_listening(False)
-            await stream.reset()
-            return
         text = stream.text.strip()
         seg_done = self._pending_pcm is not None
         forced = (stream.audio_fed - self._utter_stream_start
                   >= MAX_UTTER_S)
         if not forced and not (seg_done and text):
             if not text:
-                if (self._barge_candidate is not None
-                        and self._barge_candidate.get("held")):
-                    return  # ditto: the hold decides, not the drop
                 if seg_done and now - self._seg_done_at >= STREAM_SEG_GRACE_S:
                     # The segmenter heard a full utterance and the
                     # model finalized nothing: unintelligible or
@@ -979,7 +588,6 @@ class _RtcSession:
                     # resync the stream.
                     self._utter_streaming = False
                     self._pending_pcm = None
-                    self._barge_candidate = None
                     self._note_listening(False)
                     await stream.reset()
                 return
@@ -990,16 +598,6 @@ class _RtcSession:
             last_word_end = stream.last_word_end
             if (last_word_end is not None
                     and stream.audio_fed - last_word_end < STREAM_TAIL_S):
-                return
-        if self._barge_candidate is not None:
-            if self._final_judge_candidate() == "hold":
-                return
-            if self._echo_suppressed:
-                self._stream_dispatched = True
-                self._utter_streaming = False
-                self._pending_pcm = None
-                self._note_listening(False)
-                await stream.reset()
                 return
         self._stream_dispatched = True
         final = await stream.flush()
@@ -1012,13 +610,13 @@ class _RtcSession:
             self._utter_streaming = False
             self._note_listening(False)
             if pending is not None:
-                self._start_turn_pcm(pending, self._utter_ctx)
+                self._start_turn_pcm(pending)
             return
         self._pending_pcm = None
         if not final.strip():
             self._note_listening(False)
             return  # silence/noise: no turn, staying silent
-        self._start_turn_text(final.strip(), self._utter_ctx)
+        self._start_turn_text(final.strip())
 
     def _turn_busy(self) -> bool:
         return self._turn_task is not None and not self._turn_task.done()
@@ -1040,8 +638,7 @@ class _RtcSession:
         # idle flicker between.
         self._note_listening(False)
 
-    def _start_turn_pcm(self, pcm: bytes,
-                        ctx: list[str] | None = None) -> None:
+    def _start_turn_pcm(self, pcm: bytes) -> None:
         if self._turn_busy():
             # Turns stay serial: a barge-in cancels the live turn at
             # speech onset, so a still-running task here is one in
@@ -1053,11 +650,10 @@ class _RtcSession:
             self._note_listening(False)
             return
         self._turn_task = asyncio.ensure_future(
-            self._run_turn_pcm(pcm, self._generation, ctx or []))
+            self._run_turn_pcm(pcm, self._generation))
         self._status_turn_begin()
 
-    def _start_turn_text(self, transcript: str,
-                         ctx: list[str] | None = None) -> None:
+    def _start_turn_text(self, transcript: str) -> None:
         if self._turn_busy():
             _LOGGER.info("%s utterance dropped: a turn is still running",
                          self._server.label)
@@ -1065,11 +661,10 @@ class _RtcSession:
             return
         self._turn_task = asyncio.ensure_future(
             self._run_transcript(transcript, self._generation,
-                                 source="nemotron-stream", ctx=ctx or []))
+                                 source="nemotron-stream"))
         self._status_turn_begin()
 
-    async def _run_turn_pcm(self, pcm: bytes, generation: int,
-                            ctx: list[str] | None = None) -> None:
+    async def _run_turn_pcm(self, pcm: bytes, generation: int) -> None:
         try:
             transcript = await self._server.driver.transcribe_audio(
                 pcm, rate=UTTER_RATE, width=2, channels=1)
@@ -1079,43 +674,15 @@ class _RtcSession:
                     self._server.label)
                 return
             await self._run_transcript(
-                transcript, generation, source="parakeet-tdt",
-                ctx=ctx or [])
+                transcript, generation, source="parakeet-tdt")
         except asyncio.CancelledError:
             raise
         except Exception:
             _LOGGER.exception("%s turn failed", self._server.label)
 
     async def _run_transcript(self, transcript: str, generation: int,
-                              source: str,
-                              ctx: list[str] | None = None) -> None:
+                              source: str) -> None:
         try:
-            if ctx:
-                # Dispatch-time echo guard, the candidate's
-                # backstop: an utterance that began during or just
-                # after her playback and whose words are her own
-                # sentences coming back is dropped, never routed --
-                # including tails that only formed after she
-                # stopped, when no candidate ever ran.
-                twords = _words_of(transcript)
-                window = list(ctx) + self._guard_words(span=2)
-                covered = _subseq_len(twords, window)
-                if (len(twords) >= ECHO_MIN_MATCH
-                        and covered >= ECHO_MIN_MATCH
-                        and covered / len(twords) >= ECHO_COVERAGE) or (
-                        0 < len(twords) <= 4 and covered == len(twords)):
-                    # The short form matters too: a playback tail can
-                    # form an utterance of a word or two ("...seven
-                    # oh five."), under the coverage floor above, and
-                    # it is still her own voice coming back. A real
-                    # turn that short whose every word appears in
-                    # order in what she just said is not a plausible
-                    # command; he can repeat himself if it ever is.
-                    _LOGGER.info(
-                        "%s echo utterance dropped at dispatch: %r "
-                        "matches her own playback",
-                        self._server.label, transcript)
-                    return
             _LOGGER.info("%s transcript [%s]: %r",
                          self._server.label, source, transcript)
             self._emit({"type": "transcript", "text": transcript,
@@ -1149,7 +716,6 @@ class _RtcSession:
         self._closed = True
         self._generation += 1
         self._out.clear()
-        self._play_queue.clear()
         self._note_playing()
         self._note_listening(False)
         for task in (self._consume_task, self._turn_task,
