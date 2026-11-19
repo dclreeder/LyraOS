@@ -12,18 +12,17 @@ Replicates the proven HA alarm behaviour without HA:
   than never. A long-running core never fires late.
 - Firing: bedroom light ON at 100% via the Shelly Dimmer Gen4's local
   HTTP RPC (readback-verified; the light STAYS ON afterwards — the
-  morning routine is alarm -> light -> stop), box volume saved ->
-  1.0 -> restored at ring end, the gained 15-minute tone served from
-  the core's own HTTP endpoint, and a 15-minute hard stop that ends
-  the ring even if nothing kills it.
-- TV sounder (2026-11-15): when the composition wires a TvRinger
-  (set_tv_ringer), firing sounds through the TV instead -- display
-  forced on, the TV woken and its volume saved -> ring -> restored
-  over ADB, the web page loops the tone and acks while sounding.
-  A watchdog swaps the ring to the box if the TV path fails
-  silently (no ack within 45 s, or acks stale for 30 s), and a TV
-  start failure falls back to the box path before any ring state
-  is entered.
+  morning routine is alarm -> light -> stop), the core plays the
+  gained 15-minute tone itself through Fedora's default sink (the
+  ring volume is the playback stream's own gain; no device volume
+  is read or written), and a 15-minute hard stop that ends the
+  ring even if nothing kills it.
+- Default-sink sounder (2026-11-19): when the composition wires
+  a SinkRinger (set_ringer), firing sounds through Fedora's
+  default sink, played by the core itself. No ADB, no TV or box
+  volume save/restore, no browser ring, no watchdog: the player
+  is a child of the core, and a start failure is an honest miss
+  (the slot is consumed, no ring state is entered).
 - kill() stops the ring; while not ringing it cancels a pending
   snooze refire if one exists (Daniel's decision, 2026-11-11) and
   otherwise changes nothing and says so (the model owns the
@@ -60,10 +59,7 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from aioesphomeapi.model import MediaPlayerState
-
 from .audio_http import AudioHttpServer
-from .localmic import LocalMicClient
 from .config import CoreConfig
 
 _LOGGER = logging.getLogger("lyra_core.alarm")
@@ -81,7 +77,6 @@ MIGRATED_STATE: dict = {
     "snooze_until": None,
     "ringing": False,
     "ring_volume": 1.0,
-    "saved_volume": None,
 }
 
 
@@ -93,12 +88,10 @@ class AlarmState:
     last_fired_slot: str | None = None     # local date of last fired slot
     snooze_until: float | None = None      # epoch s; refire at/after this
     ringing: bool = False
-    ring_volume: float = 1.0               # box volume during a ring
-    saved_volume: float | None = None      # pre-ring box volume, persisted
-                                           # so the ring-end restore
-                                           # survives a core restart
-    saved_tv_volume: float | None = None   # pre-ring TV volume, TV
-                                           # sounder rings only
+    ring_volume: float = 1.0               # playback stream volume
+                                           # during a ring (0.0-1.0);
+                                           # no device volume is ever
+                                           # read or written
     morning_note: str | None = None        # one-shot spoken note, played
                                            # after a morning kill
     morning_note_date: str | None = None   # local ISO date the note
@@ -113,8 +106,6 @@ class AlarmState:
             "snooze_until": self.snooze_until,
             "ringing": self.ringing,
             "ring_volume": self.ring_volume,
-            "saved_volume": self.saved_volume,
-            "saved_tv_volume": self.saved_tv_volume,
             "morning_note": self.morning_note,
             "morning_note_date": self.morning_note_date,
         }
@@ -142,14 +133,6 @@ class AlarmState:
         if isinstance(rv, (int, float)) and not isinstance(rv, bool):
             if 0.0 <= float(rv) <= 1.0:
                 st.ring_volume = float(rv)
-        sv = raw.get("saved_volume")
-        if isinstance(sv, (int, float)) and not isinstance(sv, bool):
-            if 0.0 <= float(sv) <= 1.0:
-                st.saved_volume = float(sv)
-        tv = raw.get("saved_tv_volume")
-        if isinstance(tv, (int, float)) and not isinstance(tv, bool):
-            if 0.0 <= float(tv) <= 1.0:
-                st.saved_tv_volume = float(tv)
         mn = raw.get("morning_note")
         if isinstance(mn, str) and mn.strip():
             st.morning_note = mn
@@ -325,8 +308,6 @@ class ShellyLight:
         await self._rpc("Light.Set", {"id": self._id, "on": False})
         return await self.get_status()
 
-
-BoxGetter = Callable[[], LocalMicClient | None]
 
 
 class AlarmButtonFlasher:
@@ -562,12 +543,9 @@ class Alarm:
         self,
         cfg: CoreConfig,
         *,
-        box_getter: BoxGetter,
         http: AudioHttpServer,
     ) -> None:
-        self._full_cfg = cfg
         self._cfg = cfg.alarm
-        self._box_getter = box_getter
         self._http = http
         self._tz = ZoneInfo(self._cfg.timezone)
         self._state_path = Path(self._cfg.state_path).expanduser()
@@ -588,28 +566,17 @@ class Alarm:
         self._task: asyncio.Task | None = None
         self._hard_stop_task: asyncio.Task | None = None
         self._started_at: datetime | None = None
-        self._saved_volume: float | None = None
-        self._saw_playing = False
-        self._ring_box_lost = False
-        self._recover_pending = False
-        # TV sounder (2026-11-15): wired by the composition via
-        # set_tv_ringer; None keeps the historical box-only rings.
+        # Default-sink sounder (2026-11-19): wired by the
+        # composition via set_ringer; None = light-only rings.
         self._ringer = None
         # Phase 0 inbox (memory build): wired by the composition
         # (production_main); None = event logging off.
         self._inbox = None
-        self._ring_via_tv = False
-        self._tv_ack_seen = False
-        self._ring_watchdog_task: asyncio.Task | None = None
-        self._tv_ring_handled = False
         # Morning note: the composition wires its announce path in
         # as the speaker (set_note_speaker); delivery runs as a
         # background task so kill() never waits on speech.
         self._note_speaker: Callable | None = None
         self._note_task: asyncio.Task | None = None
-        # Grace period fire() allows for a box (re)connect before
-        # declaring a miss (item I); benches shrink it.
-        self._box_wait_s = 30.0
 
     # -- state + secrets ------------------------------------------------------
 
@@ -672,10 +639,6 @@ class Alarm:
     def _now(self) -> datetime:
         return datetime.now(self._tz)
 
-    def tone_url(self) -> str:
-        http = self._full_cfg.http
-        return f"http://{http.public_host}:{http.port}{self._cfg.tone_url_path}"
-
     def next_fire(self) -> datetime | None:
         return next_fire_after(self._now(), self._state, self._tz)
 
@@ -698,8 +661,8 @@ class Alarm:
     def validate_assets(self) -> bool:
         """Load the alarm tone; NEVER raises (dial-in 2026-11-11,
         item F). A missing/unreadable tone degrades the ALARM only:
-        the failure is logged loudly, the tone route answers 503
-        while no tone is loaded, and a ring becomes light-only --
+        the failure is logged loudly, and a ring becomes
+        light-only while no tone is loaded --
         the core's voice service must never crash-loop over an
         audio file. The production composition calls this BEFORE
         starting background services; start() retries it if the
@@ -722,34 +685,19 @@ class Alarm:
         self._loop = asyncio.get_running_loop()
         self._started_at = self._now()
         if self._state.ringing:
-            # The box-side playback is not tracked across a core
-            # restart; a persisted ringing flag means the previous
-            # process died mid-ring. Clear it rather than resurrect,
-            # and queue the interrupted-ring recovery (item G): on
-            # the next box connect, recovery stops any lingering
-            # playback and restores the persisted pre-ring volume.
+            # The sounder is a child of this process; a persisted
+            # ringing flag means the previous process died mid-ring
+            # and its player died with it. Nothing device-side was
+            # ever touched (no volume to restore, no page to stop),
+            # so just clear the flag rather than resurrect the ring.
             _LOGGER.warning(
                 "alarm state said ringing at startup; clearing "
-                "(a ring does not survive a core restart) and "
-                "queueing interrupted-ring recovery"
+                "(a ring does not survive a core restart)"
             )
             self._state.ringing = False
             self._save_state()
-            self._recover_pending = True
-        if self._ringer is not None and self._state.saved_tv_volume is not None:
-            # A TV ring was interrupted by the restart: stop any
-            # lingering page ring and restore the TV volume. (The
-            # box-side recovery also runs; it is a no-op for a TV
-            # ring because saved_volume was never set.)
-            saved_tv = self._state.saved_tv_volume
-            self._state.saved_tv_volume = None
-            self._save_state()
-            asyncio.create_task(
-                self._ringer.recover(saved_tv), name="lyra-alarm-tv-recover"
-            )
         if self._tone_bytes is None:
             self.validate_assets()
-        self._http.add_route(self._cfg.tone_url_path, self._serve_tone)
         self._http.add_route(self._cfg.kill_url_path, self._serve_kill)
         self._task = asyncio.create_task(self._run(), name="lyra-alarm")
         if self._flasher is not None:
@@ -768,18 +716,21 @@ class Alarm:
                 if self._tone_bytes is not None
                 else "MISSING -- alarm degraded"
             ),
-            self.tone_url(),
+            self._cfg.tone_path,
         )
 
     async def stop(self) -> None:
-        for task in (self._task, self._hard_stop_task, self._note_task,
-                     self._ring_watchdog_task):
+        for task in (self._task, self._hard_stop_task, self._note_task):
             if task is not None:
                 task.cancel()
         self._task = None
         self._hard_stop_task = None
         self._note_task = None
-        self._ring_watchdog_task = None
+        if self._ringer is not None:
+            try:
+                await self._ringer.stop()
+            except Exception:
+                _LOGGER.exception("alarm: sounder stop failed")
         if self._flasher is not None:
             self._flasher.halt()
 
@@ -799,33 +750,10 @@ class Alarm:
         now = self._now()
         st = self._state
         if st.ringing:
-            if self._ring_via_tv:
-                # The TV watchdog minds this ring; the box is not
-                # involved and its state means nothing here.
-                return
-            # Ring-state recovery (item G): if the box drops mid-ring
-            # the ring cannot be watched; when the box comes back,
-            # conclude the ring cleanly (stop + restore the saved
-            # volume) instead of letting it hang until the hard stop.
-            box = self._box_getter()
-            connected = box is not None and box.is_connected
-            if connected and self._ring_box_lost:
-                self._ring_box_lost = False
-                await self._end_ring("box_reconnected")
-                return
-            if not connected:
-                if not self._ring_box_lost:
-                    self._ring_box_lost = True
-                    _LOGGER.warning(
-                        "alarm: box disconnected mid-ring; the ring "
-                        "will be concluded (volume restored) when "
-                        "the box reconnects, or by the hard stop"
-                    )
-                return
-            self._watch_playback()
+            # The sounder minds itself (its monitor keeps the tone
+            # playing); the ring ends via kill, snooze, or the
+            # hard-stop task.
             return
-        if self._recover_pending:
-            self._run_recovery()
         if st.snooze_until is not None:
             if now.timestamp() >= st.snooze_until:
                 overdue = now.timestamp() - st.snooze_until
@@ -844,63 +772,6 @@ class Alarm:
         if action:
             await self.fire(reason=action)
 
-    def _run_recovery(self) -> None:
-        """Interrupted-ring recovery (item G): runs on a tick once
-        the box is reachable again after a ring was cut short (core
-        restart mid-ring, or a ring that ended while the box was
-        gone). Stops any lingering tone playback and restores the
-        persisted pre-ring volume. One-shot: clears itself once the
-        box is reachable, whether or not a volume was saved."""
-        box = self._box_getter()
-        if box is None or not box.is_connected:
-            return
-        self._recover_pending = False
-        try:
-            box.media_stop()
-        except Exception as exc:
-            _LOGGER.error("alarm recovery: box stop failed: %s", exc)
-        saved = self._state.saved_volume
-        if saved is not None:
-            try:
-                box.media_set_volume(saved)
-            except Exception as exc:
-                # Keep the saved value and re-queue: discarding it
-                # here would strand the box at ring volume with no
-                # retry (Codex recheck 2026-11-11).
-                _LOGGER.error(
-                    "alarm recovery: volume restore to %s failed "
-                    "(%s); saved value kept, recovery re-queued",
-                    saved, exc,
-                )
-                self._recover_pending = True
-                return
-            self._state.saved_volume = None
-            self._save_state()
-        _LOGGER.info(
-            "alarm: interrupted-ring recovery done (playback "
-            "stopped, volume restored to %s)",
-            saved,
-        )
-
-    def _watch_playback(self) -> None:
-        """If the tone finished on its own before the hard stop, end
-        the ring (restore volume) instead of waiting out the timer."""
-        box = self._box_getter()
-        if box is None or not box.is_connected:
-            return
-        ms = box.media_state
-        if ms == MediaPlayerState.PLAYING:
-            self._saw_playing = True
-        elif self._saw_playing and ms in (
-            MediaPlayerState.IDLE,
-            MediaPlayerState.OFF,
-            MediaPlayerState.NONE,
-        ):
-            self._saw_playing = False
-            asyncio.get_running_loop().create_task(
-                self._end_ring("playback_ended")
-            )
-
     # -- firing -------------------------------------------------------------------
 
     def _note(self, event: str, **fields) -> None:
@@ -915,10 +786,8 @@ class Alarm:
             return False
         self._note("alarm_fire", reason=reason)
         now = self._now()
-        self._recover_pending = False  # a fresh ring supersedes recovery
-        self._ring_box_lost = False
         # (a) Light ON at 100%, readback-verified. It stays on after
-        # the ring — the morning routine is alarm -> light -> stop.
+        # the ring -- the morning routine is alarm -> light -> stop.
         try:
             status = await self._light.set_on(100)
             if status.get("output") is True and int(status.get("brightness", -1)) == 100:
@@ -927,28 +796,29 @@ class Alarm:
                 _LOGGER.error("alarm: light readback mismatch: %r", status)
         except Exception as exc:
             _LOGGER.error("alarm: light RPC failed (%s); ring continues", exc)
-        # (b-tv) TV sounder (2026-11-15): with a ringer wired, the
-        # ring sounds through the TV and the box is not required.
-        # A start failure falls through to the box path below --
-        # before any ring state is entered, exactly like a box miss.
-        if self._ringer is not None:
-            if await self._fire_tv(reason=reason):
-                return True
+        # (b) Sound the tone BEFORE the ring state is entered
+        # (item I): the persisted state must never claim a ring
+        # that cannot sound. The sounder is the core's own player
+        # on Fedora's default sink, and the ring loudness is the
+        # playback stream's volume -- no device volume is read or
+        # written, and there is no fallback path left to swap to.
+        # A missing tone asset (validate_assets) still degrades
+        # to a light-only ring rather than a miss.
+        sounded = False
+        if self._tone_bytes is None:
             _LOGGER.error(
-                "alarm: TV ring could not start; falling back to "
-                "the speaker box"
+                "alarm: tone asset missing; this ring is light-only "
+                "(see validate_assets)"
             )
-        # (b) The box must be reachable BEFORE the ring state is
-        # entered (item I): the persisted state must never claim a
-        # ring that cannot sound. A bounded wait covers the catch-up
-        # race (a core restart lands the fire seconds before the
-        # supervisor's box reconnect finishes). A truly absent box
-        # means a MISSED alarm: the slot is consumed exactly as a
-        # fired one (no all-morning retries), the miss is logged
-        # loudly, ringing is never set -- and the light from step
-        # (a) still came on, which is half the wake-up.
-        box = await self._wait_for_box()
-        if box is None:
+        elif self._ringer is None:
+            _LOGGER.error(
+                "alarm: no sounder wired; this ring is light-only"
+            )
+        elif not await self._ringer.start(st.ring_volume):
+            # MISSED (the pre-2026-11-19 box-miss semantics): the
+            # slot is consumed exactly as a fired one (no
+            # all-morning retries), ringing is never set, and the
+            # light from step (a) still came on -- half the wake-up.
             if reason != "snooze":
                 slot = _local_slot(now.date(), _parse_hhmm(st.time), self._tz)
                 st.last_fired_slot = slot.date().isoformat()
@@ -957,16 +827,15 @@ class Alarm:
             st.snooze_until = None
             self._save_state()
             _LOGGER.error(
-                "alarm MISSED (reason=%s): box not connected; the "
-                "light is on but no tone can play and no ring state "
-                "was entered",
+                "alarm MISSED (reason=%s): the default-sink player "
+                "could not start; the light is on but no tone can "
+                "play and no ring state was entered",
                 reason,
             )
             return False
-        # (c) Enter the ring and persist it, THEN hand off the tone:
-        # volume saved (in memory AND in the persisted state, so a
-        # mid-ring restart can still restore it -- item G) -> set
-        # the ring volume -> play the tone from our endpoint.
+        else:
+            sounded = True
+        # (c) Enter the ring state and persist it.
         st.ringing = True
         if reason != "snooze":
             slot = _local_slot(now.date(), _parse_hhmm(st.time), self._tz)
@@ -974,28 +843,12 @@ class Alarm:
         st.snooze_until = None
         if st.repeat == "Once":
             st.enabled = False
-        self._saved_volume = box.media_volume
-        if isinstance(self._saved_volume, (int, float)):
-            st.saved_volume = float(self._saved_volume)
         self._save_state()
-        self._saw_playing = False
         _LOGGER.info(
-            "alarm FIRING (reason=%s) time=%s repeat=%s", reason, st.time, st.repeat
+            "alarm FIRING (reason=%s) time=%s repeat=%s; sounder: %s",
+            reason, st.time, st.repeat,
+            "default sink" if sounded else "light-only",
         )
-        if self._tone_bytes is None:
-            _LOGGER.error(
-                "alarm: tone asset missing; this ring is light-only "
-                "(see validate_assets)"
-            )
-        _LOGGER.info(
-            "alarm: box volume saved=%s -> ring volume %s",
-            self._saved_volume, st.ring_volume,
-        )
-        try:
-            box.media_set_volume(st.ring_volume)
-            box.media_play(self.tone_url())
-        except Exception as exc:
-            _LOGGER.error("alarm: box playback start failed: %s", exc)
         # (d) 15-minute hard stop.
         self._hard_stop_task = asyncio.create_task(
             self._hard_stop(), name="lyra-alarm-hardstop"
@@ -1007,195 +860,15 @@ class Alarm:
             await self._flasher.start()
         return True
 
-    async def _fire_tv(self, *, reason: str) -> bool:
-        """Fire the ring through the TV sounder. The ringer starts
-        BEFORE the ring state is entered (its readiness checks are
-        the TV path's version of the box wait): on False nothing was
-        persisted and the caller falls back to the box."""
-        st = self._state
-        if not await self._ringer.start(st.ring_volume):
-            return False
-        now = self._now()
-        st.ringing = True
-        if reason != "snooze":
-            slot = _local_slot(now.date(), _parse_hhmm(st.time), self._tz)
-            st.last_fired_slot = slot.date().isoformat()
-        st.snooze_until = None
-        if st.repeat == "Once":
-            st.enabled = False
-        st.saved_tv_volume = self._ringer.saved_tv_volume
-        self._save_state()
-        self._ring_via_tv = True
-        self._tv_ack_seen = False
-        _LOGGER.info(
-            "alarm FIRING via TV (reason=%s) time=%s repeat=%s; "
-            "TV volume saved=%s -> ring volume %s",
-            reason, st.time, st.repeat, st.saved_tv_volume, st.ring_volume,
-        )
-        # 15-minute hard stop, same as the box path.
-        self._hard_stop_task = asyncio.create_task(
-            self._hard_stop(), name="lyra-alarm-hardstop"
-        )
-        self._ring_watchdog_task = asyncio.create_task(
-            self._ring_watchdog(), name="lyra-alarm-tv-watchdog"
-        )
-        if self._flasher is not None:
-            await self._flasher.start()
-        return True
-
-    async def _ring_watchdog(self) -> None:
-        """Mind a TV ring: the page must keep acking that it is
-        sounding. No ack within 45 s of the fire -- or acks stale
-        for 30 s mid-ring -- means the TV path failed silently:
-        swap the ring to the box so the alarm still sounds."""
-        loop = asyncio.get_running_loop()
-        last_fresh = loop.time()
-        while self._state.ringing and self._ring_via_tv:
-            await asyncio.sleep(5.0)
-            if not (self._state.ringing and self._ring_via_tv):
-                return
-            age = await self._ringer.ack_age()
-            if age is not None and age < 10.0:
-                self._tv_ack_seen = True
-                last_fresh = loop.time()
-                continue
-            limit = 30.0 if self._tv_ack_seen else 45.0
-            if loop.time() - last_fresh >= limit:
-                _LOGGER.error(
-                    "alarm: TV ring is not sounding (last ack %s, "
-                    "ack_seen=%s); swapping the ring to the box",
-                    f"{age:.0f}s ago" if age is not None else "never",
-                    self._tv_ack_seen,
-                )
-                await self._swap_ring_to_box()
-                return
-
-    async def _swap_ring_to_box(self) -> None:
-        """Mid-ring fallback: stop the TV ring and sound the rest
-        of the ring on the box (the pre-2026-11-15 path)."""
-        self._ring_via_tv = False
-        if self._ringer is not None:
-            await self._ringer.stop()
-        if self._state.saved_tv_volume is not None:
-            self._state.saved_tv_volume = None
-            self._save_state()
-        box = await self._wait_for_box()
-        if box is None:
-            _LOGGER.error(
-                "alarm: TV ring failed AND the box is unreachable; "
-                "the ring continues light-only until the hard stop"
-            )
-            return
-        self._saved_volume = box.media_volume
-        if isinstance(self._saved_volume, (int, float)):
-            self._state.saved_volume = float(self._saved_volume)
-            self._save_state()
-        self._saw_playing = False
-        _LOGGER.info(
-            "alarm: ring swapped to the box (volume saved=%s -> %s)",
-            self._saved_volume, self._state.ring_volume,
-        )
-        try:
-            box.media_set_volume(self._state.ring_volume)
-            box.media_play(self.tone_url())
-        except Exception as exc:
-            _LOGGER.error("alarm: box fallback playback failed: %s", exc)
-
-    async def _stop_tv_ring(self) -> None:
-        """End a TV ring: cancel the watchdog, stop the page ring
-        and restore the TV volume. Flags _stop_playback that the
-        box side has nothing to do."""
-        task = self._ring_watchdog_task
-        if task is not None and task is not asyncio.current_task():
-            task.cancel()
-        self._ring_watchdog_task = None
-        self._ring_via_tv = False
-        self._tv_ring_handled = True
-        if self._ringer is not None:
-            await self._ringer.stop()
-        if self._state.saved_tv_volume is not None:
-            self._state.saved_tv_volume = None
-            self._save_state()
-        _LOGGER.info("alarm: TV ring stopped; TV volume restored")
-
-    async def _wait_for_box(self) -> LocalMicClient | None:
-        """Poll the box getter for up to self._box_wait_s: long
-        enough for a supervisor reconnect racing a catch-up fire to
-        land, short enough that a genuinely absent box misses
-        honestly instead of hanging the scheduler."""
-        deadline = asyncio.get_running_loop().time() + self._box_wait_s
-        while True:
-            box = self._box_getter()
-            if box is not None and box.is_connected:
-                return box
-            if asyncio.get_running_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(1.0)
-
     async def _hard_stop(self) -> None:
         await asyncio.sleep(self._cfg.hard_stop_s)
         await self._end_ring("hard_stop")
-
-    def _stop_playback(self) -> None:
-        """Stop the tone and restore the saved volume (light untouched).
-
-        If the box is unreachable the restore cannot happen now:
-        the persisted saved volume stays in place and recovery is
-        queued, so the next box connect restores it (item G) --
-        the box holds its volume in NVS across a disconnect, so
-        leaving it at ring volume would strand it loud."""
-        if self._tv_ring_handled:
-            # A TV ring was already stopped by _stop_tv_ring; the
-            # box never played and its volume was never touched.
-            self._tv_ring_handled = False
-            self._saved_volume = None
-            return
-        box = self._box_getter()
-        if box is not None and box.is_connected:
-            try:
-                box.media_stop()
-            except Exception as exc:
-                _LOGGER.error("alarm: box stop failed: %s", exc)
-            restored = self._saved_volume is None
-            if self._saved_volume is not None:
-                try:
-                    box.media_set_volume(self._saved_volume)
-                    restored = True
-                except Exception as exc:
-                    _LOGGER.error("alarm: volume restore failed: %s", exc)
-            if restored:
-                if self._state.saved_volume is not None:
-                    self._state.saved_volume = None
-                    self._save_state()
-                _LOGGER.info(
-                    "alarm: playback stopped; volume restored to %s",
-                    self._saved_volume,
-                )
-            else:
-                # Keep the persisted value and queue recovery: a
-                # failed restore must not strand the box at ring
-                # volume with no retry (Codex recheck 2026-11-11).
-                self._recover_pending = True
-                _LOGGER.warning(
-                    "alarm: volume restore to %s failed; deferred "
-                    "to interrupted-ring recovery",
-                    self._saved_volume,
-                )
-        elif self._saved_volume is not None:
-            self._recover_pending = True
-            _LOGGER.warning(
-                "alarm: box unreachable at ring end; volume restore "
-                "to %s deferred until the box reconnects",
-                self._saved_volume,
-            )
-        self._saved_volume = None
 
     async def _end_ring(self, reason: str) -> None:
         st = self._state
         if not st.ringing:
             return
         st.ringing = False
-        self._ring_box_lost = False
         self._save_state()
         task = self._hard_stop_task
         if task is not None and task is not asyncio.current_task():
@@ -1203,9 +876,8 @@ class Alarm:
         self._hard_stop_task = None
         if self._flasher is not None:
             await self._flasher.stop()
-        if self._ring_via_tv:
-            await self._stop_tv_ring()
-        self._stop_playback()
+        if self._ringer is not None:
+            await self._ringer.stop()
         _LOGGER.info("alarm ring ended (%s); light stays on", reason)
 
     # -- the matcher's surface -----------------------------------------------------
@@ -1219,7 +891,7 @@ class Alarm:
         purpose -- a kill press during the snooze window is the
         user changing their mind, not a stray press):
 
-        - Ringing: end the ring (stop playback, restore volume).
+        - Ringing: end the ring (stop playback).
         - Not ringing, snooze pending: cancel the refire. Clearing
           snooze_until is final -- the scheduler refires off that
           field alone -- and is persisted before returning.
@@ -1256,15 +928,16 @@ class Alarm:
 
     # -- morning note -------------------------------------------------------
 
-    def set_tv_ringer(self, ringer) -> None:
-        """Wire the TV sounder (composition, 2026-11-15). With a
-        ringer set, rings sound through the TV and the box path is
-        the fallback; without one, rings are box-only (benches)."""
+    def set_ringer(self, ringer) -> None:
+        """Wire the default-sink sounder (composition, 2026-11-19).
+        With a ringer set, rings sound through Fedora's default
+        sink at the ring volume (the playback stream's own gain);
+        without one, rings are light-only (benches)."""
         self._ringer = ringer
 
     def set_note_speaker(self, speaker) -> None:
         """Wire the composition's speak-a-line path (its announce
-        composition: text in, speech out of the box)."""
+        composition: text in, speech out)."""
         self._note_speaker = speaker
 
     def morning_note(self) -> dict:
@@ -1327,9 +1000,7 @@ class Alarm:
 
     async def _speak_morning_note(self, note: str) -> None:
         # A beat after the ring stops: lets the kill's own spoken
-        # confirmation (the voice-kill path) finish first, and
-        # gives the volume restore a moment to land so the note
-        # speaks at everyday volume.
+        # confirmation (the voice-kill path) finish first.
         try:
             await asyncio.sleep(2.0)
             await self._note_speaker(note)
@@ -1352,9 +1023,8 @@ class Alarm:
         self._hard_stop_task = None
         if self._flasher is not None:
             await self._flasher.stop()
-        if self._ring_via_tv:
-            await self._stop_tv_ring()
-        self._stop_playback()
+        if self._ringer is not None:
+            await self._ringer.stop()
         st.snooze_until = self._now().timestamp() + self._cfg.snooze_s
         self._save_state()
         refire = datetime.fromtimestamp(st.snooze_until, self._tz)
@@ -1382,9 +1052,9 @@ class Alarm:
         return self.summary()
 
     def set_ring_volume(self, volume: float) -> dict:
-        """Store the volume the box rings at (0.0-1.0). The fire
-        sequence saves the current box volume, sets this for the
-        ring, and restores the saved volume at ring end."""
+        """Store the ring loudness (0.0-1.0). At fire time it
+        becomes the playback stream's volume on the default sink;
+        no device volume is ever read or written."""
         v = float(volume)
         if not 0.0 <= v <= 1.0:
             raise ValueError(f"ring volume out of range 0.0-1.0: {volume!r}")
@@ -1394,11 +1064,6 @@ class Alarm:
         return self.summary()
 
     # -- HTTP routes (registered on the core's audio endpoint) ---------------------
-
-    def _serve_tone(self, query: dict) -> tuple[int, str, bytes]:
-        if self._tone_bytes is None:
-            return 503, "text/plain", b"tone not loaded\n"
-        return 200, "audio/opus", self._tone_bytes
 
     def _serve_kill(self, query: dict) -> tuple[int, str, bytes]:
         supplied = (query.get("t") or [None])[0]

@@ -1,23 +1,26 @@
 """Alarm fire-path dry run (Phase 3 bench). NO real hardware:
 
-- The box is a FakeBox recording every media call; the fire sequence
-  must be exactly: light on(100) + readback -> volume read -> volume
-  set 1.0 -> play tone URL -> [kill] -> stop -> volume restore 0.6,
-  with the light never touched again (it stays on).
-- The light is a FakeLight standing in for the Shelly RPC (the real
-  RPC path gets its own one-shot round-trip proof separately).
-- State/secrets live in a temp dir; the production state file, the
-  real box and the real light are never touched. No audio is played.
+- The sounder is a FakeRinger recording every call; the fire
+  sequence must be exactly: light on(100) + readback ->
+  ringer.start(ring volume) -> [kill] -> ringer.stop, with the
+  light never touched again (it stays on) and NO volume
+  save/restore anywhere (2026-11-19: the ring volume is the
+  playback stream's own gain; there is no device volume here).
+- The light is a FakeLight standing in for the Shelly RPC (the
+  real RPC path gets its own one-shot round-trip proof
+  separately).
+- State/secrets live in a temp dir; the production state file
+  and the real light are never touched. No audio is played
+  (the FakeRinger only records).
 
-Also covered: the 15-minute hard stop (asserted as the configured
-constant, then exercised at a compressed 0.3 s), snooze (stops the
-ring, restores volume, refires via the scheduler tick), and Once
-(fires, then disables itself in the persisted state).
+Also covered: the 15-minute hard stop (asserted as the config
+constant, then exercised at a compressed 0.3 s), snooze (stops
+the ring, refires via the scheduler tick), and Once (fires,
+then disables itself in the persisted state).
 
-Run:  python -m lyra_core.alarm_bench
+Run: python -m lyra_core.alarm_bench
 """
 from __future__ import annotations
-
 import asyncio
 import dataclasses
 import json
@@ -50,27 +53,19 @@ class FakeLight:
         return {"output": False}
 
 
-class FakeBox:
+class FakeRinger:
+    """The default-sink sounder's bench double: records start
+    (with the ring volume it was handed) and stop."""
+
     def __init__(self, calls: list) -> None:
         self._calls = calls
-        self._volume = 0.6
-        self.is_connected = True
-        self.media_state = None
 
-    @property
-    def media_volume(self) -> float:
-        self._calls.append(("box.volume_read", self._volume))
-        return self._volume
+    async def start(self, ring_volume: float) -> bool:
+        self._calls.append(("ringer.start", ring_volume))
+        return True
 
-    def media_set_volume(self, volume: float) -> None:
-        self._calls.append(("box.set_volume", volume))
-        self._volume = volume
-
-    def media_play(self, url: str) -> None:
-        self._calls.append(("box.play", url))
-
-    def media_stop(self) -> None:
-        self._calls.append(("box.stop",))
+    async def stop(self) -> None:
+        self._calls.append(("ringer.stop",))
 
 
 def make_alarm(tmp: str, calls: list, **alarm_overrides) -> Alarm:
@@ -79,18 +74,23 @@ def make_alarm(tmp: str, calls: list, **alarm_overrides) -> Alarm:
         cfg.alarm,
         state_path=f"{tmp}/state.json",
         secrets_path=f"{tmp}/secrets.json",
+        button_host="",
         **alarm_overrides,
     )
     cfg = dataclasses.replace(cfg, alarm=alarm_cfg)
     http = AudioHttpServer("127.0.0.1", 0)
-    box = FakeBox(calls)
-    alarm = Alarm(cfg, box_getter=lambda: box, http=http)
+    alarm = Alarm(cfg, http=http)
+    alarm.set_ringer(FakeRinger(calls))
     alarm._light = FakeLight(calls)  # type: ignore[assignment]
+    alarm._flasher = None
+    # The real tone asset stands in for validate_assets' load:
+    # fire() takes the sounding path only when the tone loaded.
+    assert alarm.validate_assets(), "tone asset must load for the bench"
     return alarm
 
 
 async def amain() -> None:
-    # --- Part 1: fire -> kill, exact call sequence ---------------------
+    # ---- Part 1: fire -> kill, exact call sequence -------------
     with tempfile.TemporaryDirectory() as tmp:
         calls: list = []
         alarm = make_alarm(tmp, calls)
@@ -102,30 +102,30 @@ async def amain() -> None:
             names = [c[0] for c in calls]
             assert names == [
                 "light.set_on", "light.readback",
-                "box.volume_read", "box.set_volume", "box.play",
+                "ringer.start",
             ], names
             assert calls[0] == ("light.set_on", 100)
-            assert calls[2] == ("box.volume_read", 0.6)
-            assert calls[3] == ("box.set_volume", 1.0)
-            assert calls[4][1].endswith("/alarm/tone.opus"), calls[4]
-            print("[ok] fire sequence: light 100% -> vol read 0.6 -> "
-                  "vol 1.0 -> play tone URL")
+            assert calls[2] == ("ringer.start", 1.0), calls[2]
+            print("[ok] fire sequence: light 100% -> ringer.start(1.0); "
+                  "no volume save/restore anywhere")
             result = await alarm.kill()
-            assert result == {"ok": True, "was_ringing": True,
-                              "snooze_cleared": False}
+            assert result["ok"] is True and result["was_ringing"] is True
+            assert result["snooze_cleared"] is False
+            assert result["morning_note"] is None
             names = [c[0] for c in calls]
-            assert names[5:] == ["box.stop", "box.set_volume"], names
-            assert calls[6] == ("box.set_volume", 0.6)
+            assert names[3:] == ["ringer.stop"], names
             assert "light.set_off" not in names, "light must stay on"
-            print("[ok] kill: stop -> volume restored 0.6; light untouched")
+            print("[ok] kill: ringer stopped; light untouched")
             persisted = json.loads(Path(f"{tmp}/state.json").read_text())
             assert persisted["ringing"] is False
             assert persisted["last_fired_slot"] is not None
+            assert "saved_volume" not in persisted
+            assert "saved_tv_volume" not in persisted
             print(f"[ok] persisted after kill: {persisted}")
         finally:
             await alarm.stop()
 
-    # --- Part 2: hard stop ends the ring by itself ----------------------
+    # ---- Part 2: hard stop ends the ring by itself -------------
     with tempfile.TemporaryDirectory() as tmp:
         calls = []
         alarm = make_alarm(tmp, calls, hard_stop_s=0.3)
@@ -136,12 +136,12 @@ async def amain() -> None:
             await asyncio.sleep(0.7)
             assert alarm._state.ringing is False, "hard stop did not end ring"
             names = [c[0] for c in calls]
-            assert names[-2:] == ["box.stop", "box.set_volume"], names
-            print("[ok] hard stop (compressed 0.3 s) ended ring + restored volume")
+            assert names[-1] == "ringer.stop", names
+            print("[ok] hard stop (compressed 0.3 s) ended the ring")
         finally:
             await alarm.stop()
 
-    # --- Part 3: snooze stops, restores, refires via tick ----------------
+    # ---- Part 3: snooze stops, refires via tick -----------------
     with tempfile.TemporaryDirectory() as tmp:
         calls = []
         alarm = make_alarm(tmp, calls)
@@ -154,20 +154,20 @@ async def amain() -> None:
             delta = alarm._state.snooze_until - before
             assert 535 <= delta <= 545, delta  # 9 min = 540 s
             assert alarm._state.ringing is False
-            plays = [c for c in calls if c[0] == "box.play"]
-            assert len(plays) == 1
+            starts = [c for c in calls if c[0] == "ringer.start"]
+            assert len(starts) == 1
             print(f"[ok] snooze: ring stopped, refire in {delta:.0f} s (9 min)")
             alarm._state.snooze_until = time.time() - 1  # due now
             await alarm._tick()
-            plays = [c for c in calls if c[0] == "box.play"]
-            assert len(plays) == 2, "snooze refire did not happen"
+            starts = [c for c in calls if c[0] == "ringer.start"]
+            assert len(starts) == 2, "snooze refire did not happen"
             assert alarm._state.ringing is True
-            print("[ok] snooze refire via scheduler tick: second play issued")
+            print("[ok] snooze refire via scheduler tick: second start issued")
             await alarm.kill()
         finally:
             await alarm.stop()
 
-    # --- Part 4: Once fires, then disables itself --------------------------
+    # ---- Part 4: Once fires, then disables itself ---------------
     with tempfile.TemporaryDirectory() as tmp:
         calls = []
         alarm = make_alarm(tmp, calls)

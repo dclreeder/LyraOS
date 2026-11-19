@@ -81,7 +81,7 @@ async def amain() -> int:
         cfg = CoreConfig.load()
         cfg.alarm.state_path = str(tmp / "alarm_state.json")
         cfg.alarm.secrets_path = str(tmp / "alarm_secrets.json")
-        alarm = Alarm(cfg, box_getter=lambda: None, http=http)
+        alarm = Alarm(cfg, http=http)
         announced: list[str] = []
 
         async def fake_announce(text: str) -> None:

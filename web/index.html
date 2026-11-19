@@ -27,7 +27,7 @@
 <script>
 // Lyra state channel (2026-11-18): lyra-web pushes the full page
 // state over SSE (GET /status) -- status light, room layers, dim,
-// ring, next-alarm, mode -- and speech jobs as events on the same
+// next-alarm, mode -- and speech jobs as events on the same
 // socket. This page renders from pushes ONLY (Daniel's
 // state-delivery rule); there are no state polling loops left.
 // The one fetch that remains is a one-shot /latest.json resync
@@ -238,34 +238,6 @@ window._lyra.onState((s) => {
   if (typeof s.dim === 'number')
     document.getElementById('dimveil').style.opacity = (1 - s.dim).toFixed(3);
 });
-</script><script>
-// Alarm ring (2026-11-15): the TV is the alarm's sounder now. When the
-// core fires, lyra-web flags /ring; this page loops the alarm tone and
-// acks while it is actually sounding, so the core knows the ring is
-// live (and swaps to the speaker box if the acks never come). The page
-// self-caps at 16 min; the core's own hard stop ends a ring at 15.
-let ringEl = null, ringOn = false, ringSince = 0, ringAckTimer = null;
-function ringAck(){ fetch('/ring/ack', {method: 'POST'}).catch(() => {}); }
-function ringStop(){ if (ringEl) ringEl.pause(); ringOn = false; if (ringAckTimer) { clearInterval(ringAckTimer); ringAckTimer = null; } }
-// Ring state arrives on the pushed state channel; the tone
-// starts/stops on transitions. While it sounds, the page still
-// acks every 3 s (the core's live-ring proof) and self-caps at
-// 16 min -- that loop runs only during a ring and carries no
-// state.
-async function ringUpdate(ringing){
-  if (ringing && !ringOn) {
-    if (!ringEl) { ringEl = new Audio('/assets/alarm-tone.opus'); ringEl.loop = true; }
-    try {
-      await ringEl.play();
-      ringOn = true; ringSince = Date.now(); ringAck();
-      ringAckTimer = setInterval(() => {
-        if (!ringEl.paused) ringAck();
-        if (Date.now() - ringSince > 16 * 60 * 1000) ringStop();
-      }, 3000);
-    } catch (e) {}
-  } else if (!ringing && ringOn) ringStop();
-}
-window._lyra.onState((s) => { ringUpdate(!!(s.ring && s.ring.ringing)); });
 </script><script>
 // Room window day/night (2026-11-15): the painted room's window
 // shows a day sky between sunrise and sunset (Jacksonville, computed

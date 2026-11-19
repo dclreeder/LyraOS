@@ -52,7 +52,6 @@ class AlarmConfig:
     state_path: str = "~/Documents/LyraOS/core/alarm_state.json"
     secrets_path: str = "~/Documents/LyraOS/core/alarm_secrets.json"
     tone_path: str = "~/Documents/LyraOS/data/assets/alarm_homepod_15min.opus"
-    tone_url_path: str = "/alarm/tone.opus"
     kill_url_path: str = "/alarm/kill"
     light_host: str = "192.168.12.204"
     light_id: int = 0

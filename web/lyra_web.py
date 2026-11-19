@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lyra web viewer server: static pages, /mirror speech jobs, /ring, /dim, and the /rtc/offer signaling proxy."""
+"""Lyra web viewer server: static pages, /mirror speech jobs, /dim, and the /rtc/offer signaling proxy."""
 import base64, json, os, queue, sys, threading, time, urllib.request, urllib.error, urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.path.expanduser('~/Documents/LyraOS/web')
@@ -85,25 +85,6 @@ def set_dim(b):
     b = max(0.0, min(1.0, float(b)))
     with open(DIM_PATH, 'w') as f: json.dump({'brightness': b}, f)
     return b
-# Alarm ring (2026-11-15): the core's TvRinger POSTs /ring to start/stop;
-# the page polls GET /ring, loops assets/alarm-tone.opus while ringing and
-# POSTs /ring/ack while actually sounding, so the core can tell a live
-# ring from a dead page. State persists across a lyra-web restart, but a
-# ring older than 20 min is stale (the core's hard stop is 15) and is
-# dropped on read.
-RING_PATH = os.path.join(ROOT, 'ring_state.json')
-_last_ack = [0.0]
-def get_ring():
-    try:
-        with open(RING_PATH) as f: st = json.load(f)
-    except Exception: st = {'ringing': False, 'since': 0}
-    if st.get('ringing') and time.time() - float(st.get('since') or 0) > 1200:
-        st = {'ringing': False, 'since': 0}
-    age = (time.time() - _last_ack[0]) if _last_ack[0] else None
-    return {'ringing': bool(st.get('ringing')), 'since': st.get('since'), 'ack_age_s': age}
-def set_ring(on):
-    with open(RING_PATH, 'w') as f: json.dump({'ringing': bool(on), 'since': time.time()}, f)
-    return get_ring()
 def _write_job(wav, silent):
     """One speech job = one file (2026-11-15): streamed replies land
     as several jobs seconds apart and the page plays them from a
@@ -128,7 +109,7 @@ def _write_job(wav, silent):
 # light state, mode, activity, dependency health) to POST
 # /statuspush on every change plus a 15 s heartbeat; this server
 # merges it with its own slice (room light, display,
-# RTC peer fact, dim, ring, next-alarm line -- the
+# RTC peer fact, dim, next-alarm line -- the
 # state files and cached core reads it already owns) and fans the
 # merged state out to the pages over SSE at GET /status. Speech
 # jobs are events on the same channel (see _write_job). Pages
@@ -199,7 +180,6 @@ def _merged_state():
         'display_on': display_on,
         'rtc_connected': get_rtc_connected(),
         'dim': get_dim(),
-        'ring': {'ringing': bool(get_ring().get('ringing'))},
         'alarm': _alarm_cached(),
     }
 
@@ -270,7 +250,6 @@ class H(SimpleHTTPRequestHandler):
             try: return self._json(200, alarm_summary())
             except Exception as e: return self._json(502, {'error': str(e)})
         if u.path == '/dim': return self._json(200, {'brightness': get_dim()})
-        if u.path == '/ring': return self._json(200, get_ring())
         return super().do_GET()
     def do_POST(self):
         if self.path == '/statuspush':
@@ -291,14 +270,6 @@ class H(SimpleHTTPRequestHandler):
                 try: return self._json(e.code, json.loads(e.read()))
                 except Exception: return self._json(e.code, {'error': 'core error'})
             except Exception as e: return self._json(502, {'error': str(e)})
-        if self.path == '/ring/ack':
-            _last_ack[0] = time.time()
-            return self._json(200, {'ok': True})
-        if self.path == '/ring':
-            try:
-                req = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
-                return self._json(200, {'ok': True, **set_ring(bool(req.get('ringing')))})
-            except Exception as e: return self._json(500, {'error': str(e)})
         if self.path == '/mirror':
             try:
                 wav = self.rfile.read(int(self.headers.get('Content-Length') or 0))
