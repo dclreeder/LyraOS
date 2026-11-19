@@ -5,14 +5,17 @@ This client fills the client seat VoiceSession and the alarm were
 built against (the surface the old box clients exposed) -- but
 there is no satellite hardware anywhere in the path:
 
-- Ears: a PipeWire capture (parecord) of Fedora's DEFAULT audio
-  source, requested with no device pin, so WirePlumber routes it
-  to whatever the default source is and follows the default when
-  it changes (a USB headset today; the ReSpeaker board, if it ever
-  returns as a plain USB capture device, tomorrow -- it would
-  just be another Fedora source). Audio reaches the session in
-  the pipeline's contract format -- 16 kHz / 16-bit / mono -- in
-  20 ms chunks, the shape the box's frames arrive in.
+- Ears: a PipeWire capture (parecord) of the RAW ReSpeaker
+  source, pinned by node name (see RAW_SOURCE below). This is a
+  deliberate exception to the follow-the-default rule, ordered
+  2026-11-19: Fedora's default source is the echo-cancelled
+  feed, and the canceller's residual-echo suppressor
+  intermittently gates the wake phrase on it, breaking this
+  session's transcript-verify. WakeGate hears raw; the
+  echo-cancelled feed stays the default source for everything
+  else. Audio reaches the session in the pipeline's contract
+  format -- 16 kHz / 16-bit / mono -- in 20 ms chunks, the
+  shape the box's frames arrive in.
 - Voice: nothing plays into a microphone. Her replies already
   leave through synthesize_speech's TV mirror, which follows
   Fedora's default sink, so every evt_* method is a no-op here,
@@ -57,11 +60,23 @@ StopCallback = Callable[[bool], Awaitable[None]]
 RATE, WIDTH, CHANNELS = 16000, 2, 1
 CHUNK_BYTES = RATE * WIDTH * CHANNELS * 20 // 1000  # 20 ms per chunk
 
-# No --device on purpose: parecord then records from Fedora's
-# default source, and WirePlumber moves the stream when the
-# default changes -- the OS is the router (Daniel's rule,
-# 2026-11-16). --raw with NO file argument writes headerless
-# s16le PCM to stdout (a "-" argument would be a literal file).
+# --device pins the capture to the raw ReSpeaker source
+# (2026-11-19, Daniel's order -- the feed split). This capture
+# is WakeGate's only ears: the wake gate, the transcript-verify
+# and the command STT all consume this one stream. On the
+# echo-cancelled feed (Fedora's default source) the WebRTC
+# canceller's residual-echo suppressor intermittently mutes the
+# wake phrase mid-phrase when it loses sync between the HDMI
+# playback reference and this USB mic, and verify dropped live
+# attempts as a ~50% coin flip; the raw feed passed verify
+# cleanly for months before the AEC existed. Do not "fix" this
+# back to the default source -- the pin is the fix. The
+# echo-cancelled feed remains the default source for every
+# other consumer (RTC, the call page), and output still follows
+# the default sink: the OS is the router (Daniel's rule,
+# 2026-11-16) everywhere except this one pinned capture.
+# --raw with NO file argument writes headerless s16le PCM to
+# stdout (a "-" argument would be a literal file).
 # --latency-msec is load-bearing (2026-11-18): without it the
 # capture stream negotiates the PulseAudio-default buffering --
 # node.latency 32000/16000 = 2 s in the PipeWire graph, measured
@@ -71,9 +86,13 @@ CHUNK_BYTES = RATE * WIDTH * CHANNELS * 20 // 1000  # 20 ms per chunk
 # light exposed it, showing "listening" only after Daniel had
 # already spoken. 50 ms keeps the feed effectively live; the
 # pump re-slices to 20 ms chunks regardless of fragment size.
+RAW_SOURCE = (
+    "alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800_"
+    "4-Mic_Array_100070894262500433-00.analog-stereo"
+)
 CAPTURE_CMD = (
     "parecord", "--raw", "--format=s16le", "--rate=16000",
-    "--channels=1", "--latency-msec=50",
+    "--channels=1", "--latency-msec=50", f"--device={RAW_SOURCE}",
 )
 PLAY_CMD = ("pw-cat", "--playback")
 
@@ -84,7 +103,7 @@ class LocalAnnounceResult:
 
 
 class LocalMicClient:
-    """The session's client, whose 'device' is Fedora's default mic."""
+    """The session's client, whose 'device' is the raw ReSpeaker mic."""
 
     def __init__(
         self,
@@ -104,7 +123,7 @@ class LocalMicClient:
         # capture_cmd is a test seam (the bench feeds a paced file);
         # production always uses CAPTURE_CMD.
         self._capture_cmd = tuple(capture_cmd) if capture_cmd else CAPTURE_CMD
-        self.device_name: str | None = "localmic (Fedora default source)"
+        self.device_name: str | None = "localmic (ReSpeaker raw source)"
         self.entity_count: int | None = None  # no entities here
         self._proc: asyncio.subprocess.Process | None = None
         self._pump_task: asyncio.Task | None = None
@@ -125,7 +144,7 @@ class LocalMicClient:
         await asyncio.sleep(0.5)
         if not self.is_connected:
             raise NotConnectedError("localmic capture failed to start")
-        _LOGGER.info("localmic connected (Fedora default source)")
+        _LOGGER.info("localmic connected (ReSpeaker raw source)")
 
     async def disconnect(self) -> None:
         if self._pump_task is not None:

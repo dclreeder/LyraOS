@@ -70,22 +70,41 @@ def _source_muted() -> bool | None:
         return None
 
 
+# The raw ReSpeaker source node: WakeGate's pinned capture since
+# the 2026-11-19 feed split (see lyra_core/localmic.py). The mute
+# toggle below sets BOTH this node and the default source --
+# muting the physical mic silences WakeGate's ears and the
+# echo-cancelled feed (which captures from this same device).
+RAW_SOURCE = ("alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800_"
+              "4-Mic_Array_100070894262500433-00.analog-stereo")
+
+
 def audio_mute_set(muted: bool) -> dict:
-    # The mic mute rides Fedora's DEFAULT source (the localmic
-    # feeder captures it): muting the default source means Lyra
-    # hears nothing. Same pactl mechanism the old standalone Mic
-    # Mute toggle used; the control now lives on the Audio card.
-    subprocess.run(["pactl", "set-source-mute", "@DEFAULT_SOURCE@",
-                    "1" if muted else "0"], capture_output=True, timeout=4)
+    # The mic mute rides Fedora's DEFAULT source AND the raw
+    # ReSpeaker node: since the 2026-11-19 feed split, WakeGate
+    # captures the raw node rather than the default source, so
+    # muting only the default would leave her room ears open.
+    # Muting the physical mic silences both feeds, which is what
+    # a mic mute means. Same pactl mechanism the old standalone
+    # Mic Mute toggle used; the control now lives on the Audio
+    # card.
+    flag = "1" if muted else "0"
+    subprocess.run(["pactl", "set-source-mute", "@DEFAULT_SOURCE@", flag],
+                   capture_output=True, timeout=4)
+    subprocess.run(["pactl", "set-source-mute", RAW_SOURCE, flag],
+                   capture_output=True, timeout=4)
     return audio_devices()
 
 
 def audio_devices() -> dict:
     # Fedora audio devices via PipeWire (2026-11-16, Daniel's ask).
     # The dashboard only flips the OS defaults: Lyra's voice follows
-    # the default sink and the localmic feeder captures the default
-    # source, so these defaults ARE Lyra's speaker/mic choice. Node
-    # names are the stable ids (wpctl numbers change on replug).
+    # the default sink, and the default source steers the
+    # echo-cancelled feed and every default-following consumer.
+    # WakeGate is the one exception: since the 2026-11-19 feed
+    # split its capture is pinned to the raw ReSpeaker node, so
+    # the source dropdown does not move her room ears. Node names
+    # are the stable ids (wpctl numbers change on replug).
     # *.monitor sources are output loopbacks, not microphones.
     sinks: list[dict] = []
     sources: list[dict] = []
