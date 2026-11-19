@@ -62,9 +62,18 @@ CHUNK_BYTES = RATE * WIDTH * CHANNELS * 20 // 1000  # 20 ms per chunk
 # default changes -- the OS is the router (Daniel's rule,
 # 2026-11-16). --raw with NO file argument writes headerless
 # s16le PCM to stdout (a "-" argument would be a literal file).
+# --latency-msec is load-bearing (2026-11-18): without it the
+# capture stream negotiates the PulseAudio-default buffering --
+# node.latency 32000/16000 = 2 s in the PipeWire graph, measured
+# -- so everything the session hears (wake detection, VAD,
+# capture) trailed the room by up to ~2 s. Her replies hid it
+# (the whole conversation shifts together); the kiosk status
+# light exposed it, showing "listening" only after Daniel had
+# already spoken. 50 ms keeps the feed effectively live; the
+# pump re-slices to 20 ms chunks regardless of fragment size.
 CAPTURE_CMD = (
     "parecord", "--raw", "--format=s16le", "--rate=16000",
-    "--channels=1",
+    "--channels=1", "--latency-msec=50",
 )
 PLAY_CMD = ("pw-cat", "--playback")
 
