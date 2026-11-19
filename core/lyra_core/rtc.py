@@ -53,17 +53,6 @@ word-matching echo guard that used to judge onsets against her
 playback text was removed once the AEC measured clean (30 dB
 down, no echo transcripts); it lives in git history if the
 room ever proves it necessary again.
-
-The phone call feature (2026-11-18, Daniel: "the phone call is
-supposed to be duplex") runs on this same machinery: a second
-RtcServer instance, always accepting, whose sessions carry
-via="call", a mirroring speaker (her voice also reaches the TV
-mirror, as the call feature has always done), and no rtc_state
-publishing. The call page attaches a data channel; the session
-emits his transcript whole when the turn dispatches, her reply
-sentences as they generate, and barge-in events over it. The
-mode-gated server above is untouched by this: a call works in
-any mode.
 """
 from __future__ import annotations
 
@@ -71,7 +60,6 @@ import array
 import asyncio
 import collections
 import io
-import json
 import logging
 import math
 import time
@@ -236,7 +224,7 @@ class _PeerAudioTrack(MediaStreamTrack):
 
 
 class _RtcSpeaker:
-    """The call feature's _CallSpeaker shape for RTC: reply
+    """The session's reply speaker: reply
     sentences are synthesized in order (mirror suppressed -- the
     peer track is her voice path in this mode) and appended to the
     session's out buffer at 48 kHz. Synthesis runs in a worker task
@@ -306,7 +294,6 @@ class _RtcSession:
         self._turn_task: asyncio.Task | None = None
         self._consume_task: asyncio.Task | None = None
         self._closed = False
-        self._event_sink = None
         self._status_playing = False
         self._status_listening = False
         self.out_track = _PeerAudioTrack(self)
@@ -377,28 +364,6 @@ class _RtcSession:
             self._turn_task.cancel()
         _LOGGER.info("%s barge-in: reply interrupted by peer speech",
                      self._server.label)
-        self._emit({"type": "barge_in"})
-
-    # -- page events (the call's data channel) ------------------------
-
-    def attach_event_channel(self, channel) -> None:
-        """Wire the session's page events to a WebRTC data channel
-        (the phone call page). Events are JSON dicts: the
-        dispatched transcript (whole, at turn dispatch), her
-        reply sentences as they generate, reply completion, and
-        barge-in. The TV page creates no data channel, so RTC
-        mode sessions never emit."""
-        def _send(msg: dict) -> None:
-            try:
-                if channel.readyState == "open":
-                    channel.send(json.dumps(msg))
-            except Exception:
-                pass
-        self._event_sink = _send
-
-    def _emit(self, msg: dict) -> None:
-        if self._event_sink is not None:
-            self._event_sink(msg)
 
     # -- input side ---------------------------------------------------
 
@@ -498,16 +463,11 @@ class _RtcSession:
         try:
             _LOGGER.info("%s transcript [%s]: %r",
                          self._server.label, source, transcript)
-            self._emit({"type": "transcript", "text": transcript,
-                        "source": source})
             speaker = _RtcSpeaker(
                 self._server.driver, self, generation,
                 mirror=self._server.mirror)
 
             async def _feed(sentence: str) -> None:
-                # Her words stream too: the page sees each sentence
-                # as it is generated, before it is synthesized.
-                self._emit({"type": "reply_sentence", "text": sentence})
                 await speaker.feed(sentence)
 
             reply = await self._server.command(
@@ -518,8 +478,6 @@ class _RtcSession:
                 # speak the whole reply as one sentence.
                 await _feed(str(reply))
                 await speaker.drain()
-            self._emit({"type": "reply_done",
-                        "text": str(reply) if reply else ""})
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -546,14 +504,7 @@ class RtcServer:
     manager flips that with the mode, so a stray offer in WakeGate
     or Sleep gets a clean refusal, never a session. One peer at a
     time: a fresh offer replaces the previous peer (the page
-    rejoining after a hiccup is the normal case).
-
-    The phone call feature runs a second instance of this class
-    (via="call", mirror=True, publish_state=False) whose
-    `accepting` is simply always on: a call is not a mode, so its
-    offers are honored in WakeGate, RTC, and Sleep alike, and it
-    never touches rtc_state.json -- that file is the TV mode's
-    published fact, not the call's."""
+    rejoining after a hiccup is the normal case)."""
 
     def __init__(self, driver: PipelineDriver, command, *,
                  via: str = "rtc", label: str = "rtc",
@@ -583,12 +534,6 @@ class RtcServer:
         pc = RTCPeerConnection()
         session = _RtcSession(self, pc)
         self._session = session
-
-        @pc.on("datachannel")
-        def _on_datachannel(channel) -> None:
-            _LOGGER.info("%s peer data channel: %s",
-                         self.label, channel.label)
-            session.attach_event_channel(channel)
 
         @pc.on("track")
         def _on_track(track: MediaStreamTrack) -> None:

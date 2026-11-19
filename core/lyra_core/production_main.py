@@ -59,15 +59,9 @@ code is modified.
 from __future__ import annotations
 
 import asyncio
-import base64
-import io
 import logging
 import signal
 import sys
-import threading
-import time
-import uuid
-import wave
 
 from .alarm import Alarm, ShellyLight
 from .api import CoreApi
@@ -370,17 +364,7 @@ async def amain() -> int:
     # manager owns when it may accept offers and when the room
     # capture runs. See lyra_core.mode for the state contract.
     rtc_server = RtcServer(driver, router.handle)
-    # The phone call's own RTC server (2026-11-18): the same
-    # session machinery as RTC mode, but not a mode -- always
-    # accepting, via="call", its speaker mirroring to the TV (the
-    # call feature's long-standing behavior), and no rtc_state
-    # publishing. Daniel: the phone call is supposed to be duplex.
-    call_rtc_server = RtcServer(
-        driver, router.handle, via="call", label="call",
-        mirror=True, publish_state=False)
-    call_rtc_server.accepting = True
     rtc_server.status = hub
-    call_rtc_server.status = hub
     mode_mgr = _ModeManager(seat, rtc_server)
     mode_mgr.status = hub
 
@@ -389,13 +373,6 @@ async def amain() -> int:
         if mode_mgr.current != mode_store.RTC:
             return {"error": "rtc mode is not active", "status": 409}
         return await rtc_server.handle_offer(sdp, sdp_type)
-
-    async def _call_offer(sdp: str, sdp_type: str) -> dict:
-        """Call signaling: NOT mode-gated. A phone call is not a
-        mode -- it connects while the house is in WakeGate (the
-        normal case) and never disturbs the TV page's RTC
-        plumbing or the room capture."""
-        return await call_rtc_server.handle_offer(sdp, sdp_type)
 
     async def _announce(text: str) -> None:
         """Phase 4 /announce: Kokoro -> TV mirror. synthesize_speech
@@ -409,165 +386,6 @@ async def amain() -> int:
     # same announce path when a morning kill ends the ring.
     alarm.set_note_speaker(_announce)
 
-    # -- dashboard call, streamed sentence by sentence (2026-11-15) --
-    # /call/start transcribes and returns at once; the turn runs in
-    # the background, the router feeds reply sentences to a
-    # _CallSpeaker as they generate, and each is synthesized in order
-    # (firing the TV mirror per sentence, like the room path) and
-    # appended to the call's entry. The call page polls _call_poll and
-    # plays the sentences as they land, so she starts talking after
-    # roughly one sentence instead of the whole reply plus the whole
-    # synthesis (the old /call/turn shape). Entries are pruned at
-    # 10 minutes; one call turn at a time.
-    # Call turns transcribe through Parakeet TDT (see
-    # _call_transcribe below), the house's one STT engine --
-    # Daniel, 2026-11-18: the phone call is supposed to be
-    # duplex.
-    # The call is a true streaming session: the page is a WebRTC
-    # peer of the call RTC server (see _call_offer above) -- his
-    # audio streams live, her replies stream sentence by
-    # sentence, and speech over her reply barges in.
-    # The /call/start + /call/poll shape below remains as the
-    # page's fallback when the streaming transport cannot be
-    # established, and _call_transcribe remains its ears.
-    _call_lock = threading.Lock()
-    _call_entries: dict[str, dict] = {}
-
-    def _call_add_sentence(entry: dict, wav_bytes: bytes) -> None:
-        with _call_lock:
-            entry["sentences"].append(wav_bytes)
-
-    class _CallSpeaker:
-        """The room's _SentenceSpeaker shape, minus the box: the
-        worker synthesizes fed sentences in order and appends the
-        WAVs to the call entry the phone polls. Synthesis runs in a
-        worker task so TTS never blocks the token stream."""
-
-        def __init__(self, entry: dict) -> None:
-            self._entry = entry
-            self._queue: asyncio.Queue = asyncio.Queue()
-            self._worker: asyncio.Task | None = None
-            self.used = False
-
-        async def feed(self, sentence: str) -> None:
-            self.used = True
-            if self._worker is None:
-                self._worker = asyncio.ensure_future(self._run())
-            await self._queue.put(sentence)
-
-        async def _run(self) -> None:
-            while True:
-                sentence = await self._queue.get()
-                if sentence is None:
-                    return
-                try:
-                    wav_bytes, _r, _w, _c = await driver.synthesize_speech(sentence)
-                except Exception:
-                    _LOGGER.exception(
-                        "call sentence synthesis failed: %r", sentence)
-                    continue
-                _call_add_sentence(self._entry, wav_bytes)
-
-        async def drain(self) -> None:
-            if self._worker is not None:
-                await self._queue.put(None)
-                await self._worker
-                self._worker = None
-
-    async def _run_call_turn(entry: dict, transcript: str) -> None:
-        try:
-            speaker = _CallSpeaker(entry)
-            if transcript:
-                reply = str(await router.handle(
-                    transcript, on_sentence=speaker.feed, via="call"))
-            else:
-                reply = "didn't catch that."
-            await speaker.drain()
-            if not speaker.used:
-                # Nothing streamed (a router early-return line): speak
-                # the whole reply as one sentence, as before.
-                wav, _r, _w, _c = await driver.synthesize_speech(reply)
-                _call_add_sentence(entry, wav)
-            with _call_lock:
-                entry["reply"] = reply
-                entry["done"] = True
-        except Exception as exc:
-            _LOGGER.exception("call turn failed")
-            with _call_lock:
-                entry["error"] = f"call turn failed: {exc}"
-                entry["done"] = True
-        finally:
-            hub.turn_end()
-
-    # -- call transcription: Parakeet TDT (2026-11-18) --
-    # The legacy /call/start path's ears: the uploaded utterance
-    # goes straight to driver.transcribe_audio (Parakeet TDT),
-    # the house's one STT engine. (A Nemotron streaming sidecar
-    # took first crack at these turns for part of 2026-11-18;
-    # Daniel cut it that evening -- one engine for the house.)
-    async def _call_transcribe(pcm: bytes, rate: int, width: int,
-                               channels: int) -> str:
-        transcript = await driver.transcribe_audio(
-            pcm, rate=rate, width=width, channels=channels)
-        _LOGGER.info("call transcript [parakeet-tdt]: %r", transcript)
-        return transcript
-
-    async def _call_start(wav_bytes: bytes) -> dict:
-        now = time.monotonic()
-        with _call_lock:
-            stale = [k for k, e in _call_entries.items()
-                     if now - e["created"] > 600]
-            for k in stale:
-                del _call_entries[k]
-            if any(not e["done"] for e in _call_entries.values()):
-                return {"busy": True}
-        # Status light: the call turn is thinking from here --
-        # transcription (in this function) plus the router turn
-        # (_run_call_turn ends it in its finally).
-        hub.turn_begin()
-        try:
-            with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
-                rate = wf.getframerate()
-                width = wf.getsampwidth()
-                channels = wf.getnchannels()
-                pcm = wf.readframes(wf.getnframes())
-            transcript = await _call_transcribe(
-                pcm, rate=rate, width=width, channels=channels
-            )
-            entry = {
-                "call_id": uuid.uuid4().hex[:16],
-                "created": now,
-                "transcript": transcript,
-                "sentences": [],
-                "done": False,
-                "reply": None,
-                "error": None,
-            }
-            with _call_lock:
-                _call_entries[entry["call_id"]] = entry
-        except Exception:
-            hub.turn_end()
-            raise
-        asyncio.ensure_future(_run_call_turn(entry, transcript))
-        return {"call_id": entry["call_id"], "transcript": transcript}
-
-    def _call_poll(call_id: str, after: int) -> dict | None:
-        with _call_lock:
-            entry = _call_entries.get(call_id)
-            if entry is None:
-                return None
-            return {
-                "sentences": [
-                    base64.b64encode(w).decode("ascii")
-                    for w in entry["sentences"][after:]
-                ],
-                "next": len(entry["sentences"]),
-                "done": entry["done"],
-                "reply": entry["reply"],
-                "error": entry["error"],
-                "transcript": entry["transcript"],
-            }
-
     api = CoreApi(
         http=http,
         token=alarm.http_auth_token(),
@@ -576,10 +394,7 @@ async def amain() -> int:
         clock=clock_tool,
         weather=weather_tool,
         announce=_announce,
-        call_start=_call_start,
-        call_poll=_call_poll,
         rtc_offer=_rtc_offer,
-        call_offer=_call_offer,
         tv=tv_tool,
         tv_volume=tv_volume_tool,
     )
@@ -631,7 +446,6 @@ async def amain() -> int:
         watch_task.cancel()
         health_task.cancel()
         heartbeat_task.cancel()
-        await call_rtc_server.stop()
         await mode_mgr.shutdown()
         await alarm.stop()
         status_task.cancel()

@@ -23,13 +23,6 @@ CORE = "http://127.0.0.1:8099"
 PAGE = Path(__file__).with_name("dashboard.html")
 
 
-def _call_url():
-    try:
-        return Path(__file__).with_name("call_url.txt").read_text().strip()
-    except Exception:
-        return "#"
-
-
 
 def _kill_token() -> str:
     data = json.loads((HOME / "Documents/LyraOS/core/alarm_secrets.json").read_text())
@@ -271,7 +264,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
-            self._send(200, "text/html; charset=utf-8", PAGE.read_text().replace("{{CALL_URL}}", _call_url()).encode())
+            self._send(200, "text/html; charset=utf-8", PAGE.read_text().encode())
             return
         if self.path == "/api/state":
             self._json(200, full_state())

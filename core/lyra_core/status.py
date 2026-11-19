@@ -10,7 +10,7 @@ listening, idle.
 
 Listening (PINK, added later the same evening at Daniel's
 order): the gate is open and she is actively taking in his
-speech -- WakeGate's post-wake capture window, or an RTC/call
+speech -- WakeGate's post-wake capture window, or an RTC
 session mid-utterance. The ambient mic is only wake-watching,
 which is not listening in any sense worth a light; gate-open
 capture is. It doubles as the silent wake-ack: he can see she
@@ -30,12 +30,12 @@ pushes; if its socket drops, the page shows red "Disconnected"
 (page-side inference, not a state this module emits).
 
 Inputs, all wired in production_main:
-- activity: turn counter (WakeGate session processing, RTC/call
-  turn tasks, dashboard-call turns) = thinking; a speech clock fed
+- activity: turn counter (WakeGate session processing, RTC
+  turn tasks) = thinking; a speech clock fed
   by every TV-mirrored synthesis (the WAV's own duration is the
   playback duration the page's job player runs) plus RTC sessions'
   real playback state = speaking; keyed capture flags (the
-  WakeGate session's capturing state, RTC/call sessions'
+  WakeGate session's capturing state, RTC sessions'
   utterance activity) = listening.
 - mode: the mode manager's applied mode (sleep shows violet).
 - health: the dependency monitor below (lyra-llm with the model
@@ -137,7 +137,7 @@ class StatusHub:
 
     def set_listening(self, key, active: bool) -> None:
         """Gate-open capture, keyed like rtc_playing so concurrent
-        sources (the WakeGate session, RTC/call sessions) compose:
+        sources (the WakeGate session, RTC sessions) compose:
         she is taking in the user's speech from `key` until the
         source clears the flag at dispatch or discard."""
         if active:

@@ -30,22 +30,6 @@ this module by the production composition, and is never logged.
   rejected 400 (the standing announcements rule), as are empty
   texts and texts over the length cap.
 
-- POST /call/offer  (WebRTC signaling for the phone call's
-  streaming transport, 2026-11-18: the call page is a peer of the
-  composition's call RTC server; NOT mode-gated -- a call is not
-  a mode)
-- POST /call/start  (raw WAV utterance in the body; returns at once
-  with a call id once the utterance is transcribed)
-- GET /call/poll  (the call turn's reply sentences, synthesized and
-  delivered one by one as they are generated)
-  One dashboard-call turn (2026-11-15): the composition's call
-  callback runs streaming Nemotron (Parakeet TDT
-  fallback) -> the free router -> Kokoro and returns
-  {"ok": true, "transcript": ..., "reply": ..., "wav_b64": ...}.
-  The reply WAV also reaches the TV through synthesize_speech's
-  mirror, like every spoken line. This route carries a larger
-  per-route body cap (whole utterances, not JSON).
-
 Auth: the token rides the `t` query parameter, exactly like the
 alarm kill endpoint (GET /alarm/kill?t=...), and is compared with
 hmac.compare_digest. Bad or missing token -> 403, before any body
@@ -64,7 +48,6 @@ await, and a retry therefore cannot double-execute it.
 from __future__ import annotations
 
 import asyncio
-import base64
 import concurrent.futures
 import hmac
 import json
@@ -86,25 +69,15 @@ _LOGGER = logging.getLogger("lyra_core.api")
 
 TOOL_PATH = "/tool"
 ANNOUNCE_PATH = "/announce"
-CALL_START_PATH = "/call/start"
-CALL_OFFER_PATH = "/call/offer"
 RTC_OFFER_PATH = "/rtc/offer"
-CALL_POLL_PATH = "/call/poll"
 ANNOUNCE_MAX_CHARS = 200
 _TOOL_TIMEOUT_S = 90.0
 _ANNOUNCE_TIMEOUT_S = 75.0
-_CALL_START_TIMEOUT_S = 60.0
 _RTC_OFFER_TIMEOUT_S = 20.0
-_CALL_MAX_BODY_BYTES = 8 * 1024 * 1024
 
 # The composition's announce: text -> None on success; raises
 # AnnounceUnavailable when there is no way to speak.
 AnnounceFn = Callable[[str], Awaitable[None]]
-
-# The composition's call turn: utterance WAV bytes ->
-# (reply WAV bytes, transcript, reply text). Raises on failure.
-CallStartFn = Callable[[bytes], Awaitable[dict]]
-CallPollFn = Callable[[str, int], "dict | None"]
 
 # RTC signaling callback: an SDP offer -> the SDP answer dict, or
 # a dict with "error" (plus optional "status"). Raises on failure.
@@ -155,10 +128,7 @@ class CoreApi:
         clock: ClockTool,
         weather: WeatherTool,
         announce: AnnounceFn,
-        call_start: CallStartFn | None = None,
         rtc_offer: RtcOfferFn | None = None,
-        call_offer: RtcOfferFn | None = None,
-        call_poll: CallPollFn | None = None,
         tv: TvTool | None = None,
         tv_volume: TvVolumeTool | None = None,
     ) -> None:
@@ -169,10 +139,7 @@ class CoreApi:
         self._clock = clock
         self._weather = weather
         self._announce = announce
-        self._call_start = call_start
         self._rtc_offer = rtc_offer
-        self._call_offer = call_offer
-        self._call_poll = call_poll
         self._tv = tv
         self._tv_volume = tv_volume
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -182,29 +149,10 @@ class CoreApi:
         self._loop = asyncio.get_running_loop()
         self._http.add_post_route(TOOL_PATH, self._serve_tool)
         self._http.add_post_route(ANNOUNCE_PATH, self._serve_announce)
-        if self._call_start is not None and self._call_poll is not None:
-            self._http.add_post_route(
-                CALL_START_PATH,
-                self._serve_call_start,
-                max_body_bytes=_CALL_MAX_BODY_BYTES,
-            )
-            self._http.add_route(CALL_POLL_PATH, self._serve_call_poll)
-            _LOGGER.info(
-                "core API registered: POST %s, GET %s (token auth)",
-                CALL_START_PATH,
-                CALL_POLL_PATH,
-            )
         if self._rtc_offer is not None:
             self._http.add_post_route(RTC_OFFER_PATH, self._serve_rtc_offer)
             _LOGGER.info(
                 "core API registered: POST %s (token auth)", RTC_OFFER_PATH
-            )
-        if self._call_offer is not None:
-            self._http.add_post_route(
-                CALL_OFFER_PATH, self._serve_call_offer)
-            _LOGGER.info(
-                "core API registered: POST %s (token auth)",
-                CALL_OFFER_PATH
             )
         _LOGGER.info(
             "core API registered: POST %s, POST %s (token auth)",
@@ -444,55 +392,6 @@ class CoreApi:
         _LOGGER.info("core API /announce: spoken")
         return _json(200, {"ok": True, "announced": text})
 
-    # -- /call/start + /call/poll ---------------------------------------
-    # Streamed call turns (2026-11-15): /call/start transcribes the
-    # utterance and returns a call id immediately; the turn itself
-    # runs in the background and its reply is synthesized sentence by
-    # sentence. /call/poll hands the caller the sentences it has not
-    # seen yet, so the caller starts hearing her after roughly one
-    # sentence instead of the whole reply (the old /call/turn shape).
-
-    def _serve_call_start(self, query: dict, body: bytes) -> tuple[int, str, bytes]:
-        if not self._authorized(query):
-            _LOGGER.warning("core API /call/start: rejected (bad token)")
-            return _json(403, {"ok": False, "error": "forbidden"})
-        if self._call_start is None or self._loop is None:
-            return _json(503, {"ok": False, "error": "call not available"})
-        if len(body) < 44 or not body.startswith(b"RIFF"):
-            return _json(400, {"ok": False, "error": "body must be a WAV utterance"})
-        _LOGGER.info("core API /call/start: %d bytes in", len(body))
-        future = asyncio.run_coroutine_threadsafe(self._call_start(body), self._loop)
-        try:
-            result = future.result(timeout=_CALL_START_TIMEOUT_S)
-        except concurrent.futures.TimeoutError:
-            future.cancel()
-            _LOGGER.error("core API /call/start: timed out; future cancelled")
-            return _json(504, {"ok": False, "error": "call start timed out"})
-        except Exception as exc:
-            _LOGGER.error("core API /call/start: failed: %s", exc)
-            return _json(500, {"ok": False, "error": "call start failed"})
-        if result.get("busy"):
-            return _json(409, {"ok": False, "error": "a call turn is already in progress"})
-        return _json(200, {"ok": True, **result})
-
-    def _serve_call_poll(self, query: dict) -> tuple[int, str, bytes]:
-        if not self._authorized(query):
-            _LOGGER.warning("core API /call/poll: rejected (bad token)")
-            return _json(403, {"ok": False, "error": "forbidden"})
-        if self._call_poll is None:
-            return _json(503, {"ok": False, "error": "call not available"})
-        call_id = (query.get("call") or [None])[0]
-        if not call_id:
-            return _json(400, {"ok": False, "error": "call id required"})
-        try:
-            after = int((query.get("after") or ["0"])[0])
-        except (TypeError, ValueError):
-            return _json(400, {"ok": False, "error": "bad after"})
-        result = self._call_poll(call_id, max(0, after))
-        if result is None:
-            return _json(404, {"ok": False, "error": "unknown call"})
-        return _json(200, {"ok": True, **result})
-
     # -- /rtc/offer ------------------------------------------------
     # WebRTC signaling for RTC mode (2026-11-16): the TV page (via
     # the lyra-web proxy) posts its SDP offer; the composition's
@@ -502,9 +401,6 @@ class CoreApi:
 
     def _serve_rtc_offer(self, query: dict, body: bytes) -> tuple[int, str, bytes]:
         return self._serve_offer(query, body, self._rtc_offer, "/rtc/offer")
-
-    def _serve_call_offer(self, query: dict, body: bytes) -> tuple[int, str, bytes]:
-        return self._serve_offer(query, body, self._call_offer, "/call/offer")
 
     def _serve_offer(self, query: dict, body: bytes,
                      offer_fn, path: str) -> tuple[int, str, bytes]:

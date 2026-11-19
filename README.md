@@ -4,8 +4,8 @@ One tree for the whole Lyra system (consolidated 2026-11-15, Daniel's design).
 Services stay separate processes; they ship, install, and back up as one system.
 
 - core/        lyra-core: free router (brain: Muse Spark 1.3 via the Meta
-               Model API), tools, SOUL.md, alarm, /tool /announce /call/turn (:8099)
-- web/         lyra-web: TV viewer + call page (:8095), kiosk + route-apply
+               Model API), tools, SOUL.md, alarm, /tool /announce /rtc/offer (:8099)
+- web/         lyra-web: TV viewer (:8095), kiosk + route-apply
 - dashboard/   home dashboard (:8098)
 - modules/     shared engines, single-instance rule: tts (Kokoro :8091),
                wakeword (models + training + clip pool), wyoming

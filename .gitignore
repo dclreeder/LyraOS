@@ -32,7 +32,6 @@ modules/tts/kokoro/server/token.txt
 *.pem
 firmware/sat/esp32/devices/sdkconfig.lyra-satlink*
 firmware/sat/esp32/devices/sdkconfig.lyra-satgadget
-dashboard/call_url.txt
 
 # Wake clip pool stays home (his voice + ledger); feature models are building blocks
 modules/wakeword/data/clips/

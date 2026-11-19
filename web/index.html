@@ -308,7 +308,7 @@ window._lyra.onState((s) => { ringUpdate(!!(s.ring && s.ring.ringing)); });
 // one. lyra-web pushes the room state on the
 // state channel (the light read is cached server-side): ceiling light off -> the room dims and the pendant
 // and lamp lose their warm light; display off -> the painted TV goes
-// dark; a live call lights the phone on the dresser. Her voice
+// dark; a live RTC session lights the phone on the dresser. Her voice
 // pulses the speaker's glow (window._speaking, set by the job
 // player).
 (function(){
@@ -318,7 +318,7 @@ window._lyra.onState((s) => { ringUpdate(!!(s.ring && s.ring.ringing)); });
   function set(el, on){ if (el) el.style.opacity = on ? '1' : '0'; }
   window._lyra.onState(function(s){
     set(off, !!(s.light && s.light.on === false));
-    set(pg, !!s.call_active || (s.mode === 'rtc' && !!s.rtc_connected));
+    set(pg, s.mode === 'rtc' && !!s.rtc_connected);
     set(slp, !!s.sleep);
     if (cv) cv.style.opacity = s.sleep ? '0' : '1';
   });
