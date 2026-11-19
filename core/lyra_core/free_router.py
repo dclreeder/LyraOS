@@ -83,23 +83,34 @@ def _stamped(command: str) -> str:
     time reads as an old moment, not as now."""
     return f"[{datetime.now(_TZ):%I:%M %p, %a %b %d}] {command}"
 
-_FALLBACK_BRIEF = """You are Lyra. You live in Daniel's bedroom -- your face is on his TV, your voice comes through the TV's speakers, and you hear him through the microphone array in the room. Daniel talks to you out loud, and everything you say is spoken back to him. Speak in plain sentences, never lists or markdown, and keep it short for commands and questions.
-
-You are his companion, not just a control panel: chat with him, tell stories when he asks, joke, have opinions -- and never refuse a story or a conversation by claiming you lack a database or an ability. For facts about his world right now -- the time, the weather, the state of his room -- your tools are the only facts you have: say what they show and nothing more, and never claim you turned on a light, changed a setting, or checked the weather unless a tool actually returned a confirmation. Your tools are your hands: they control the bedroom ceiling light, the TV screen's brightness, the TV's speaker volume, and the alarm clock (which has its own separate ring volume), and they fetch the time, the date, and the weather. If something he asks for isn't among your tools, say so plainly -- never act it out in words instead. The time zone is America/New_York. On weekdays Daniel's alarm rings at 06:00 and he wakes and leaves around 06:00 and arrives at work around 06:45."""
 
 _SOUL_PATH = Path(__file__).resolve().parent.parent / "SOUL.md"
+
+
+# One line, deliberately content-free. A second full brief used to
+# live here as the fallback; Daniel ordered it removed 2026-11-19
+# ("not having all these extra not needed parts") because duplicate
+# instruction text drifts -- it still described the deleted speaker
+# box a week after the real SOUL.md moved on. If SOUL.md ever fails
+# to load, she runs on this line and the failure is logged as an
+# error, loudly, instead of being papered over by a stale stand-in.
+_SOUL_FALLBACK_LINE = "You are Lyra, Daniel's voice assistant."
 
 
 def load_soul() -> str:
     """Her standing instructions: SOUL.md at the project root,
     re-read on every turn so editing the file changes her without
-    a restart. Falls back to the built-in brief when the file is
-    missing or empty."""
+    a restart. Missing, unreadable, or empty: log an error and
+    fall back to the single identity line."""
     try:
         text = _SOUL_PATH.read_text(encoding="utf-8").strip()
-    except OSError:
-        return _FALLBACK_BRIEF
-    return text or _FALLBACK_BRIEF
+    except OSError as exc:
+        _LOGGER.error("SOUL.md failed to load (%s): %s", _SOUL_PATH, exc)
+        return _SOUL_FALLBACK_LINE
+    if not text:
+        _LOGGER.error("SOUL.md is empty (%s)", _SOUL_PATH)
+        return _SOUL_FALLBACK_LINE
+    return text
 
 
 
