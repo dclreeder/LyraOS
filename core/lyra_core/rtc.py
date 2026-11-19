@@ -125,7 +125,8 @@ _WORD_RE = re.compile(r"[a-z0-9']+")
 
 
 def _words_of(text: str) -> list[str]:
-    return _WORD_RE.findall(text.lower())
+    return _WORD_RE.findall(
+        text.lower().replace("’", "'").replace("‘", "'"))
 
 
 def _contiguous_run(needle: list[str], hay: list[str]) -> int:
@@ -492,6 +493,7 @@ class _RtcSession:
             "held": False,
             "hold_until": 0.0,
             "dur": 0.0,
+            "snap": self._guard_words(span=2),
         }
         _LOGGER.info(
             "%s barge candidate: onset during playback; holding "
@@ -537,7 +539,7 @@ class _RtcSession:
             await self._judge_held_candidate(now)
             return
         words = self._candidate_words()
-        window = self._guard_words(span=1)
+        window = list(cand.get("snap") or []) + self._guard_words(span=1)
         run = 0
         if len(words) >= 2:
             run = max(_contiguous_run(words, window),
@@ -595,7 +597,7 @@ class _RtcSession:
         if cand is None:
             return
         words = self._candidate_words()
-        window = self._guard_words(span=2)
+        window = list(cand.get("snap") or []) + self._guard_words(span=2)
         grams = _bigrams(words[1:])
         run = 0
         covered = 0
@@ -663,7 +665,7 @@ class _RtcSession:
             return "none"
         cand = self._barge_candidate
         words = self._candidate_words()
-        window = self._guard_words(span=2)
+        window = list(cand.get("snap") or []) + self._guard_words(span=2)
         run = 0
         covered = 0
         if words:
