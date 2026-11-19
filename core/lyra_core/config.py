@@ -69,34 +69,29 @@ class AlarmConfig:
 @dataclass
 class RouterConfig:
     # Free router (2026-11-11): the model runs the turn uncaged
-    # through the tools layer; see lyra_core.free_router. Backend
-    # since 2026-11-18 (night): LOCAL llama-server (lyra-llm.service)
-    # on 127.0.0.1:8094 serving Nemotron 3 Nano 4B Q8_0 (alias
-    # nemotron-3-nano-4b, bartowski GGUF sha256 4e023262fd2f...)
-    # on the RX 9060 XT via Vulkan -- Daniel's order: swap the 4B
-    # in as a latency yardstick (the parked 30B-A3B activates ~3B
-    # params/token; its CPU-expert split measured 28.4 tok/s
-    # decode / 140-153 tok/s prompt eval, so a fully-resident ~4B
-    # shows how much of that was offload vs active size). Serving
-    # flags match the 9B's plus this generation's reasoning
-    # control (below); the server auto-disables FA on one Mamba
-    # layer, expected for this hybrid architecture.
-    # Nemotron 3 thinks by default; reasoning is OFF via the
-    # server-side chat-template kwarg enable_thinking=false
-    # (lyra-llm.service --chat-template-kwargs) -- the control
-    # NVIDIA's card documents for this generation, proven on the
-    # 30B-A3B retest earlier today. The 9B v2's "/no_think"
-    # system-prompt suffix does NOT work on this generation and
-    # is dropped (system_prompt_suffix is "").
-    # ROLLBACK to Nemotron Nano 9B v2 (her brain 2026-11-17 ->
-    # 2026-11-18, ~29.8 tok/s decode / 840-1,120 prompt eval):
-    # its GGUF is still on disk
-    # (data/models/nvidia_NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf).
-    # Restore lyra-llm.service ExecStart to the 9B file with
-    # --alias nemotron-nano-9b-v2 and NO --chat-template-kwargs,
-    # llm_model back to "nemotron-nano-9b-v2",
-    # system_prompt_suffix back to "/no_think", restart
-    # lyra-llm + lyra-core.
+    # through the tools layer; see lyra_core.free_router. Backend:
+    # LOCAL llama-server (lyra-llm.service) on 127.0.0.1:8094
+    # serving Nemotron Nano 9B v2 Q8_0 (alias nemotron-nano-9b-v2,
+    # bartowski GGUF) on the RX 9060 XT via Vulkan. Her brain
+    # 2026-11-17 -> 2026-11-18, RESTORED the same evening
+    # (2026-11-18) at Daniel's order after the 4B latency test
+    # concluded (~29.8 tok/s decode / 840-1,120 prompt eval).
+    # Reasoning off via the "/no_think" system-prompt suffix
+    # (system_prompt_suffix below) -- this model's control.
+    # ROLLBACK to Nemotron 3 Nano 4B Q8_0 (her brain for the
+    # 2026-11-18 evening latency test: prompt eval 2,195 tok/s
+    # cold / decode 63.7-64.1 tok/s fully resident -- it proved
+    # the parked 30B-A3B's slowness was CPU-expert offload, not
+    # its ~3B active size; Daniel's live verdict: "obviously
+    # dumber by a lot" but "speedy"): its GGUF is still on disk
+    # (data/models/nvidia_Nemotron-3-Nano-4B-Q8_0.gguf, sha256
+    # 4e023262fd2f...). Restore lyra-llm.service ExecStart to
+    # the 4B file with --alias nemotron-3-nano-4b AND
+    # --chat-template-kwargs '{"enable_thinking":false}' (that
+    # generation's reasoning control; "/no_think" does NOT work
+    # on it), llm_model back to "nemotron-3-nano-4b",
+    # system_prompt_suffix back to "", restart lyra-llm +
+    # lyra-core.
     # Qwen3.5-9B rollback (her brain 2026-11-12 to 2026-11-16,
     # and briefly 2026-11-17): its GGUF is still on disk
     # (data/models/Qwen3.5-9B-Q8_0.gguf). Restore
@@ -123,14 +118,14 @@ class RouterConfig:
     # reads a dummy from the project-local llama_api_key.env
     # (NOT a secret -- see that file).
     llm_url: str = "http://127.0.0.1:8094/v1"
-    llm_model: str = "nemotron-3-nano-4b"
+    llm_model: str = "nemotron-nano-9b-v2"
     # Appended to the loaded SOUL.md at turn time by
     # free_router (never written into SOUL.md itself):
-    # model plumbing tied to the current brain. The 4B's
-    # reasoning is controlled server-side (see above), so
-    # no suffix. The 9B v2 rollback restores "/no_think"
-    # here -- that directive is its reasoning-off control.
-    system_prompt_suffix: str = ""
+    # model plumbing tied to the current brain. "/no_think" is
+    # the 9B v2's reasoning-off control. The 4B rollback sets
+    # this back to "" -- its reasoning is controlled
+    # server-side instead (see above).
+    system_prompt_suffix: str = "/no_think"
     reasoning_effort: str = "minimal"
     api_key_path: str = "~/Documents/LyraOS/core/llama_api_key.env"
     api_key_var: str = "LLAMA_API_KEY"

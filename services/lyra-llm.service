@@ -3,7 +3,7 @@ Description=Lyra LLM module - llama.cpp server (local LLM, production router bra
 After=network.target
 
 [Service]
-ExecStart=/home/dclreeder/Documents/LyraOS/modules/llm/llama.cpp/build/bin/llama-server -m /home/dclreeder/Documents/LyraOS/data/models/nvidia_Nemotron-3-Nano-4B-Q8_0.gguf --host 127.0.0.1 --port 8094 -ngl 99 -c 32768 --alias nemotron-3-nano-4b --jinja --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --chat-template-kwargs "{\"enable_thinking\":false}"
+ExecStart=/home/dclreeder/Documents/LyraOS/modules/llm/llama.cpp/build/bin/llama-server -m /home/dclreeder/Documents/LyraOS/data/models/nvidia_NVIDIA-Nemotron-Nano-9B-v2-Q8_0.gguf --host 127.0.0.1 --port 8094 -ngl 99 -c 32768 --alias nemotron-nano-9b-v2 --jinja --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0
 Restart=on-failure
 RestartSec=3
 
