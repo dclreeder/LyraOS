@@ -75,13 +75,14 @@ window._lyra = { state: null, _sh: [], _jh: [],
   <div id="hint"></div>
 </div>
 <style>
-#statuslight{position:fixed;left:20px;bottom:18px;z-index:10001;display:flex;align-items:center;gap:9px;
+#statuslight{position:fixed;left:20px;bottom:18px;z-index:10001;display:flex;align-items:center;gap:11px;
   font-family:system-ui,'Segoe UI',sans-serif;color:#fff;pointer-events:none;
   text-shadow:0 1px 8px rgba(0,0,0,.65)}
-#statuslight .dot{width:14px;height:14px;border-radius:50%;background:#9aa3b2;flex:none;box-shadow:0 0 8px rgba(0,0,0,.4)}
-#statuslight .lbl{font-size:15px;font-weight:600;letter-spacing:.02em}
+#statuslight .dot{width:20px;height:20px;border-radius:50%;background:#9aa3b2;flex:none;box-shadow:0 0 8px rgba(0,0,0,.4)}
+#statuslight .lbl{font-size:18px;font-weight:600;letter-spacing:.02em}
 #statuslight[data-state="idle"] .dot{background:#2ecc71}
 #statuslight[data-state="thinking"] .dot{background:#f5a623;animation:slpulse 1.1s ease-in-out infinite}
+#statuslight[data-state="listening"] .dot{background:#ec4899;animation:slpulse 1.1s ease-in-out infinite}
 #statuslight[data-state="speaking"] .dot{background:#3b82f6}
 #statuslight[data-state="sleep"] .dot{background:#8b5cf6;opacity:.55}
 #statuslight[data-state="error"] .dot{background:#ef4444;animation:slpulse 2.4s ease-in-out infinite}
@@ -90,9 +91,10 @@ window._lyra = { state: null, _sh: [], _jh: [],
 <div id="statuslight" data-state="error"><span class="dot"></span><span class="lbl">Disconnected</span></div>
 <script>
 // Status light (2026-11-18, Daniel's design): the same component
-// as the TV page -- bottom-left dot + label (green idle, amber
-// thinking, blue speaking, violet dim sleeping, red fault with
-// the label naming it), fed only by the pushed state channel;
+// as the TV page -- bottom-left dot + label (green idle, pink
+// listening, amber thinking, blue speaking, violet dim
+// sleeping, red fault with the label naming it), fed only by
+// the pushed state channel;
 // if the push socket drops, the page itself shows red
 // "Disconnected" until the reconnect snapshot replaces it.
 (function () {

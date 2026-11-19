@@ -249,24 +249,60 @@ async def amain() -> int:
     # The hub aggregates activity (turns + the speech clock +
     # RTC playback), the applied mode and dependency health into
     # the snapshot lyra-web pushes to the TV page. WakeGate
-    # thinking is the session's processing state, fed through
-    # the session event hook; every TV-mirrored synthesis feeds
-    # the speech clock through the driver's hook.
+    # thinking is the session's processing state and listening
+    # its capturing state, both fed through the session event
+    # hook; every TV-mirrored synthesis feeds the speech clock
+    # through the driver's hook.
     hub = StatusHub()
     hub.subscribe(StatusPublisher())
     driver.on_speech = hub.note_speech
     _session_processing = [False]
+    _capture_speech = [False]
 
     def _status_event_hook(kind: str, detail: dict) -> None:
         _event_hook(kind, detail)
-        if kind == "state":
-            st = detail.get("state")
-            if st == "processing" and not _session_processing[0]:
+        if kind == "vad_start":
+            _capture_speech[0] = True
+        elif kind == "verify":
+            # A speechless capture (the wake fired, he said
+            # nothing) becomes a real turn only here: the gate
+            # passed a wake-only clip, the router takes the empty
+            # command, and she answers. Begin the turn at the
+            # verdict; a fail drops silently in the session and
+            # never shows thinking.
+            if detail.get("verdict") == "pass" and not _session_processing[0]:
                 _session_processing[0] = True
                 hub.turn_begin()
-            elif st == "idle" and _session_processing[0]:
-                _session_processing[0] = False
-                hub.turn_end()
+                hub.set_listening("wakegate", False)
+        elif kind == "silent_drop":
+            hub.set_listening("wakegate", False)
+        elif kind == "state":
+            st = detail.get("state")
+            if st == "capturing":
+                # Gate open: she is taking in his command -- the
+                # status light's listening state, from here until
+                # the capture endpoints (processing) or the run
+                # dies back to idle.
+                _capture_speech[0] = False
+                hub.set_listening("wakegate", True)
+            elif st == "processing":
+                # Thinking is a captured command being worked on.
+                # With captured speech the turn starts now (the
+                # listening clear rides after turn_begin, so the
+                # light hands pink to amber with no idle flicker).
+                # Without it, the gate is still deciding whether
+                # the wake was real: listening holds until the
+                # verdict -- a pass begins the turn above, a fail
+                # ends the run at silent_drop.
+                if not _session_processing[0] and _capture_speech[0]:
+                    _session_processing[0] = True
+                    hub.turn_begin()
+                    hub.set_listening("wakegate", False)
+            elif st == "idle":
+                hub.set_listening("wakegate", False)
+                if _session_processing[0]:
+                    _session_processing[0] = False
+                    hub.turn_end()
 
     session = VoiceSession(cfg, driver, http, verify_gate=gate, on_event=_status_event_hook)
 

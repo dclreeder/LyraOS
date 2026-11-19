@@ -237,7 +237,10 @@ class _Segmenter:
         self._utter = None
         self._silence_frames = 0
         if len(pcm) < MIN_UTTER_MS * UTTER_RATE * 2 // 1000:
-            return None  # a click, not speech: no turn, no event
+            # A click, not speech: no turn -- but the capture did
+            # end, and the session's status light needs the word
+            # (a dangling "listening" is worse than the event).
+            return ("speech_end", None)
         return ("utterance", pcm)
 
 
@@ -367,6 +370,7 @@ class _RtcSession:
         self._echo_suppressed = False
         self._echo_ceiling = 0.0
         self._status_playing = False
+        self._status_listening = False
         self.out_track = _PeerAudioTrack(self)
 
     # -- output side ------------------------------------------------
@@ -411,6 +415,23 @@ class _RtcSession:
         hub = self._server.status
         if hub is not None:
             hub.rtc_playing(id(self), playing)
+
+    def _note_listening(self, active: bool) -> None:
+        """Status light (2026-11-18): report utterance capture --
+        the gate is open and she is taking in the peer's speech --
+        on transitions only. Set at the segmenter's speech onset;
+        cleared at every resolution (dispatch, discard, close).
+        The hub ranks listening below speaking and thinking, so
+        an onset during her playback (a barge candidate, her own
+        echo included) never flips the light off blue; it shows
+        only once playback has actually stopped and he is still
+        speaking."""
+        if active == self._status_listening:
+            return
+        self._status_listening = active
+        hub = self._server.status
+        if hub is not None:
+            hub.set_listening(id(self), active)
 
     # -- playback text tracking (the echo guard's window) ------------
 
@@ -630,6 +651,7 @@ class _RtcSession:
             self._resolve_barge_echo("late words match her playback")
             self._pending_pcm = None
             self._utter_streaming = False
+            self._note_listening(False)
             asyncio.ensure_future(self._reset_stream_quietly())
             return
         if (len(words) >= 3 and grams and not (grams & _bigrams(window))
@@ -644,6 +666,7 @@ class _RtcSession:
                     "she was playing")
                 self._pending_pcm = None
                 self._utter_streaming = False
+                self._note_listening(False)
                 asyncio.ensure_future(self._reset_stream_quietly())
             else:
                 await self._release_held_as_real(
@@ -662,6 +685,7 @@ class _RtcSession:
             self._start_turn_pcm(pcm, self._utter_ctx)
         else:
             self._utter_streaming = False
+            self._note_listening(False)
 
     def _short_sentence_echo(self, cand: dict) -> bool:
         """Backstop for an utterance the streamer never transcribed:
@@ -776,6 +800,7 @@ class _RtcSession:
             "%s: stream sidecar lost mid-session; falling back to "
             "Endpointer + Parakeet TDT", self._server.label)
         if self._stream_dispatched:
+            self._note_listening(False)
             return
         if self._pending_pcm is not None:
             if self._barge_candidate is not None:
@@ -787,6 +812,7 @@ class _RtcSession:
                 self._resolve_barge_real("stream failed during barge hold")
             pending, self._pending_pcm = self._pending_pcm, None
             self._utter_streaming = False
+            self._note_listening(False)
             if self._echo_suppressed:
                 return
             self._start_turn_pcm(pending, self._utter_ctx)
@@ -825,6 +851,7 @@ class _RtcSession:
             self._echo_ceiling = max(rms, self._echo_ceiling * 0.995)
         for kind, payload in self._seg.feed(pcm):
             if kind == "speech_start":
+                self._note_listening(True)
                 self._utter_ctx = self._guard_words(span=2)
                 self._echo_suppressed = False
                 was_speaking = self.speaking
@@ -843,6 +870,10 @@ class _RtcSession:
                     stream.audio_fed if stream is not None else 0.0)
                 if was_speaking:
                     self._start_barge_candidate(now)
+            elif kind == "speech_end":
+                # The segmenter discarded a too-short blip: the
+                # capture is over and nothing else resolves it.
+                self._note_listening(False)
             elif kind == "utterance" and payload is not None:
                 self._on_segmenter_utterance(payload, now)
         stream = self._stream
@@ -884,6 +915,7 @@ class _RtcSession:
         if self._echo_suppressed:
             self._utter_streaming = False
             self._pending_pcm = None
+            self._note_listening(False)
             asyncio.ensure_future(self._reset_stream_quietly())
             return
         if not self._utter_streaming:
@@ -897,6 +929,7 @@ class _RtcSession:
             # the segmenter's cut is just its hangover catching up.
             self._utter_streaming = False
             self._pending_pcm = None
+            self._note_listening(False)
             return
         # The segmenter cut before the stream's finals settled
         # (finalization can lag the acoustic end by ~0.65 s). Hold
@@ -926,6 +959,7 @@ class _RtcSession:
             self._stream_dispatched = True
             self._utter_streaming = False
             self._pending_pcm = None
+            self._note_listening(False)
             await stream.reset()
             return
         text = stream.text.strip()
@@ -946,6 +980,7 @@ class _RtcSession:
                     self._utter_streaming = False
                     self._pending_pcm = None
                     self._barge_candidate = None
+                    self._note_listening(False)
                     await stream.reset()
                 return
             if now - stream.last_text_at < STREAM_CONFIRM_S:
@@ -963,6 +998,7 @@ class _RtcSession:
                 self._stream_dispatched = True
                 self._utter_streaming = False
                 self._pending_pcm = None
+                self._note_listening(False)
                 await stream.reset()
                 return
         self._stream_dispatched = True
@@ -974,11 +1010,13 @@ class _RtcSession:
                 self._server.label)
             pending, self._pending_pcm = self._pending_pcm, None
             self._utter_streaming = False
+            self._note_listening(False)
             if pending is not None:
                 self._start_turn_pcm(pending, self._utter_ctx)
             return
         self._pending_pcm = None
         if not final.strip():
+            self._note_listening(False)
             return  # silence/noise: no turn, staying silent
         self._start_turn_text(final.strip(), self._utter_ctx)
 
@@ -993,9 +1031,14 @@ class _RtcSession:
         path, barge-in cancels included."""
         hub = self._server.status
         if hub is None or self._turn_task is None:
+            self._note_listening(False)
             return
         hub.turn_begin()
         self._turn_task.add_done_callback(lambda _t: hub.turn_end())
+        # Dispatch ends the capture; clearing listening after
+        # turn_begin hands the light from pink to amber with no
+        # idle flicker between.
+        self._note_listening(False)
 
     def _start_turn_pcm(self, pcm: bytes,
                         ctx: list[str] | None = None) -> None:
@@ -1007,6 +1050,7 @@ class _RtcSession:
             # practice the cancel above makes this rare.)
             _LOGGER.info("%s utterance dropped: a turn is still running",
                          self._server.label)
+            self._note_listening(False)
             return
         self._turn_task = asyncio.ensure_future(
             self._run_turn_pcm(pcm, self._generation, ctx or []))
@@ -1017,6 +1061,7 @@ class _RtcSession:
         if self._turn_busy():
             _LOGGER.info("%s utterance dropped: a turn is still running",
                          self._server.label)
+            self._note_listening(False)
             return
         self._turn_task = asyncio.ensure_future(
             self._run_transcript(transcript, self._generation,
@@ -1106,6 +1151,7 @@ class _RtcSession:
         self._out.clear()
         self._play_queue.clear()
         self._note_playing()
+        self._note_listening(False)
         for task in (self._consume_task, self._turn_task,
                      self._stream_setup_task):
             if task is not None and not task.done():

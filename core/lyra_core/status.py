@@ -5,9 +5,19 @@ with a text label -- GREEN idle, AMBER thinking (soft pulse),
 BLUE speaking, VIOLET dim for Sleep, RED (slow pulse) for a
 service fault he needs to investigate, the label naming the fault
 ("Model not loaded", "Speech service down", ...). Error outranks
-everything including Sleep; then Sleep, speaking, thinking, idle.
-Listening gets no indicator: with barge-in she is always
-listening, so it is the ambient state, not a shown one.
+everything including Sleep; then Sleep, speaking, thinking,
+listening, idle.
+
+Listening (PINK, added later the same evening at Daniel's
+order): the gate is open and she is actively taking in his
+speech -- WakeGate's post-wake capture window, or an RTC/call
+session mid-utterance. The ambient mic is only wake-watching,
+which is not listening in any sense worth a light; gate-open
+capture is. It doubles as the silent wake-ack: he can see she
+triggered instead of talking to air. In RTC it never overrides
+speaking -- an onset during her playback (a barge candidate,
+her own echo included) leaves the light blue until playback
+has actually stopped.
 
 State delivery is PUSHED end to end (Daniel's state-delivery
 rule: state-driven/pushed, never polled). This hub computes the
@@ -24,7 +34,9 @@ Inputs, all wired in production_main:
   turn tasks, dashboard-call turns) = thinking; a speech clock fed
   by every TV-mirrored synthesis (the WAV's own duration is the
   playback duration the page's job player runs) plus RTC sessions'
-  real playback state = speaking.
+  real playback state = speaking; keyed capture flags (the
+  WakeGate session's capturing state, RTC/call sessions'
+  utterance activity) = listening.
 - mode: the mode manager's applied mode (sleep shows violet).
 - health: the dependency monitor below (lyra-llm with the model
   loaded, Kokoro, Parakeet TDT, the Nemotron streamer). Checking
@@ -58,6 +70,7 @@ FAULTS = (
 
 LABELS = {
     "idle": "Idle",
+    "listening": "Listening\u2026",
     "thinking": "Thinking\u2026",
     "speaking": "Speaking",
     "sleep": "Sleeping",
@@ -73,6 +86,7 @@ class StatusHub:
         self._turns = 0
         self._speech_until = 0.0
         self._rtc_playing: set = set()
+        self._listening: set = set()
         self._mode = "wakegate"
         self._health: dict[str, bool] = {}
         self._subs: list = []
@@ -122,6 +136,17 @@ class StatusHub:
             self._rtc_playing.discard(key)
         self._recompute()
 
+    def set_listening(self, key, active: bool) -> None:
+        """Gate-open capture, keyed like rtc_playing so concurrent
+        sources (the WakeGate session, RTC/call sessions) compose:
+        she is taking in the user's speech from `key` until the
+        source clears the flag at dispatch or discard."""
+        if active:
+            self._listening.add(key)
+        else:
+            self._listening.discard(key)
+        self._recompute()
+
     def set_mode(self, mode: str) -> None:
         if mode != self._mode:
             self._mode = mode
@@ -145,6 +170,8 @@ class StatusHub:
             return "speaking"
         if self._turns > 0:
             return "thinking"
+        if self._listening:
+            return "listening"
         return "idle"
 
     def snapshot(self) -> dict:
