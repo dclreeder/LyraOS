@@ -1022,7 +1022,15 @@ class _RtcSession:
                 covered = _subseq_len(twords, window)
                 if (len(twords) >= ECHO_MIN_MATCH
                         and covered >= ECHO_MIN_MATCH
-                        and covered / len(twords) >= ECHO_COVERAGE):
+                        and covered / len(twords) >= ECHO_COVERAGE) or (
+                        0 < len(twords) <= 4 and covered == len(twords)):
+                    # The short form matters too: a playback tail can
+                    # form an utterance of a word or two ("...seven
+                    # oh five."), under the coverage floor above, and
+                    # it is still her own voice coming back. A real
+                    # turn that short whose every word appears in
+                    # order in what she just said is not a plausible
+                    # command; he can repeat himself if it ever is.
                     _LOGGER.info(
                         "%s echo utterance dropped at dispatch: %r "
                         "matches her own playback",
