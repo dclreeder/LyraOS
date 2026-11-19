@@ -1,0 +1,82 @@
+"""Mode flip check (suite: mode_flip).
+
+Drives a mode change through the real dashboard endpoint
+(POST :8098/api/mode -> the core's authenticated POST /mode) and
+asserts the change lands in the pushed status state
+(web/status_state.json's 'mode' -- the same slice the TV page
+renders from), then flips back to the mode it found and asserts
+that too. No audio, no service restarts. Run via
+benches/run_all.py.
+"""
+from __future__ import annotations
+
+import json
+import time
+import urllib.request
+from pathlib import Path
+
+DASH = "http://127.0.0.1:8098"
+STATUS_STATE = Path("~/Documents/LyraOS/web/status_state.json").expanduser()
+
+
+def pushed_mode() -> str:
+    return json.loads(STATUS_STATE.read_text())["mode"]
+
+
+def set_mode(mode: str) -> dict:
+    body = json.dumps({"mode": mode}).encode()
+    req = urllib.request.Request(
+        DASH + "/api/mode", data=body,
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
+def wait_mode(mode: str, timeout: float = 20.0) -> bool:
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            if pushed_mode() == mode:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.4)
+    return False
+
+
+def main() -> int:
+    start = pushed_mode()
+    target = "sleep" if start != "sleep" else "wakegate"
+    print(f"[mode] start={start} -> {target} -> {start}", flush=True)
+    ok = True
+    try:
+        resp = set_mode(target)
+        print(f"[mode] POST {target}: {resp}", flush=True)
+        if not resp.get("ok"):
+            print("[mode] FAIL: dashboard refused the flip")
+            ok = False
+        elif not wait_mode(target):
+            print(f"[mode] FAIL: pushed state never became {target}")
+            ok = False
+        else:
+            print(f"[mode] pushed state reached {target}")
+    finally:
+        try:
+            resp = set_mode(start)
+            print(f"[mode] POST back to {start}: {resp}", flush=True)
+            if not resp.get("ok"):
+                ok = False
+        except Exception as exc:
+            print(f"[mode] FAIL: restore POST failed: {exc}")
+            ok = False
+    if not wait_mode(start):
+        print(f"[mode] FAIL: pushed state never returned to {start}")
+        ok = False
+    else:
+        print(f"[mode] pushed state back at {start}")
+    print("MODE FLIP BENCH:", "PASS" if ok else "FAIL", flush=True)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

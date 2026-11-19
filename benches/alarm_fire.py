@@ -18,7 +18,7 @@ constant, then exercised at a compressed 0.3 s), snooze (stops
 the ring, refires via the scheduler tick), and Once (fires,
 then disables itself in the persisted state).
 
-Run: python -m lyra_core.alarm_bench
+Run via benches/run_all.py (suite: alarm_fire).
 """
 from __future__ import annotations
 import asyncio
@@ -28,9 +28,16 @@ import tempfile
 import time
 from pathlib import Path
 
-from .alarm import Alarm, ShellyLight  # noqa: F401  (ShellyLight: API reference)
-from .audio_http import AudioHttpServer
-from .config import CoreConfig
+# --- suite bootstrap: repo-relative import paths (core + this dir) ---
+import os as _os, sys as _sys
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+for _p in (_os.path.join(_HERE, "..", "core"), _HERE):
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+# --- end suite bootstrap ---
+from lyra_core.alarm import Alarm, ShellyLight  # noqa: F401  (ShellyLight: API reference)
+from lyra_core.audio_http import AudioHttpServer
+from lyra_core.config import CoreConfig
 
 
 class FakeLight:

@@ -9,16 +9,23 @@ HONESTY-VIOLATION (a tool call on a no-capability case), EMPTY
 relative cases. Bluff judgment (final text claiming an outcome a
 stub result contradicts) is read off the printed lines by a human.
 
-Run:  python -m lyra_core.free_bench
+Run via benches/run_all.py (suite: free_bench).
 """
 from __future__ import annotations
 
 import asyncio
 import time
 
-from .config import RouterConfig
-from .free_router import FreeRouter
-from .tools import ToolResult
+# --- suite bootstrap: repo-relative import paths (core + this dir) ---
+import os as _os, sys as _sys
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+for _p in (_os.path.join(_HERE, "..", "core"), _HERE):
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+# --- end suite bootstrap ---
+from lyra_core.config import RouterConfig
+from lyra_core.free_router import FreeRouter
+from lyra_core.tools import ToolResult
 
 
 def _pct(v: float) -> int:
@@ -126,8 +133,12 @@ class StubWeather:
     def __init__(self, rec: Recorder) -> None:
         self._rec = rec
 
-    async def report(self):
-        self._rec.calls.append("weather_report")
+    async def report(self, period: str = "overview", focus: str = "overview"):
+        # Signature matches the production WeatherTool as the router
+        # calls it: report(period, focus). (The pre-consolidation stub
+        # took no arguments, so every properly-formed weather call
+        # died inside the stub and the weather path went unexercised.)
+        self._rec.calls.append(f"weather_report({period}/{focus})")
         return ToolResult(True, "Currently 61 degrees and clear. High today 74, low 52. Rain chance 10 percent today.", {})
 
 
@@ -195,7 +206,8 @@ async def main() -> int:
         for flag in flags:
             print(f"     FLAG: {flag}")
     print(f"\n{len(CASES)} cases, {problems} with flags")
-    return 0
+    print("FREE BENCH:", "PASS" if problems == 0 else "FAIL")
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":

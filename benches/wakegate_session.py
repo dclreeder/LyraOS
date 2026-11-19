@@ -8,20 +8,23 @@ Detection -> RUN_START/STT_START -> STT_VAD_START -> STT_VAD_END ->
 STT transcript -> INTENT_START/END -> TTS_START (spoken text) -> TTS_END (HTTP URL)
 -> RUN_END, and fetch-back of the TTS URL from the core's endpoint.
 
-Part B — the supervisor's reconnect loop against scripted fake box
+Part B — the supervisor's reconnect loop against scripted fake
 clients: two connect failures, a success, a mid-run drop, a reconnect,
-then stop(). Proves backoff/retry, resubscribe-on-connect, and that the
-only exit path is unsubscribe-then-disconnect.
+then stop(). Proves backoff/retry, reconnect-after-drop, and that the
+only exit path is the clean disconnect.
 
-The REAL box (192.168.12.98) is never contacted; HA and production
+No real client is ever contacted; HA and production
 services are untouched (the Wyoming services are only *used*, as in
 the 1b bench — including the production collector filing the replayed
 clip, which is observed and reported, not interfered with).
-Run via ~/Documents/LyraOS/core/session-bench.sh.
+Run via benches/run_all.py (suite: wakegate_session). Part A asserts the
+first turn's event order (see the suite note at the assertion):
+the wake service may re-fire on the replayed pool clip.
 """
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import sys
@@ -30,12 +33,19 @@ import urllib.request
 import wave
 from pathlib import Path
 
-from .audio_http import AudioHttpServer
-from .config import CoreConfig
-from .pipeline import PipelineDriver
-from .verify import finalize_spooled_detection
-from .session import CANNED_REPLY, VoiceSession
-from .supervisor import CoreSupervisor
+# --- suite bootstrap: repo-relative import paths (core + this dir) ---
+import os as _os, sys as _sys
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+for _p in (_os.path.join(_HERE, "..", "core"), _HERE):
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+# --- end suite bootstrap ---
+from lyra_core.audio_http import AudioHttpServer
+from lyra_core.config import CoreConfig
+from lyra_core.pipeline import PipelineDriver
+from lyra_core.verify import finalize_spooled_detection
+from lyra_core.session import CANNED_REPLY, VoiceSession
+from lyra_core.supervisor import CoreSupervisor
 
 CLIP = Path(
     "~/Documents/LyraOS/modules/wakeword/data/clips/positives/"
@@ -166,6 +176,20 @@ async def part_a(cfg: CoreConfig) -> dict:
             }
             print(f"[http] GET {session.last_tts_url} -> {f_status}, "
                   f"{f_ctype}, {len(f_body)} B")
+        # Also fetch the URL the box was actually handed on TTS_END,
+        # while the endpoint is up (see the dialect note below: on
+        # the tv route it is a different file from last_tts_url).
+        box_end = next((d for _t, k, d in timeline
+                        if k == "fakebox.sent" and d.get("name") == "tts_end"), None)
+        if box_end and box_end.get("url"):
+            b_status, b_ctype, b_body = await asyncio.to_thread(
+                _fetch, box_end["url"]
+            )
+            result["box_tts_fetch"] = {
+                "status": b_status, "content_type": b_ctype, "bytes": len(b_body),
+            }
+            print(f"[http] GET box tts_end {box_end['url']} -> {b_status}, "
+                  f"{b_ctype}, {len(b_body)} B")
     finally:
         await session.stop()
         server.stop()
@@ -174,9 +198,14 @@ async def part_a(cfg: CoreConfig) -> dict:
     print("-- event timeline (t+ seconds from bench start) --")
     for ts, kind, detail in timeline:
         print(f"  t+{ts - t0:6.2f}s  {kind:14s} {detail}")
-    result["transcript"] = session.last_transcript
+    # First-turn values come from the timeline, not session.last_*:
+    # a repeat detection's run overwrites the session fields (its
+    # own empty transcript) before these post-stop reads.
+    first_stt_end = next(d for _t, k, d in timeline
+                         if k == "box_event" and d.get("name") == "stt_end")
+    result["transcript"] = first_stt_end.get("text") or ""
     result["tts_url"] = session.last_tts_url
-    print(f"[stt] transcript={session.last_transcript!r}")
+    print(f"[stt] transcript={result['transcript']!r}")
     print(f"[tts] url={session.last_tts_url}")
 
     # Assertions on the required order.
@@ -189,8 +218,19 @@ async def part_a(cfg: CoreConfig) -> dict:
     assert "detection" in kinds, "wake server never returned a Detection"
     assert kinds.index("wake_forward") < kinds.index("detection"), "forward must precede detection"
     assert kinds.index("detection") < kinds.index("box_event"), "detection must precede box events"
-    assert seq == expected, f"box event order mismatch:\n  got      {seq}\n  expected {expected}"
-    assert session.last_transcript, "empty transcript"
+    # The contract is the FIRST turn's event order. The wake
+    # service can fire a second Detection on this replayed pool
+    # clip (observed 2026-11-19: detections ~2.7 s apart; the
+    # collector spool shows the same double-fire in production).
+    # The session handles the repeat correctly -- a run that finds
+    # no speech and errors back to idle -- so trailing events after
+    # the first run_end are reported, not asserted away.
+    first_turn = seq[:seq.index("run_end") + 1] if "run_end" in seq else seq
+    assert first_turn == expected, f"box event order mismatch:\n  got      {first_turn}\n  expected {expected}"
+    if len(seq) > len(first_turn):
+        print(f"[bench] note: trailing events after the first turn "
+              f"(repeat wake detection, handled): {seq[len(first_turn):]}")
+    assert result["transcript"], "empty transcript"
     vad_i = kinds.index("vad_start"); _ = vad_i
     assert "vad_start" in kinds and "vad_end" in kinds, "endpointer VAD events missing"
     assert kinds.index("vad_start") < kinds.index("vad_end") < kinds.index("transcript"), \
@@ -207,12 +247,21 @@ async def part_a(cfg: CoreConfig) -> dict:
     fb_start = next(d for d in sent if d["name"] == "tts_start")
     fb_end = next(d for d in sent if d["name"] == "tts_end")
     assert fb_start["text"] == CANNED_REPLY, fb_start
-    assert fb_end["url"] == session.last_tts_url, fb_end
+    # NOT == session.last_tts_url: since 2026-11-15 the TV is the
+    # only audio out, so on the tv speech route the box (ears only)
+    # is handed a silence WAV of the reply's length as its TTS
+    # audio -- a different stored file from the real reply audio
+    # behind last_tts_url. The dialect contract is that TTS_END
+    # carries a URL that fetches back as WAV; both URLs are
+    # fetch-checked (the box one just below, the reply at the end).
+    assert fb_end["url"], fb_end
     assert sent_names.index("tts_start") < sent_names.index("tts_end"), sent_names
 
     # The TTS URL must have fetched back as WAV while the endpoint was up.
     fetched = result.get("tts_fetch")
     assert fetched and fetched["status"] == 200 and fetched["content_type"] == "audio/wav", fetched
+    box_fetched = result.get("box_tts_fetch")
+    assert box_fetched and box_fetched["status"] == 200 and box_fetched["content_type"] == "audio/wav", box_fetched
     print("Part A: PASS")
     return result
 
@@ -222,9 +271,13 @@ async def part_a(cfg: CoreConfig) -> dict:
 # ---------------------------------------------------------------------------
 
 class ScriptedFakeBox:
-    """BoxClient stand-in with a scripted connect outcome and a drop()
-    switch. disconnect() records the unsubscribe-then-disconnect order
-    the same way BoxClient.disconnect performs it."""
+    """Client stand-in with a scripted connect outcome and a drop()
+    switch, shaped to the CURRENT supervisor contract (supervisor.py
+    is transport-agnostic since the localmic cutover): connect()
+    just connects -- the BoxClient-era subscribe step and the
+    unsubscribe-then-disconnect pair are gone; disconnect() is the
+    supervisor's single clean-exit call, used for the intentional
+    stop AND to close out a dropped client before discarding it."""
 
     def __init__(self, plan: str) -> None:
         self.plan = plan  # "fail" | "ok"
@@ -235,7 +288,6 @@ class ScriptedFakeBox:
         self.calls.append("connect")
         if self.plan == "fail":
             raise OSError("scripted connect failure")
-        self.calls.append("subscribe")  # BoxClient.connect subscribes
         self._connected = True
 
     @property
@@ -246,13 +298,12 @@ class ScriptedFakeBox:
         self._connected = False
 
     async def disconnect(self) -> None:
-        self.calls.append("unsubscribe")
         self.calls.append("disconnect")
         self._connected = False
 
 
 async def part_b(cfg: CoreConfig) -> dict:
-    print("== Part B: supervisor reconnect/resubscribe ==")
+    print("== Part B: supervisor reconnect ==")
     plans = iter(["fail", "fail", "ok", "ok"])
     made: list[ScriptedFakeBox] = []
 
@@ -266,7 +317,7 @@ async def part_b(cfg: CoreConfig) -> dict:
 
     session = VoiceSession(cfg, _NullDriver(), None)  # type: ignore[arg-type]
     supervisor = CoreSupervisor(
-        cfg, session, box_factory=factory,  # type: ignore[arg-type]
+        cfg, session, client_factory=factory,  # type: ignore[arg-type]
         backoff_initial_s=0.05, backoff_max_s=0.2, poll_s=0.02,
     )
     run_task = asyncio.create_task(supervisor.run())
@@ -286,16 +337,21 @@ async def part_b(cfg: CoreConfig) -> dict:
     ):
         await asyncio.sleep(0.02)
     assert len(made) >= 4 and made[3].is_connected, "supervisor never reconnected"
-    # Clean stop: the ONLY exit path is unsubscribe-then-disconnect.
+    # Clean stop: disconnect() is the ONLY exit path -- the stopped
+    # client and the dropped one each get exactly one, and a client
+    # whose connect failed is never disconnected.
     supervisor.stop()
     await asyncio.wait_for(run_task, timeout=10)
     for i, box in enumerate(made):
         print(f"  fake[{i}] plan={box.plan} calls={box.calls}")
-        if "disconnect" in box.calls:
-            assert box.calls.index("unsubscribe") < box.calls.index("disconnect"), \
-                f"fake[{i}]: disconnect without prior unsubscribe"
-    assert made[3].calls[-2:] == ["unsubscribe", "disconnect"], \
-        "final client must exit via unsubscribe-then-disconnect"
+        if box.plan == "fail":
+            assert box.calls == ["connect"], \
+                f"fake[{i}]: failed connect must not be disconnected: {box.calls}"
+        else:
+            assert box.calls == ["connect", "disconnect"], \
+                f"fake[{i}]: expected connect then exactly one disconnect: {box.calls}"
+    assert made[3].calls == ["connect", "disconnect"], \
+        "final client must exit via the clean disconnect"
     assert supervisor.connect_attempts == 4, supervisor.connect_attempts
     assert supervisor.successful_connects == 2, supervisor.successful_connects
     print(f"  attempts={supervisor.connect_attempts} "
@@ -310,6 +366,17 @@ async def part_b(cfg: CoreConfig) -> dict:
 
 async def run() -> int:
     cfg = CoreConfig.load()
+    # Suite: bench HTTP server on 8199, never the production port.
+    cfg = dataclasses.replace(cfg, http=dataclasses.replace(cfg.http, port=8199))
+    # Silence (house rule): the driver's TV mirror is a
+    # fire-and-forget POST to lyra-web; record it in-process so no
+    # bench speech ever reaches the TV page.
+    mirrored: list[int] = []
+    async def _record_mirror(wav_bytes: bytes) -> None:
+        mirrored.append(len(wav_bytes))
+    import lyra_core.pipeline as _pipeline_mod
+    _pipeline_mod._mirror_wav_to_tv = _record_mirror
+
     before_clip = _newest(POS_DIR)
     before_ledger = _last_line(LEDGER)
     before_spool = sorted(p.name for p in SPOOL_DIR.iterdir()) if SPOOL_DIR.exists() else []

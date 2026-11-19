@@ -8,11 +8,12 @@ report states exactly what the bench run caused in the training pool.
 
 Never drives a live device, never touches any service config;
 the only writes are the collector's own (by design) and this output.
-Run via ~/Documents/LyraOS/core/bench.sh.
+Run via benches/run_all.py (suite: wakegate_pipeline).
 """
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import sys
@@ -21,10 +22,17 @@ import urllib.request
 import wave
 from pathlib import Path
 
-from .audio_http import AudioHttpServer
-from .config import CoreConfig
-from .pipeline import PipelineDriver, PipelineError
-from .verify import finalize_spooled_detection
+# --- suite bootstrap: repo-relative import paths (core + this dir) ---
+import os as _os, sys as _sys
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+for _p in (_os.path.join(_HERE, "..", "core"), _HERE):
+    if _p not in _sys.path:
+        _sys.path.insert(0, _p)
+# --- end suite bootstrap ---
+from lyra_core.audio_http import AudioHttpServer
+from lyra_core.config import CoreConfig
+from lyra_core.pipeline import PipelineDriver, PipelineError
+from lyra_core.verify import finalize_spooled_detection
 
 CLIP = Path(
     "~/Documents/LyraOS/modules/wakeword/data/clips/positives/"
@@ -73,10 +81,22 @@ def _program_names(info: dict, key: str) -> list[str]:
 
 async def run() -> int:
     cfg = CoreConfig.load()
+    # Suite: never bind the production HTTP port (the live core
+    # holds it); the bench server runs on 8199 like the other
+    # session benches.
+    cfg = dataclasses.replace(cfg, http=dataclasses.replace(cfg.http, port=8199))
     driver = PipelineDriver(cfg)
     # The collector janitor hook, wired exactly as production
     # wires it (the STT bridge used to do this job).
     driver.on_transcribed = finalize_spooled_detection
+    # Silence (house rule): the driver's TV mirror is a
+    # fire-and-forget POST to lyra-web; record it in-process so no
+    # bench speech ever reaches the TV page.
+    mirrored: list[int] = []
+    async def _record_mirror(wav_bytes: bytes) -> None:
+        mirrored.append(len(wav_bytes))
+    import lyra_core.pipeline as _pipeline_mod
+    _pipeline_mod._mirror_wav_to_tv = _record_mirror
     report: dict = {"clip": str(CLIP), "reply_text": REPLY_TEXT}
 
     # Collector state before (the wake/STT pair files clips by design).
@@ -129,6 +149,21 @@ async def run() -> int:
             return 4
         report["transcript"] = transcript
         print(f"[stt] transcript={transcript!r} ({time.monotonic() - t0:.2f}s)")
+        # Regression contract: the transcript of the canonical pool
+        # positive must equal its production ledger line EXACTLY.
+        ledger_text = None
+        for _line in LEDGER.read_text().splitlines():
+            try:
+                _entry = json.loads(_line)
+            except json.JSONDecodeError:
+                continue
+            if _entry.get("path", "").endswith(CLIP.name):
+                ledger_text = _entry.get("transcript")
+        print(f"[regression] ledger transcript={ledger_text!r}")
+        if transcript != ledger_text:
+            print("[regression] FAIL: transcript differs from the ledger (not EXACT)")
+            return 7
+        print("[regression] transcript EXACT vs ledger")
 
         # Stage A3: TTS reply, served by the core's HTTP endpoint, fetched back.
         t0 = time.monotonic()
@@ -180,6 +215,8 @@ async def run() -> int:
     print(f"[collector] new ledger line: {report['collector']['new_ledger_line']}")
     print(f"[collector] spool before={before_spool} after={after_spool}")
 
+    report["mirrored_wavs"] = mirrored
+    print(f"[mirror] suppressed {len(mirrored)} TV mirror post(s) in-process")
     print("===BENCH_JSON===")
     print(json.dumps(report, indent=2))
     print("===BENCH_PASS===")
