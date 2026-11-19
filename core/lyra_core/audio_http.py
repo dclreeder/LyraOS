@@ -1,15 +1,17 @@
-"""HTTP audio endpoint: serves generated speech (and, in later phases, the
-alarm tone) at URLs the speaker box can fetch.
+"""HTTP audio endpoint: serves generated speech
+at URLs the TV web viewer fetches for playback.
 
-This mirrors how the box consumes audio today: ESPHome pipeline TTS and
-announcements reach the device as HTTP URLs (Phase 1a design §1), the same
-way HA serves its TTS cache. Stdlib ThreadingHTTPServer on purpose — the
+Speech reaches the TV page as HTTP URLs: the core stores each
+synthesized line and hands out a /audio/<id>.wav URL, and the
+page's player fetches it (the mirror behind her lip sync).
+
+Stdlib ThreadingHTTPServer on purpose — the
 endpoint is a file server with one route shape, and stdlib keeps the core
 runnable under the esphome venv with no extra dependencies.
 
 Bind: loopback + the Fedora's LAN address on :8099 by default
 (config.http.bind; dial-in 2026-11-11, item C) -- reachable from the
-box and the home LAN, not from other interfaces such as Tailscale.
+home LAN, not from other interfaces such as Tailscale.
 The public URL form is http://<fedora-lan-ip>:8099/audio/<id>.wav.
 """
 from __future__ import annotations
@@ -23,7 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 
 # An extra route answers a GET for one exact path: it receives the
 # parsed query string and returns (status, content_type, body). The
-# alarm registers its tone file and its authenticated kill endpoint
+# alarm registers its authenticated kill endpoint
 # this way; the handler runs them in the HTTP worker thread.
 RouteHandler = Callable[[dict], tuple[int, str, bytes]]
 
@@ -43,11 +45,11 @@ class AudioStore:
     `ttl_s` and the store is hard-capped at `max_items` with
     oldest-first eviction, so the store can never grow without
     bound. Defaults -- TTL 600 s, cap 32 -- are sized to the real
-    consumers: the box fetches a TTS reply or announcement within
+    consumers: the TV viewer fetches a TTS reply or announcement within
     seconds of the URL being handed out, so ten minutes is a wide
     margin, and 32 live clips is far beyond any burst the single
     voice pipeline can produce. (The alarm tone is NOT kept here;
-    it is served from its own route by the alarm module.)"""
+    the alarm plays it from the file directly.)"""
 
     def __init__(self, ttl_s: float = 600.0, max_items: int = 32) -> None:
         self._lock = threading.Lock()

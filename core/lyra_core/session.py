@@ -22,7 +22,7 @@ Phase scope notes:
   (the production collector's own call) and its classifier gates the
   turn — FAIL/MAYBE end the run silently (no TTS, no reply URL), PASS
   hands the wake-stripped command to on_command. Without a gate, the
-  Phase 1 path (Wyoming STT transcript -> canned reply) is unchanged,
+  Phase 1 path (driver transcript -> canned reply) is unchanged,
   exactly as HA's seat-swap proof requires (only the controller
   changes).
 - No wake ack (removed 2026-11-16, Daniel's order): a Detection
@@ -30,7 +30,8 @@ Phase scope notes:
   earcon's echo from endpointing the capture. Both are gone;
   capture endpoints on the speaker's VAD alone.
 - An empty transcript ends the run as ERROR "stt-no-text-recognized"
-  (the firmware ignores that code: no error LED phase), mirroring HA.
+  (nothing on the local transport consumes that code: no error
+  LED phase exists there).
 - While a run is active the mic stream is NOT forwarded to the wake
   server (HA diverts the stream to the STT stage the same way), and
   further Detections are ignored — the core-side equivalent of the

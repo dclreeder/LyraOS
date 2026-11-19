@@ -20,12 +20,13 @@ there is no satellite hardware anywhere in the path:
   leave through synthesize_speech's TV mirror, which follows
   Fedora's default sink, so every evt_* method is a no-op here,
   exactly as on the satlink wire.
-- Media surface (alarm fallback): there is no
-  box media player. media_play / announce play the given URL
-  through Fedora's default sink with pw-cat -- that is what the
-  alarm's box-fallback ring becomes on this transport.
-  media_volume is None and media_set_volume a no-op: output
-  volume lives in Fedora's sound settings, not in a device.
+- Media surface: there is no box media player. media_play /
+  announce play a given URL through Fedora's default sink with
+  pw-cat; they are the seat's playback surface, unused by
+  production since the alarm cleanup (2026-11-19) made the core
+  its own sounder (SinkRinger). media_volume is None and
+  media_set_volume a no-op: output volume lives in Fedora's
+  sound settings, not in a device.
 
 Lifecycle mirrors the old satlink client: connect() starts the
 capture and returns once it is flowing; is_connected is the

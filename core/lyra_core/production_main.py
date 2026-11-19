@@ -332,7 +332,7 @@ async def amain() -> int:
     # suspended -- in Sleep she is not listening at all).
     seat = _SupervisorSeat(cfg, session, _localmic_factory)
     _LOGGER.info(
-        "transport: localmic (Fedora default source; no satellite box)"
+        "transport: localmic (raw ReSpeaker source, pinned by node name; no satellite box)"
     )
     alarm = Alarm(cfg, http=http)
     # Default-sink sounder (2026-11-19): the core plays the tone

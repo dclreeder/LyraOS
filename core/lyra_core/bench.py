@@ -6,7 +6,7 @@ TTS -> HTTP serve + fetch-back verification. Also observes the production
 clip collector's side effects (spool -> filed clip + ledger line) so the
 report states exactly what the bench run caused in the training pool.
 
-Never contacts the speaker box, never touches HA or any service config;
+Never drives a live device, never touches any service config;
 the only writes are the collector's own (by design) and this output.
 Run via ~/Documents/LyraOS/core/bench.sh.
 """

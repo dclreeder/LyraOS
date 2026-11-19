@@ -1,12 +1,11 @@
-"""Pipeline driver: the core playing HA's client role against the two
-production Wyoming services (wake :10400, TTS :10200) and Parakeet
+"""Pipeline driver: the core's client for the two production
+Wyoming services (wake :10400, TTS :10200) and Parakeet
 (:8096), which the core calls directly over HTTP -- the Wyoming STT
 bridge between them was removed 2026-11-19.
 
-Phase 1b scope: recorded-clip round trips only — describe, wake detection,
-transcription, synthesis. No box involvement; the box-facing choreography
-(pipeline events back to the device) lives in box_client.py and is wired
-to this driver in the seat-swap phase.
+In production this driver carries the voice session's wake,
+transcription and synthesis round trips and RTC's transcription;
+the benches drive the same methods on recorded clips.
 """
 from __future__ import annotations
 
@@ -37,7 +36,7 @@ _DISPLAY_STATE_PATH = "/home/dclreeder/Documents/LyraOS/web/display_state.json"
 def speech_route() -> str:
     """Where spoken lines go. Since 2026-11-15 (Daniel's call) the TV
     is the ONLY audio out: the speaker box is out of the output
-    equation entirely and serves as ears only, so this is "tv"
+    equation entirely, so this is "tv"
     unconditionally -- the display state no longer routes speech.
     (Before that, this read display_state.json fresh on every line and
     routed between the TV and the box; restore that body to bring the
@@ -193,7 +192,7 @@ class PipelineDriver:
         # this at the status hub; synthesize_speech calls it with
         # the line's duration whenever a line is TV-mirrored (the
         # page's playback of that line IS her speaking on the
-        # WakeGate / announce / call paths). None in benches.
+        # WakeGate and announce paths). None in benches.
         self.on_speech = None
         # Collector hook (2026-11-19): production_main points this
         # at lyra_core.verify.finalize_spooled_detection;
@@ -230,8 +229,8 @@ class PipelineDriver:
         """Stream a full clip to the wake server at ~real-time pace.
 
         Returns the Detection event's data dict, or None if the gate never
-        fired. The whole clip is always streamed (a real satellite's mic
-        stream doesn't stop at the detection), then we wait out the grace
+        fired. The whole clip is always streamed (the live mic stream
+        doesn't stop at a detection), then we wait out the grace
         window for the Detection the gate emits mid-stream.
         """
         cfg = self._cfg
