@@ -1,5 +1,7 @@
-"""Pipeline driver: the core playing HA's client role against the three
-production Wyoming services (wake :10400, STT :10300, TTS :10200).
+"""Pipeline driver: the core playing HA's client role against the two
+production Wyoming services (wake :10400, TTS :10200) and Parakeet
+(:8096), which the core calls directly over HTTP -- the Wyoming STT
+bridge between them was removed 2026-11-19.
 
 Phase 1b scope: recorded-clip round trips only — describe, wake detection,
 transcription, synthesis. No box involvement; the box-facing choreography
@@ -13,6 +15,7 @@ import io
 import json
 import re
 import unicodedata
+import urllib.request
 import wave
 
 from .config import CoreConfig
@@ -25,7 +28,6 @@ from .wyoming_client import (
     describe,
     detect,
     synthesize,
-    transcribe,
 )
 
 
@@ -193,6 +195,15 @@ class PipelineDriver:
         # page's playback of that line IS her speaking on the
         # WakeGate / announce / call paths). None in benches.
         self.on_speech = None
+        # Collector hook (2026-11-19): production_main points this
+        # at lyra_core.verify.finalize_spooled_detection;
+        # transcribe_audio fires it (fire-and-forget) with the
+        # transcribed PCM so the clip collector can finalize the
+        # spooled wake detection with the command audio attached --
+        # the job the Wyoming STT bridge's janitor did after every
+        # transcription, until the bridge was removed. None in
+        # benches that do not wire it.
+        self.on_transcribed = None
 
     async def describe(self, uri: str) -> dict:
         async with await WyomingConnection.connect(uri) as conn:
@@ -201,9 +212,10 @@ class PipelineDriver:
             return info.data
 
     async def describe_all(self) -> dict[str, dict]:
+        # Wake + TTS only: STT is Parakeet over HTTP now (see
+        # transcribe_audio) and has no Wyoming Info to describe.
         return {
             "wake": await self.describe(self._cfg.wake_uri),
-            "stt": await self.describe(self._cfg.stt_uri),
             "tts": await self.describe(self._cfg.tts_uri),
         }
 
@@ -248,18 +260,53 @@ class PipelineDriver:
         channels: int = 1,
         timeout: float = 180.0,
     ) -> str:
-        cfg = self._cfg
-        chunk_bytes = 8192 * width * channels
-        async with await WyomingConnection.connect(cfg.stt_uri) as conn:
-            await conn.send(transcribe(cfg.language))
-            await conn.send(audio_start(rate, width, channels))
-            for offset in range(0, len(pcm), chunk_bytes):
-                await conn.send(
-                    audio_chunk(rate, width, channels, pcm[offset:offset + chunk_bytes])
-                )
-            await conn.send(audio_stop())
-            event = await _next_of_type(conn, "transcript", timeout=timeout)
-            return (event.data.get("text") or "").strip()
+        """Transcribe PCM by POSTing it as a WAV to Parakeet
+        directly (2026-11-19: the Wyoming STT bridge is gone; this
+        is the same /v1/audio/transcriptions call the bridge made
+        on the core's behalf). The bridge answered a failed
+        transcription with an empty transcript; that contract is
+        preserved -- a failure reads as silence, never an
+        exception. Empty audio short-circuits, as it did there."""
+        if not pcm:
+            return ""
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(channels)
+            wf.setsampwidth(width)
+            wf.setframerate(rate)
+            wf.writeframes(pcm)
+        try:
+            text = await asyncio.to_thread(
+                self._parakeet_transcribe, buf.getvalue(), timeout)
+        except Exception:
+            text = ""
+        if self.on_transcribed is not None:
+            try:
+                asyncio.get_running_loop().create_task(
+                    self.on_transcribed(pcm))
+            except Exception:
+                pass
+        return text
+
+    def _parakeet_transcribe(self, wav_bytes: bytes,
+                             timeout: float) -> str:
+        """The multipart POST itself (blocking; run in a thread).
+        Multipart is built by hand: the core's interpreter carries
+        no httpx, and urllib is all this one call needs."""
+        boundary = "lyra-stt-4c1d9e7a"
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; '
+            'filename="audio.wav"\r\n'
+            "Content-Type: audio/wav\r\n\r\n"
+        ).encode() + wav_bytes + f"\r\n--{boundary}--\r\n".encode()
+        req = urllib.request.Request(
+            self._cfg.parakeet_url, data=body,
+            headers={"Content-Type":
+                     f"multipart/form-data; boundary={boundary}"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            obj = json.loads(resp.read())
+        return (obj.get("text") or "").strip()
 
     async def synthesize_speech(
         self, text: str, timeout: float = 120.0, *, mirror: bool = True

@@ -338,3 +338,35 @@ class VerifyGate:
             would_ledger=would_ledger,
             audio_seconds=len(audio) / collector.SAMPLE_RATE,
         )
+
+
+async def finalize_spooled_detection(command_pcm: bytes) -> None:
+    """File the spooled wake detection with this command audio
+    attached -- the collector janitor's fresh-claim path. Until
+    2026-11-19 this lived in the Wyoming STT bridge, which ran it
+    after every transcription it served; the bridge is gone and
+    the core is the transcriber now, so PipelineDriver's
+    on_transcribed hook (wired in production_main and the session
+    benches) calls this instead. In production the VerifyGate
+    files its own turns and claims their spool entries first, so
+    this finds nothing on gate-handled turns -- it is the backstop
+    for gate-less sessions, exactly as it was under the bridge.
+    Never raises."""
+    try:
+        got = collector.claim_latest_detection(max_age_s=120)
+        if got is None:
+            return
+        meta, wake_wav = got
+        try:
+            wake_audio = collector.read_wav(wake_wav)
+            command_audio = np.frombuffer(
+                command_pcm, dtype="<i2").astype(np.int16)
+            combined = np.concatenate([wake_audio, command_audio])
+            text = await collector.parakeet_transcribe(combined)
+            verdict = collector.classify_wake_transcription(text)
+            collector.file_clip(verdict, meta["gate_score"], text,
+                                meta["ts"], combined)
+        finally:
+            collector.discard_wake_wav(wake_wav)
+    except Exception:
+        _LOGGER.exception("collector finalize failed")

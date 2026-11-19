@@ -16,11 +16,13 @@ DEFAULT_CONFIG_PATH = CORE_DIR / "config.json"
 @dataclass
 class WyomingConfig:
     wake_uri: str = "tcp://127.0.0.1:10400"
-    # Wyoming STT bridge (modules/wyoming/stt_server.py); its backend
-    # is Parakeet TDT 0.6B v2 on parakeet-server :8096 (home:
-    # ~/Documents/parakeet.cpp) since 2026-11-17 -- Whisper was
-    # removed from the project the same day at Daniel's order.
-    stt_uri: str = "tcp://127.0.0.1:10300"
+    # Speech-to-text is NOT a Wyoming service: the core POSTs
+    # WAVs directly to Parakeet TDT 0.6B v2 on parakeet-server
+    # :8096 (home: ~/Documents/parakeet.cpp). The Wyoming STT
+    # bridge that used to sit between them was removed 2026-11-19.
+    # (Whisper was removed from the project 2026-11-17 at Daniel's
+    # order.)
+    parakeet_url: str = "http://127.0.0.1:8096/v1/audio/transcriptions"
     tts_uri: str = "tcp://127.0.0.1:10200"
     wake_name: str = "hey_lyra_stable_v1"
     language: str = "en"

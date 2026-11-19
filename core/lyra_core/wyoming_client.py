@@ -128,10 +128,6 @@ def audio_stop() -> WyomingEvent:
     return WyomingEvent("audio-stop", {"timestamp": None})
 
 
-def transcribe(language: str = "en") -> WyomingEvent:
-    return WyomingEvent("transcribe", {"language": language})
-
-
 def synthesize(text: str, voice: str | None = None) -> WyomingEvent:
     data: dict = {"text": text}
     if voice:

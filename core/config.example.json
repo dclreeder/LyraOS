@@ -1,7 +1,7 @@
 {
   "wyoming": {
     "wake_uri": "tcp://127.0.0.1:10400",
-    "stt_uri": "tcp://127.0.0.1:10300",
+    "parakeet_url": "http://127.0.0.1:8096/v1/audio/transcriptions",
     "tts_uri": "tcp://127.0.0.1:10200",
     "wake_name": "hey_lyra_stable_v1",
     "language": "en",

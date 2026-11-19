@@ -1,7 +1,7 @@
 """Stack checklist (--preflight): the localmic-era core's
 prerequisites, verified without starting the service.
 
-Checks: config loads, the three Wyoming services describe OK, the
+Checks: config loads, the Wyoming services (wake + TTS) describe OK, the
 Parakeet/Kokoro engine ports answer, and the core's HTTP audio
 endpoint binds, serves /healthz, and round-trips a stored WAV
 byte-identically. (The speaker-box seat-swap procedure this file
@@ -65,7 +65,7 @@ async def run_preflight() -> int:
     cfg = CoreConfig.load()
     check(True, "config loads",
           f"transport {cfg.transport!r}, "
-          f"wake {cfg.wyoming.wake_uri}, stt {cfg.wyoming.stt_uri}, "
+          f"wake {cfg.wyoming.wake_uri}, parakeet {cfg.wyoming.parakeet_url}, "
           f"tts {cfg.wyoming.tts_uri}, http :{cfg.http.port}")
 
     driver = PipelineDriver(cfg)
@@ -75,7 +75,7 @@ async def run_preflight() -> int:
         infos = await driver.describe_all()
         names = {
             svc: [p.get("name", "?") for p in infos[svc].get(key, [])]
-            for svc, key in (("wake", "wake"), ("stt", "asr"), ("tts", "tts"))
+            for svc, key in (("wake", "wake"), ("tts", "tts"))
         }
         check(all(names.values()), "Wyoming services describe OK", str(names))
     except Exception as exc:

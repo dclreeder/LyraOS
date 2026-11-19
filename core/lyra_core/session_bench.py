@@ -33,6 +33,7 @@ from pathlib import Path
 from .audio_http import AudioHttpServer
 from .config import CoreConfig
 from .pipeline import PipelineDriver
+from .verify import finalize_spooled_detection
 from .session import CANNED_REPLY, VoiceSession
 from .supervisor import CoreSupervisor
 
@@ -126,6 +127,9 @@ async def part_a(cfg: CoreConfig) -> dict:
     server = AudioHttpServer(cfg.http.bind, cfg.http.port)
     server.start()
     driver = PipelineDriver(cfg)
+    # The collector janitor hook, wired exactly as production
+    # wires it (the STT bridge used to do this job).
+    driver.on_transcribed = finalize_spooled_detection
     session = VoiceSession(cfg, driver, server, on_event=hook)
     box = FakeBox(session.handle_audio, timeline)
     session.attach_box(box)  # type: ignore[arg-type]  (duck-typed BoxClient)

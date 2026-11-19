@@ -87,7 +87,7 @@ from .tools import (
     WeatherTool,
 )
 from .supervisor import CoreSupervisor
-from .verify import VerifyGate
+from .verify import VerifyGate, finalize_spooled_detection
 
 _LOGGER = logging.getLogger("lyra_core.production")
 
@@ -254,6 +254,11 @@ async def amain() -> int:
     hub = StatusHub()
     hub.subscribe(StatusPublisher())
     driver.on_speech = hub.note_speech
+    # Collector janitor (2026-11-19): the STT bridge finalized
+    # spooled wake detections after each transcription; the core
+    # is the transcriber now, so the driver's hook runs the same
+    # finalize in-process (lyra_core.verify).
+    driver.on_transcribed = finalize_spooled_detection
     _session_processing = [False]
     _capture_speech = [False]
 

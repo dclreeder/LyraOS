@@ -1,6 +1,7 @@
 """Phase 1b bench: prove the core's Wyoming loop on a recorded clip.
 
-Stages: describe x3 -> wake (known positive clip) -> STT (same audio) ->
+Stages: describe x2 (wake + TTS; STT is Parakeet direct since
+2026-11-19) -> wake (known positive clip) -> STT (same audio) ->
 TTS -> HTTP serve + fetch-back verification. Also observes the production
 clip collector's side effects (spool -> filed clip + ledger line) so the
 report states exactly what the bench run caused in the training pool.
@@ -23,6 +24,7 @@ from pathlib import Path
 from .audio_http import AudioHttpServer
 from .config import CoreConfig
 from .pipeline import PipelineDriver, PipelineError
+from .verify import finalize_spooled_detection
 
 CLIP = Path(
     "~/Documents/LyraOS/modules/wakeword/data/clips/positives/"
@@ -72,6 +74,9 @@ def _program_names(info: dict, key: str) -> list[str]:
 async def run() -> int:
     cfg = CoreConfig.load()
     driver = PipelineDriver(cfg)
+    # The collector janitor hook, wired exactly as production
+    # wires it (the STT bridge used to do this job).
+    driver.on_transcribed = finalize_spooled_detection
     report: dict = {"clip": str(CLIP), "reply_text": REPLY_TEXT}
 
     # Collector state before (the wake/STT pair files clips by design).
@@ -84,11 +89,9 @@ async def run() -> int:
     infos = await driver.describe_all()
     report["describe"] = {
         "wake_programs": _program_names(infos["wake"], "wake"),
-        "stt_programs": _program_names(infos["stt"], "asr"),
         "tts_programs": _program_names(infos["tts"], "tts"),
     }
     print(f"[describe] wake={report['describe']['wake_programs']} "
-          f"stt={report['describe']['stt_programs']} "
           f"tts={report['describe']['tts_programs']} "
           f"({time.monotonic() - t0:.2f}s)")
 
@@ -158,8 +161,9 @@ async def run() -> int:
     finally:
         server.stop()
 
-    # Collector side effects: the STT server finalizes the spooled detection
-    # asynchronously; give it a few seconds, then observe (never interfere).
+    # Collector side effects: the driver's transcribe hook finalizes
+    # the spooled detection asynchronously; give it a few seconds,
+    # then observe (never interfere).
     await asyncio.sleep(8)
     after_clip = _newest(POS_DIR)
     after_ledger = _last_line(LEDGER)
