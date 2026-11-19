@@ -16,14 +16,17 @@ a time, WakeGate the resting mode.
 - sleep: no inputs at all -- capture suspended, she is in bed. The
   TV page shows the sleep plate off the same state.
 
-The state lives in web/mode_state.json -- the web state-file
-pattern (display_state.json, and sleep_state.json before it) --
-because three processes read it: the dashboard writes it (the mode
-selector), the core applies it (capture / RTC acceptance), and
-lyra-web reports it in /roomstate for the TV page. Writes are
-atomic (tmp + rename) so no reader ever sees a torn file. The old
-sleep_state.json is retired by this file: sleep is a mode now, and
-this is the only switch.
+The state lives in core/mode_state.json, owned by the core
+(2026-11-19): the dashboard asks the core to change mode over the
+core API (POST /mode), the core persists the choice here -- the
+file's only writer -- and applies it, and everyone else (lyra-web,
+the pages, the dashboard's read-back) consumes the mode from the
+status hub's pushed snapshot. Writes are atomic (tmp + rename).
+Before this, the file lived in web/ in the web state-file pattern:
+the dashboard wrote it, the core polled it every 0.5 s, lyra-web
+read it -- three processes around one file, replaced by one owner.
+The old sleep_state.json is retired by this file: sleep is a mode
+now, and this is the only switch.
 
 The core also publishes web/rtc_state.json ({"connected": bool}):
 core-owned status, read by the dashboard and lyra-web. Mode is
@@ -36,8 +39,9 @@ import os
 import time
 from pathlib import Path
 
-WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
-MODE_STATE_PATH = WEB_DIR / "mode_state.json"
+CORE_DIR = Path(__file__).resolve().parent.parent
+WEB_DIR = CORE_DIR.parent / "web"
+MODE_STATE_PATH = CORE_DIR / "mode_state.json"
 RTC_STATE_PATH = WEB_DIR / "rtc_state.json"
 
 WAKEGATE = "wakegate"

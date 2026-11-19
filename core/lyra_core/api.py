@@ -1,6 +1,6 @@
 """Phase 4 core API: Lyra's hands on the core.
 
-Two authenticated POST routes on the core's HTTP endpoint (:8099),
+Authenticated routes on the core's HTTP endpoint (:8099),
 sharing the alarm kill endpoint's token discipline: the token lives
 in the core's secrets file (alarm_secrets.json, 0600), is handed to
 this module by the production composition, and is never logged.
@@ -29,6 +29,13 @@ this module by the production composition, and is never logged.
   -> TV mirror), injected by the composition. Statement-only: a "?" anywhere in the text is
   rejected 400 (the standing announcements rule), as are empty
   texts and texts over the length cap.
+
+- POST /mode     {"mode": "wakegate" | "rtc" | "sleep"}
+  Mode ownership (2026-11-19): the core owns mode state -- the
+  composition's callback persists the choice in the core's own
+  state file and runs the transition; the answer carries the
+  applied mode. GET /mode returns {"ok": true, "mode": <applied>}.
+  Unknown modes are rejected 400.
 
 Auth: the token rides the `t` query parameter, exactly like the
 alarm kill endpoint (GET /alarm/kill?t=...), and is compared with
@@ -70,10 +77,12 @@ _LOGGER = logging.getLogger("lyra_core.api")
 TOOL_PATH = "/tool"
 ANNOUNCE_PATH = "/announce"
 RTC_OFFER_PATH = "/rtc/offer"
+MODE_PATH = "/mode"
 ANNOUNCE_MAX_CHARS = 200
 _TOOL_TIMEOUT_S = 90.0
 _ANNOUNCE_TIMEOUT_S = 75.0
 _RTC_OFFER_TIMEOUT_S = 20.0
+_MODE_TIMEOUT_S = 30.0
 
 # The composition's announce: text -> None on success; raises
 # AnnounceUnavailable when there is no way to speak.
@@ -82,6 +91,13 @@ AnnounceFn = Callable[[str], Awaitable[None]]
 # RTC signaling callback: an SDP offer -> the SDP answer dict, or
 # a dict with "error" (plus optional "status"). Raises on failure.
 RtcOfferFn = Callable[[str, str], Awaitable[dict]]
+
+# Mode callbacks (2026-11-19): mode_set persists + applies the
+# requested mode on the core's event loop and returns the applied
+# mode (raising ValueError for an unknown mode); mode_get returns
+# the currently applied mode.
+ModeSetFn = Callable[[str], Awaitable[str]]
+ModeGetFn = Callable[[], str]
 
 
 class AnnounceUnavailable(Exception):
@@ -116,7 +132,8 @@ def _arg_percent(args: dict) -> int:
 
 
 class CoreApi:
-    """POST /tool + POST /announce over the router's own tools."""
+    """POST /tool + POST /announce over the router's own tools,
+    plus the /mode routes (mode ownership, 2026-11-19)."""
 
     def __init__(
         self,
@@ -129,6 +146,8 @@ class CoreApi:
         weather: WeatherTool,
         announce: AnnounceFn,
         rtc_offer: RtcOfferFn | None = None,
+        mode_set: ModeSetFn | None = None,
+        mode_get: ModeGetFn | None = None,
         tv: TvTool | None = None,
         tv_volume: TvVolumeTool | None = None,
     ) -> None:
@@ -140,6 +159,8 @@ class CoreApi:
         self._weather = weather
         self._announce = announce
         self._rtc_offer = rtc_offer
+        self._mode_set = mode_set
+        self._mode_get = mode_get
         self._tv = tv
         self._tv_volume = tv_volume
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -153,6 +174,16 @@ class CoreApi:
             self._http.add_post_route(RTC_OFFER_PATH, self._serve_rtc_offer)
             _LOGGER.info(
                 "core API registered: POST %s (token auth)", RTC_OFFER_PATH
+            )
+        if self._mode_set is not None:
+            self._http.add_post_route(MODE_PATH, self._serve_mode_post)
+            _LOGGER.info(
+                "core API registered: POST %s (token auth)", MODE_PATH
+            )
+        if self._mode_get is not None:
+            self._http.add_route(MODE_PATH, self._serve_mode_get)
+            _LOGGER.info(
+                "core API registered: GET %s (token auth)", MODE_PATH
             )
         _LOGGER.info(
             "core API registered: POST %s, POST %s (token auth)",
@@ -433,3 +464,52 @@ class CoreApi:
             return _json(int(result.get("status") or 409),
                          {"ok": False, "error": result["error"]})
         return _json(200, {"ok": True, **result})
+
+    # -- /mode ------------------------------------------------------
+    # Mode ownership (2026-11-19): the core owns mode state. POST
+    # persists + applies the requested mode through the
+    # composition's callback and answers with the applied mode;
+    # GET reports the applied mode. Same token discipline as
+    # every route here.
+
+    def _serve_mode_get(self, query: dict) -> tuple[int, str, bytes]:
+        if not self._authorized(query):
+            _LOGGER.warning("core API /mode: rejected (bad token)")
+            return _json(403, {"ok": False, "error": "forbidden"})
+        if self._mode_get is None:
+            return _json(503, {"ok": False, "error": "mode not available"})
+        return _json(200, {"ok": True, "mode": self._mode_get()})
+
+    def _serve_mode_post(self, query: dict, body: bytes) -> tuple[int, str, bytes]:
+        if not self._authorized(query):
+            _LOGGER.warning("core API /mode: rejected (bad token)")
+            return _json(403, {"ok": False, "error": "forbidden"})
+        try:
+            payload = _parse_json_body(body)
+        except _BadRequest as exc:
+            return _json(400, {"ok": False, "error": str(exc)})
+        mode = payload.get("mode")
+        if not isinstance(mode, str) or not mode.strip():
+            return _json(400, {"ok": False, "error": "missing 'mode'"})
+        if self._mode_set is None or self._loop is None:
+            return _json(503, {"ok": False, "error": "mode not available"})
+        mode = mode.strip().lower()
+        _LOGGER.info("core API /mode: set %s", mode)
+        future = asyncio.run_coroutine_threadsafe(
+            self._mode_set(mode), self._loop)
+        try:
+            applied = future.result(timeout=_MODE_TIMEOUT_S)
+        except ValueError as exc:
+            _LOGGER.warning("core API /mode: bad mode: %s", exc)
+            return _json(400, {"ok": False, "error": str(exc)})
+        except concurrent.futures.TimeoutError:
+            # As with /tool: cancel before answering, so a timed-out
+            # transition does not land after the caller gave up.
+            future.cancel()
+            _LOGGER.error("core API /mode: timed out; future cancelled")
+            return _json(504, {"ok": False, "error": "mode change timed out"})
+        except Exception as exc:
+            _LOGGER.error("core API /mode: failed: %s", exc)
+            return _json(500, {"ok": False, "error": "mode change failed"})
+        _LOGGER.info("core API /mode: applied %s", applied)
+        return _json(200, {"ok": True, "mode": applied})

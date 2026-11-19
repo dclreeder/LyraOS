@@ -39,11 +39,14 @@ code is modified.
 - Modes (2026-11-16, Daniel's model): three exclusive modes --
   WakeGate (the room path above), RTC (a full-duplex WebRTC
   session with the TV page as the peer; lyra_core.rtc), and Sleep
-  (no inputs at all: capture suspended, she is in bed). One source
-  of truth, web/mode_state.json (lyra_core.mode): the dashboard
-  writes it, a _ModeManager here applies it -- WakeGate runs the
-  capture supervisor, RTC stops the capture and accepts offers,
-  Sleep stops everything input-shaped. The mode persists across
+  (no inputs at all: capture suspended, she is in bed). The core
+  owns the mode state (2026-11-19): persisted in
+  core/mode_state.json (lyra_core.mode), changed only through the
+  core API's POST /mode, applied by the _ModeManager here --
+  WakeGate runs the capture supervisor, RTC stops the capture and
+  accepts offers, Sleep stops everything input-shaped. Everyone
+  else consumes the mode from the status hub's pushed snapshot.
+  The mode persists across
   restarts EXCEPT rtc: a boot never has a peer, so a core that
   finds rtc persisted comes up in WakeGate and rewrites the file.
 - SIGTERM/SIGINT -> shutdown: the mode manager stops the RTC
@@ -140,20 +143,23 @@ class _SupervisorSeat:
 
 
 class _ModeManager:
-    """Applies web/mode_state.json to the live composition.
+    """Owns the mode state and applies it to the live composition.
 
     wakegate -> capture supervisor running, RTC offers refused.
     rtc      -> capture stopped; the RTC server accepts offers.
     sleep    -> capture stopped, RTC closed; no inputs at all.
 
-    The dashboard writes the file; this manager polls it (the same
-    file-driven pattern lyra-web uses for the room state) and runs
-    the transitions serially."""
+    The core is the state file's only writer (2026-11-19): mode
+    changes arrive over the core API and land in set_mode below,
+    which persists the choice and runs the transition serially.
+    Before this, the dashboard wrote web/mode_state.json and this
+    manager polled it every 0.5 s."""
 
     def __init__(self, seat: _SupervisorSeat, rtc_server: RtcServer) -> None:
         self._seat = seat
         self._rtc = rtc_server
         self.current: str | None = None
+        self._lock = asyncio.Lock()
         # Status hub (lyra_core.status), wired in amain; the
         # status light's sleep state is the APPLIED mode.
         self.status: StatusHub | None = None
@@ -175,17 +181,16 @@ class _ModeManager:
             await self._rtc.stop()
             await self._seat.stop()
 
-    async def watch(self) -> None:
-        while True:
-            try:
-                mode = mode_store.read_mode()
-                if mode != self.current:
-                    await self.apply(mode)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                _LOGGER.exception("mode watch failed")
-            await asyncio.sleep(0.5)
+    async def set_mode(self, mode: str) -> str:
+        """Persist + apply a mode change (the core API's entry
+        point). write_mode validates the mode name first -- an
+        unknown mode raises ValueError before anything is applied.
+        Transitions are serialized under the lock: they stop and
+        start whole subsystems and must never interleave."""
+        async with self._lock:
+            mode_store.write_mode(mode)
+            await self.apply(mode)
+            return self.current
 
     async def shutdown(self) -> None:
         await self._rtc.stop()
@@ -202,7 +207,8 @@ async def _status_heartbeat(hub: StatusHub) -> None:
         hub.republish()
 
 
-async def _status_loop(session: VoiceSession, seat: _SupervisorSeat) -> None:
+async def _status_loop(session: VoiceSession, seat: _SupervisorSeat,
+                       mode_mgr: _ModeManager) -> None:
     while True:
         await asyncio.sleep(STATUS_PERIOD_S)
         client = session._box
@@ -211,7 +217,7 @@ async def _status_loop(session: VoiceSession, seat: _SupervisorSeat) -> None:
         _LOGGER.info(
             "status: mode=%s client_connected=%s session_state=%s "
             "wake_link_up=%s ep_noise_floor=%s connects=%d attempts=%d",
-            mode_store.read_mode(),
+            mode_mgr.current,
             bool(client is not None and client.is_connected),
             session.state,
             session._wake_link_up,
@@ -386,6 +392,14 @@ async def amain() -> int:
     # same announce path when a morning kill ends the ring.
     alarm.set_note_speaker(_announce)
 
+    async def _mode_set(mode: str) -> str:
+        """POST /mode: the manager persists + applies the mode."""
+        return await mode_mgr.set_mode(mode)
+
+    def _mode_get() -> str:
+        """GET /mode: the currently applied mode."""
+        return mode_mgr.current or mode_store.DEFAULT_MODE
+
     api = CoreApi(
         http=http,
         token=alarm.http_auth_token(),
@@ -395,6 +409,8 @@ async def amain() -> int:
         weather=weather_tool,
         announce=_announce,
         rtc_offer=_rtc_offer,
+        mode_set=_mode_set,
+        mode_get=_mode_get,
         tv=tv_tool,
         tv_volume=tv_volume_tool,
     )
@@ -432,9 +448,8 @@ async def amain() -> int:
         except NotImplementedError:
             pass
     _LOGGER.info("lyra core production starting (verify gate attached, LIVE filing)")
-    watch_task = asyncio.create_task(mode_mgr.watch(), name="lyra-mode-watch")
     status_task = asyncio.create_task(
-        _status_loop(session, seat), name="lyra-status"
+        _status_loop(session, seat, mode_mgr), name="lyra-status"
     )
     health_task = asyncio.create_task(
         health_monitor(hub), name="lyra-health")
@@ -443,7 +458,6 @@ async def amain() -> int:
     try:
         await _shutdown.wait()
     finally:
-        watch_task.cancel()
         health_task.cancel()
         heartbeat_task.cancel()
         await mode_mgr.shutdown()

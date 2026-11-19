@@ -166,22 +166,23 @@ def display_set(on: bool) -> dict:
     return display_state()
 
 
-MODE_STATE_FILE = HOME / "Documents/LyraOS/web/mode_state.json"
 RTC_STATE_FILE = HOME / "Documents/LyraOS/web/rtc_state.json"
 MODES = ("wakegate", "rtc", "sleep")
 
 
 def mode_state() -> dict:
-    # Lyra's mode (2026-11-16): web/mode_state.json is the ONE
-    # source of truth -- this dashboard writes it, lyra-core applies
-    # it (capture / RTC acceptance), lyra-web reports it to the TV
-    # page. rtc_connected is the core's published fact
-    # (rtc_state.json), merged here for the mode card.
+    # Lyra's mode (2026-11-19): the CORE owns mode state. This
+    # dashboard reads the applied mode from the core API (GET
+    # /mode) and asks the core to change it (POST /mode, see
+    # mode_set below); it no longer writes a mode file.
+    # rtc_connected is the core's published fact (rtc_state.json),
+    # merged here for the mode card.
     try:
-        data = json.loads(MODE_STATE_FILE.read_text())
-        mode = data.get("mode")
+        _, _, raw = _req(f"{CORE}/mode?t={TOKEN}", timeout=3.0)
+        mode = json.loads(raw).get("mode")
+        ok = True
     except Exception:
-        mode = None
+        mode, ok = None, False
     if mode not in MODES:
         mode = "wakegate"
     try:
@@ -189,15 +190,14 @@ def mode_state() -> dict:
         connected = bool(rtc.get("connected", False))
     except Exception:
         connected = False
-    return {"mode": mode, "rtc_connected": connected, "ok": True}
+    return {"mode": mode, "rtc_connected": connected, "ok": ok}
 
 
 def mode_set(mode: str) -> dict:
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}")
-    tmp = MODE_STATE_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps({"mode": mode, "updated": time.time()}))
-    tmp.replace(MODE_STATE_FILE)
+    body = json.dumps({"mode": mode}).encode()
+    _req(f"{CORE}/mode?t={TOKEN}", data=body, timeout=15.0)
     return mode_state()
 
 

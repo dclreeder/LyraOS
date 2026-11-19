@@ -53,19 +53,15 @@ def _light_state():
         val = {'on': None, 'brightness': None}
     _light_cache[0] = now; _light_cache[1] = val
     return val
-# Lyra's mode (2026-11-16): mode_state.json is the ONE source of
-# truth -- the dashboard writes it, lyra-core applies it, and this
-# server reports it to the TV page. rtc_state.json is the core's
-# published fact about whether an RTC peer is connected. Sleep is
-# a mode now; the page's `sleep` flag derives from it (the old
-# sleep_state.json is retired).
-MODE_STATE_PATH = os.path.join(ROOT, 'mode_state.json')
+# Lyra's mode (2026-11-19): the CORE owns mode state; this server
+# consumes the mode from the core's pushed status slice (below),
+# like every other state on the page -- it no longer reads a mode
+# file. rtc_state.json is the core's published fact about whether
+# an RTC peer is connected. Sleep is a mode now; the page's
+# `sleep` flag derives from the pushed mode.
 RTC_STATE_PATH = os.path.join(ROOT, 'rtc_state.json')
 def get_mode():
-    try:
-        with open(MODE_STATE_PATH) as f: mode = json.load(f).get('mode')
-    except Exception: mode = None
-    return mode if mode in ('wakegate', 'rtc', 'sleep') else 'wakegate'
+    with _sub_lock: return _core_slice.get('mode') or 'wakegate'
 def get_rtc_connected():
     try:
         with open(RTC_STATE_PATH) as f: return bool(json.load(f).get('connected'))
@@ -162,7 +158,6 @@ def _seed_core_slice():
             if k in snap: _core_slice[k] = snap[k]
         _core_seen_at[0] = os.path.getmtime(STATUS_STATE_PATH)
     except Exception:
-        _core_slice['mode'] = get_mode()
         _core_seen_at[0] = time.time()
 
 def _accept_core_status(snap):
