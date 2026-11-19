@@ -568,11 +568,20 @@ class _RtcSession:
             self._resolve_barge_echo("words track her playback")
             return
         grams = _bigrams(words[1:])
-        if len(words) >= 4 and grams and not (grams & win_grams):
+        if (len(words) >= 4 and grams and not (grams & win_grams)
+                and covered * 3 < len(words)):
             self._resolve_barge_real("words differ from her playback")
             return
         if (now - cand["at"] >= BARGE_CONFIRM_S and len(words) >= 3
-                and grams and not (grams & win_grams)):
+                and grams and not (grams & win_grams)
+                and covered * 3 < len(words) and run == 0):
+            # run == 0 as well: this is the earliest, least-informed
+            # verdict, and a mid-garble echo can present three foreign
+            # words while one of them already matches her text (the
+            # "I owe from" garble of "...grown wild from..."). Any
+            # partial match buys the candidate more time; clearly
+            # foreign speech has run 0 throughout in practice, and
+            # the >= 4-word differ above still fires mid-utterance.
             self._resolve_barge_real(
                 "no echo match within the confirm window")
             return
@@ -603,7 +612,7 @@ class _RtcSession:
             asyncio.ensure_future(self._reset_stream_quietly())
             return
         if (len(words) >= 3 and grams and not (grams & _bigrams(window))
-                and covered == 0):
+                and covered * 3 < len(words)):
             await self._release_held_as_real(
                 "late words differ from her playback", now)
             return
@@ -668,7 +677,7 @@ class _RtcSession:
             return "echo"
         grams = _bigrams(words[1:])
         if (len(words) >= 3 and grams and not (grams & _bigrams(window))
-                and covered == 0):
+                and covered * 3 < len(words)):
             self._resolve_barge_real("final words differ from her playback")
             return "real"
         stream = self._stream
