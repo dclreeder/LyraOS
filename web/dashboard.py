@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
-"""Lyra home dashboard - a small LAN page served from the Fedora.
+"""Lyra home dashboard -- a module of lyra-web since the
+2026-11-19 web merge: lyra_web.py starts this module's server
+(0.0.0.0:8098) inside its own process; there is no separate
+dashboard service anymore. Same page, same /api/* routes as
+the standalone server had.
 
 Recreates Daniel's old Home Assistant 'Home' dashboard with live state
 and working controls. Everything runs through lyra-core's own /tool API
 (:8099, token read server-side from the core's secrets file - the
 browser never sees it) plus pactl for Fedora's audio defaults
-and the default-source mic mute.
+and the default-source mic mute. Mode and the RTC peer fact are
+read from lyra-web's in-memory pushed state (injected by
+lyra_web via set_state_provider below); mode writes still go
+to the core API, which owns mode.
 
 Bind: 0.0.0.0:8098 (home LAN + tailnet only by network design).
+The page file stays at dashboard/dashboard.html in the tree.
 """
 from __future__ import annotations
 
@@ -20,7 +28,8 @@ from pathlib import Path
 
 HOME = Path.home()
 CORE = "http://127.0.0.1:8099"
-PAGE = Path(__file__).with_name("dashboard.html")
+PAGE = (Path(__file__).resolve().parent.parent
+        / "dashboard" / "dashboard.html")
 
 
 
@@ -166,30 +175,34 @@ def display_set(on: bool) -> dict:
     return display_state()
 
 
-RTC_STATE_FILE = HOME / "Documents/LyraOS/web/rtc_state.json"
 MODES = ("wakegate", "rtc", "sleep")
+
+# Mode / RTC reads (2026-11-19 web merge): lyra_web injects a
+# provider over its in-memory merged state -- the core's pushed
+# status slice carries both the applied mode and the RTC peer
+# fact, so the dashboard reads them from there instead of the
+# core API and the deleted rtc_state.json. Mode WRITES still go
+# to the core API (POST /mode in mode_set): the core owns mode.
+_state_provider = None
+
+
+def set_state_provider(fn) -> None:
+    global _state_provider
+    _state_provider = fn
 
 
 def mode_state() -> dict:
-    # Lyra's mode (2026-11-19): the CORE owns mode state. This
-    # dashboard reads the applied mode from the core API (GET
-    # /mode) and asks the core to change it (POST /mode, see
-    # mode_set below); it no longer writes a mode file.
-    # rtc_connected is the core's published fact (rtc_state.json),
-    # merged here for the mode card.
-    try:
-        _, _, raw = _req(f"{CORE}/mode?t={TOKEN}", timeout=3.0)
-        mode = json.loads(raw).get("mode")
-        ok = True
-    except Exception:
-        mode, ok = None, False
+    mode, connected, ok = "wakegate", False, False
+    if _state_provider is not None:
+        try:
+            snap = _state_provider()
+            mode = snap.get("mode") or "wakegate"
+            connected = bool(snap.get("rtc_connected"))
+            ok = bool(snap.get("core_seen"))
+        except Exception:
+            mode, connected, ok = "wakegate", False, False
     if mode not in MODES:
         mode = "wakegate"
-    try:
-        rtc = json.loads(RTC_STATE_FILE.read_text())
-        connected = bool(rtc.get("connected", False))
-    except Exception:
-        connected = False
     return {"mode": mode, "rtc_connected": connected, "ok": ok}
 
 
@@ -198,12 +211,20 @@ def mode_set(mode: str) -> dict:
         raise ValueError(f"unknown mode {mode!r}")
     body = json.dumps({"mode": mode}).encode()
     _req(f"{CORE}/mode?t={TOKEN}", data=body, timeout=15.0)
+    # The read-back comes from the pushed in-memory state; give
+    # the core's push a moment to land so the card shows the
+    # mode it just set.
+    end = time.time() + 3.0
+    while time.time() < end:
+        if mode_state()["mode"] == mode:
+            break
+        time.sleep(0.1)
     return mode_state()
 
 
 def sleep_state() -> dict:
     # Sleep is a MODE now (2026-11-16): the TV card's sleep switch
-    # reads the mode file like everything else -- there is no
+    # reads the mode like everything else -- there is no
     # separate sleep state anymore (the old sleep_state.json is
     # retired; the Phase 2 sleep cycle will select the mode too).
     return {"active": mode_state()["mode"] == "sleep", "ok": True}
@@ -327,5 +348,9 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"ok": False, "error": "not found"})
 
 
+def make_server(port: int = 8098) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer(("0.0.0.0", port), Handler)
+
+
 if __name__ == "__main__":
-    ThreadingHTTPServer(("0.0.0.0", 8098), Handler).serve_forever()
+    make_server().serve_forever()

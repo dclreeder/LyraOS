@@ -14,7 +14,6 @@ from lyra_core.status import StatusHub, StatusPublisher, check_dependencies
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 from av import AudioFrame
 
-rtc_mod.write_rtc_state = lambda connected: open('/tmp/bench_rtc_state.json', 'w').write(json.dumps({'connected': bool(connected)}))
 TTS_URI = 'tcp://127.0.0.1:10200'; VOICE = 'af_heart'
 T0 = time.time()
 def log(*a): print('[%6.2f]' % (time.time() - T0), *a, flush=True)

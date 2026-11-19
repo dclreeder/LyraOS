@@ -26,8 +26,7 @@ from av import AudioFrame
 CORE_CFG = {}
 from lyra_core.config import CoreConfig as _CC
 TTS_URI = 'tcp://127.0.0.1:10200'; VOICE = 'af_heart'
-RTC_STATE = os.path.expanduser('~/Documents/LyraOS/web/rtc_state.json')
-STATUS_STATE = os.path.expanduser('~/Documents/LyraOS/web/status_state.json')
+WEB = 'http://127.0.0.1:8095'
 DASH = 'http://127.0.0.1:8098' 
 T0 = time.time()
 def log(*a): print('[%6.1f]' % (time.time() - T0), *a, flush=True)
@@ -125,7 +124,15 @@ def rtc_barged(ts):
     return 'rtc barge-in: reply interrupted by peer speech' in journal_since(ts)
 
 def read_mode():
-    return json.load(open(STATUS_STATE))['mode']
+    # The pushed status state: first SSE snapshot on lyra-web's
+    # GET /status (the state files are gone since the web merge).
+    req = urllib.request.Request(WEB + '/status')
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        for raw in resp:
+            line = raw.decode(errors='replace').strip()
+            if line.startswith('data: '):
+                return json.loads(line[len('data: '):])['mode']
+    raise RuntimeError('status stream ended without a snapshot')
 
 def set_mode(mode):
     body = json.dumps({'mode': mode}).encode()
@@ -205,8 +212,8 @@ async def main():
         else:
             pcs.append(pc)
             await asyncio.sleep(2)
-            try: log('rtc_state mid-session:', json.load(open(RTC_STATE)))
-            except Exception as e: log('rtc_state read failed:', e)
+            try: log('roomstate mid-session:', json.loads(urllib.request.urlopen(WEB + '/roomstate', timeout=5).read()))
+            except Exception as e: log('roomstate read failed:', e)
             for _ in range(40):
                 await asyncio.sleep(1)
                 turns = rtc_transcripts(t1 - 2)

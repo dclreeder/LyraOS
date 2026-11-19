@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lyra web viewer server: static pages, /mirror speech jobs, /dim, and the /rtc/offer signaling proxy."""
+"""Lyra web server: the TV viewer (static pages, /mirror speech jobs, /dim, the /rtc/offer signaling proxy, pushed /status) plus the home dashboard module on :8098 (web/dashboard.py)."""
 import base64, json, os, queue, sys, threading, time, urllib.request, urllib.error, urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.path.expanduser('~/Documents/LyraOS/web')
@@ -56,16 +56,13 @@ def _light_state():
 # Lyra's mode (2026-11-19): the CORE owns mode state; this server
 # consumes the mode from the core's pushed status slice (below),
 # like every other state on the page -- it no longer reads a mode
-# file. rtc_state.json is the core's published fact about whether
-# an RTC peer is connected. Sleep is a mode now; the page's
-# `sleep` flag derives from the pushed mode.
-RTC_STATE_PATH = os.path.join(ROOT, 'rtc_state.json')
+# file. The RTC peer fact rides the same slice ('rtc_connected').
+# Sleep is a mode now; the page's `sleep` flag derives from the
+# pushed mode.
 def get_mode():
     with _sub_lock: return _core_slice.get('mode') or 'wakegate'
 def get_rtc_connected():
-    try:
-        with open(RTC_STATE_PATH) as f: return bool(json.load(f).get('connected'))
-    except Exception: return False
+    with _sub_lock: return bool(_core_slice.get('rtc_connected'))
 def room_state():
     try:
         with open(os.path.join(ROOT, 'display_state.json')) as f:
@@ -108,19 +105,19 @@ def _write_job(wav, silent):
 # rule (pushed, never polled). The core pushes its slice (status
 # light state, mode, activity, dependency health) to POST
 # /statuspush on every change plus a 15 s heartbeat; this server
-# merges it with its own slice (room light, display,
-# RTC peer fact, dim, next-alarm line -- the
-# state files and cached core reads it already owns) and fans the
+# merges it with its own slice (room light, display, dim,
+# next-alarm line -- the remaining state files and cached core
+# reads it already owns) and fans the
 # merged state out to the pages over SSE at GET /status. Speech
 # jobs are events on the same channel (see _write_job). Pages
 # render from pushes only; a watcher thread here recomputes the
 # web slice server-side and broadcasts ONLY on change -- that is
 # service monitoring inside the server, not UI polling.
-STATUS_STATE_PATH = os.path.join(ROOT, 'status_state.json')
 _sub_lock = threading.Lock()
 _subs = []
 _core_slice = {'state': 'idle', 'label': 'Idle', 'fault': None,
-               'mode': 'wakegate', 'activity': 'idle', 'health': {}}
+               'mode': 'wakegate', 'activity': 'idle', 'health': {},
+               'rtc_connected': False}
 _core_seen_at = [0.0]
 _last_merged = [None]
 _alarm_cache = [0.0, None]
@@ -132,19 +129,10 @@ def _broadcast(kind, payload):
         try: q.put_nowait((kind, payload))
         except Exception: pass
 
-def _seed_core_slice():
-    try:
-        with open(STATUS_STATE_PATH) as f: snap = json.load(f)
-        for k in ('state', 'label', 'fault', 'mode', 'activity', 'health'):
-            if k in snap: _core_slice[k] = snap[k]
-        _core_seen_at[0] = os.path.getmtime(STATUS_STATE_PATH)
-    except Exception:
-        _core_seen_at[0] = time.time()
-
 def _accept_core_status(snap):
     if not isinstance(snap, dict): return
     with _sub_lock:
-        for k in ('state', 'label', 'fault', 'mode', 'activity', 'health'):
+        for k in ('state', 'label', 'fault', 'mode', 'activity', 'health', 'rtc_connected'):
             if k in snap: _core_slice[k] = snap[k]
         _core_seen_at[0] = time.time()
     _refresh_state()
@@ -189,6 +177,16 @@ def _refresh_state():
         _last_merged[0] = state
         _broadcast('state', state)
     return state
+
+def _dashboard_state():
+    """The dashboard module's read view of the pushed core
+    slice: the applied mode, the RTC peer fact, and whether the
+    core has been heard from inside the stale window (its 'ok')."""
+    with _sub_lock: core = dict(_core_slice)
+    return {'mode': core.get('mode') or 'wakegate',
+            'rtc_connected': bool(core.get('rtc_connected')),
+            'core_seen': bool(_core_seen_at[0] and
+                              time.time() - _core_seen_at[0] <= CORE_STALE_S)}
 
 def _status_watcher():
     while True:
@@ -288,8 +286,20 @@ class H(SimpleHTTPRequestHandler):
         return self._json(404, {'error': 'not found'})
 if __name__ == '__main__':
     os.makedirs(os.path.join(ROOT, 'jobs'), exist_ok=True)
-    _seed_core_slice()
+    # No state-file seed anymore (2026-11-19): the core slice
+    # starts at defaults and the core's 15 s heartbeat repost
+    # fills it in. The seen-at stamp starts at now so the stale
+    # watchdog grants the core its first heartbeat window before
+    # it may call it offline.
+    _core_seen_at[0] = time.time()
     _refresh_state()
     threading.Thread(target=_status_watcher, daemon=True).start()
-    print('lyra-web on :8095', flush=True)
+    # The dashboard (2026-11-19 web merge): a module of this
+    # process now -- same page, same /api/* routes, still on
+    # :8098. lyra-dashboard.service is retired.
+    import dashboard as _dashboard
+    _dashboard.set_state_provider(_dashboard_state)
+    _dash = _dashboard.make_server(8098)
+    threading.Thread(target=_dash.serve_forever, daemon=True).start()
+    print('lyra-web on :8095 + dashboard on :8098', flush=True)
     ThreadingHTTPServer(('0.0.0.0', 8095), H).serve_forever()

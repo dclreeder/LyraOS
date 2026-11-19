@@ -71,7 +71,6 @@ from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
 
 from .endpointer import Endpointer
-from .mode import write_rtc_state
 from .pipeline import PipelineDriver
 
 _LOGGER = logging.getLogger("lyra_core.rtc")
@@ -547,10 +546,10 @@ class RtcServer:
                          pc.connectionState)
             if pc.connectionState == "connected":
                 if self.publish_state:
-                    write_rtc_state(True)
+                    self._publish_rtc_state(True)
             elif pc.connectionState in ("disconnected", "failed", "closed"):
                 if self.publish_state:
-                    write_rtc_state(False)
+                    self._publish_rtc_state(False)
                 if pc.connectionState in ("failed", "closed"):
                     asyncio.ensure_future(self._close_session())
 
@@ -572,12 +571,21 @@ class RtcServer:
         return {"sdp": pc.localDescription.sdp,
                 "type": pc.localDescription.type}
 
+    def _publish_rtc_state(self, connected: bool) -> None:
+        """Report the peer fact to the status hub; it rides the
+        pushed snapshot to lyra-web, whose merged state the TV
+        page and the dashboard read (2026-11-19 -- this used to
+        write web/rtc_state.json)."""
+        hub = self.status
+        if hub is not None:
+            hub.set_rtc_connected(connected)
+
     async def _close_session(self) -> None:
         session, self._session = self._session, None
         if session is not None:
             await session.close()
             if self.publish_state:
-                write_rtc_state(False)
+                self._publish_rtc_state(False)
 
     async def stop(self) -> None:
         """Mode exit: refuse new offers and tear the peer down."""

@@ -22,10 +22,11 @@ has actually stopped.
 State delivery is PUSHED end to end (Daniel's state-delivery
 rule: state-driven/pushed, never polled). This hub computes the
 core's slice of the page state; on every change the publisher
-writes web/status_state.json (the web state-file pattern, atomic)
-and POSTs the snapshot to lyra-web, which fans it out to the
-pages over SSE. A slow heartbeat repost (15 s) lets lyra-web tell
-a live core from a dead one. The page itself only ever receives
+POSTs the snapshot to lyra-web, which fans it out to the pages
+over SSE. A slow heartbeat repost (15 s) lets lyra-web tell a
+live core from a dead one. (The publisher also wrote
+web/status_state.json until the 2026-11-19 web merge deleted
+that file bridge; the POST is the only channel now.) The page itself only ever receives
 pushes; if its socket drops, the page shows red "Disconnected"
 (page-side inference, not a state this module emits).
 
@@ -48,15 +49,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 import urllib.request
-from pathlib import Path
 
 _LOGGER = logging.getLogger("lyra_core.status")
 
-WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
-STATUS_STATE_PATH = WEB_DIR / "status_state.json"
 WEB_PUSH_URL = "http://127.0.0.1:8095/statuspush"
 
 # Fault display order: the first failing dependency in this list
@@ -87,6 +84,7 @@ class StatusHub:
         self._rtc_playing: set = set()
         self._listening: set = set()
         self._mode = "wakegate"
+        self._rtc_connected = False
         self._health: dict[str, bool] = {}
         self._subs: list = []
         self._shown: tuple | None = None
@@ -151,6 +149,15 @@ class StatusHub:
             self._mode = mode
             self._recompute()
 
+    def set_rtc_connected(self, connected: bool) -> None:
+        """The RTC peer fact, reported by rtc.py on transitions.
+        It rides this snapshot to lyra-web, whose merged page
+        state and dashboard read it from memory (2026-11-19 --
+        it used to travel as web/rtc_state.json)."""
+        if connected != self._rtc_connected:
+            self._rtc_connected = connected
+            self._recompute()
+
     def set_health(self, results: dict[str, bool]) -> None:
         if results != self._health:
             self._health = dict(results)
@@ -188,6 +195,7 @@ class StatusHub:
             "label": label,
             "fault": fault,
             "mode": self._mode,
+            "rtc_connected": self._rtc_connected,
             "activity": activity,
             "health": dict(self._health),
             "ts": time.time(),
@@ -196,7 +204,7 @@ class StatusHub:
     def _recompute(self) -> None:
         snap = self.snapshot()
         shown = (snap["state"], snap["label"], snap["mode"],
-                 snap["fault"])
+                 snap["fault"], snap["rtc_connected"])
         if shown == self._shown:
             return
         self._shown = shown
@@ -217,26 +225,19 @@ class StatusHub:
 
 
 class StatusPublisher:
-    """The hub's subscriber: file + POST push to lyra-web.
+    """The hub's subscriber: POST push to lyra-web, the only
+    channel (2026-11-19). The publisher used to also write
+    web/status_state.json so lyra-web could seed from it at
+    startup; the web merge deleted that file bridge -- lyra-web
+    holds the slice in memory and the heartbeat repost
+    repopulates it after a web restart. Fire-and-forget like
+    the TV mirror: a failed push must never disturb the core,
+    and the heartbeat heals any miss."""
 
-    The file write follows the web state-file pattern (atomic tmp
-    + rename) so lyra-web can seed from it at startup; the POST is
-    the live push, fire-and-forget like the TV mirror -- a failed
-    push must never disturb the core, and the heartbeat repost
-    heals any miss."""
-
-    def __init__(self, path: Path = STATUS_STATE_PATH,
-                 url: str = WEB_PUSH_URL) -> None:
-        self._path = path
+    def __init__(self, url: str = WEB_PUSH_URL) -> None:
         self._url = url
 
     def __call__(self, snap: dict) -> None:
-        try:
-            tmp = self._path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(snap))
-            os.replace(tmp, self._path)
-        except Exception:
-            _LOGGER.exception("status file write failed")
         try:
             asyncio.get_running_loop()
         except RuntimeError:

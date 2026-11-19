@@ -2,9 +2,10 @@
 
 Drives a mode change through the real dashboard endpoint
 (POST :8098/api/mode -> the core's authenticated POST /mode) and
-asserts the change lands in the pushed status state
-(web/status_state.json's 'mode' -- the same slice the TV page
-renders from), then flips back to the mode it found and asserts
+asserts the change lands in the pushed status state (the
+first SSE snapshot on lyra-web's GET /status -- the same merged
+state the TV page renders from), then flips back to the mode it
+found and asserts
 that too. No audio, no service restarts. Run via
 benches/run_all.py.
 """
@@ -13,14 +14,19 @@ from __future__ import annotations
 import json
 import time
 import urllib.request
-from pathlib import Path
 
 DASH = "http://127.0.0.1:8098"
-STATUS_STATE = Path("~/Documents/LyraOS/web/status_state.json").expanduser()
+WEB = "http://127.0.0.1:8095"
 
 
 def pushed_mode() -> str:
-    return json.loads(STATUS_STATE.read_text())["mode"]
+    req = urllib.request.Request(WEB + "/status")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        for raw in resp:
+            line = raw.decode(errors="replace").strip()
+            if line.startswith("data: "):
+                return json.loads(line[len("data: "):])["mode"]
+    raise RuntimeError("status stream ended without a snapshot")
 
 
 def set_mode(mode: str) -> dict:

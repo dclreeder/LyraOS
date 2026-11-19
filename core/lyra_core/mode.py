@@ -28,9 +28,13 @@ read it -- three processes around one file, replaced by one owner.
 The old sleep_state.json is retired by this file: sleep is a mode
 now, and this is the only switch.
 
-The core also publishes web/rtc_state.json ({"connected": bool}):
-core-owned status, read by the dashboard and lyra-web. Mode is
-intent (dashboard -> core); rtc_state is fact (core -> everyone).
+The RTC peer fact ({"connected": bool}) rides the status hub's
+pushed snapshot instead of a file of its own: rtc.py reports
+transitions to the hub, lyra-web merges the fact into its
+in-memory page state, and the dashboard reads it from there.
+(web/rtc_state.json carried it until the 2026-11-19 web merge
+deleted the file.) Mode is intent (dashboard -> core); the
+snapshot is fact (core -> everyone).
 """
 from __future__ import annotations
 
@@ -40,9 +44,7 @@ import time
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parent.parent
-WEB_DIR = CORE_DIR.parent / "web"
 MODE_STATE_PATH = CORE_DIR / "mode_state.json"
-RTC_STATE_PATH = WEB_DIR / "rtc_state.json"
 
 WAKEGATE = "wakegate"
 RTC = "rtc"
@@ -78,13 +80,3 @@ def write_mode(mode: str) -> str:
     _write_json(MODE_STATE_PATH, {"mode": mode, "updated": time.time()})
     return mode
 
-
-def read_rtc_state() -> dict:
-    data = _read_json(RTC_STATE_PATH)
-    return {"connected": bool(data.get("connected", False)),
-            "updated": data.get("updated")}
-
-
-def write_rtc_state(connected: bool) -> None:
-    _write_json(RTC_STATE_PATH,
-                {"connected": bool(connected), "updated": time.time()})
