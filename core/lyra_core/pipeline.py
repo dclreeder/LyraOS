@@ -187,6 +187,12 @@ async def _next_of_type(
 class PipelineDriver:
     def __init__(self, config: CoreConfig):
         self._cfg = config.wyoming
+        # Status-light hook (2026-11-18): production_main points
+        # this at the status hub; synthesize_speech calls it with
+        # the line's duration whenever a line is TV-mirrored (the
+        # page's playback of that line IS her speaking on the
+        # WakeGate / announce / call paths). None in benches.
+        self.on_speech = None
 
     async def describe(self, uri: str) -> dict:
         async with await WyomingConnection.connect(uri) as conn:
@@ -302,4 +308,10 @@ class PipelineDriver:
                     _mirror_wav_to_tv(buf.getvalue()))
             except Exception:
                 pass
+            if self.on_speech is not None:
+                try:
+                    self.on_speech(
+                        len(pcm) / (rate * width * channels))
+                except Exception:
+                    pass
         return buf.getvalue(), rate, width, channels

@@ -16,6 +16,7 @@ tv_route_state.json
 ring_state.json
 mode_state.json
 rtc_state.json
+status_state.json
 dim.json
 latest.json
 *.bak-*

@@ -366,6 +366,7 @@ class _RtcSession:
         self._barge_candidate: dict | None = None
         self._echo_suppressed = False
         self._echo_ceiling = 0.0
+        self._status_playing = False
         self.out_track = _PeerAudioTrack(self)
 
     # -- output side ------------------------------------------------
@@ -385,14 +386,31 @@ class _RtcSession:
         if len(self._out) >= n:
             data = bytes(self._out[:n])
             del self._out[:n]
+            self._note_playing()
             return data
         data = bytes(self._out) + b"\x00" * (n - len(self._out))
         self._out.clear()
+        self._note_playing()
         return data
 
     def append_out(self, pcm48: bytes, generation: int) -> None:
         if generation == self._generation and not self._closed:
             self._out.extend(pcm48)
+            self._note_playing()
+
+    def _note_playing(self) -> None:
+        """Status light (2026-11-18): report real playback state
+        -- sentence audio queued or draining -- to the core's
+        status hub, on transitions only. Playback is tracked by
+        the playhead (take_out_frame drains in real time), so this
+        is her actually sounding on the peer, not a timer."""
+        playing = bool(self._play_queue) or len(self._out) > 0
+        if playing == self._status_playing:
+            return
+        self._status_playing = playing
+        hub = self._server.status
+        if hub is not None:
+            hub.rtc_playing(id(self), playing)
 
     # -- playback text tracking (the echo guard's window) ------------
 
@@ -459,6 +477,7 @@ class _RtcSession:
         self._out.clear()
         self._play_queue.clear()
         self._play_appending = None
+        self._note_playing()
         if self._turn_task is not None and not self._turn_task.done():
             self._turn_task.cancel()
         _LOGGER.info("%s barge-in: reply interrupted by peer speech",
@@ -966,6 +985,18 @@ class _RtcSession:
     def _turn_busy(self) -> bool:
         return self._turn_task is not None and not self._turn_task.done()
 
+    def _status_turn_begin(self) -> None:
+        """Status light: a dispatched turn is thinking from here
+        (STT finalization + router + tools) until the task ends;
+        speaking is reported separately by the playback tracker.
+        The done callback keeps begin/end paired on every exit
+        path, barge-in cancels included."""
+        hub = self._server.status
+        if hub is None or self._turn_task is None:
+            return
+        hub.turn_begin()
+        self._turn_task.add_done_callback(lambda _t: hub.turn_end())
+
     def _start_turn_pcm(self, pcm: bytes,
                         ctx: list[str] | None = None) -> None:
         if self._turn_busy():
@@ -979,6 +1010,7 @@ class _RtcSession:
             return
         self._turn_task = asyncio.ensure_future(
             self._run_turn_pcm(pcm, self._generation, ctx or []))
+        self._status_turn_begin()
 
     def _start_turn_text(self, transcript: str,
                          ctx: list[str] | None = None) -> None:
@@ -989,6 +1021,7 @@ class _RtcSession:
         self._turn_task = asyncio.ensure_future(
             self._run_transcript(transcript, self._generation,
                                  source="nemotron-stream", ctx=ctx or []))
+        self._status_turn_begin()
 
     async def _run_turn_pcm(self, pcm: bytes, generation: int,
                             ctx: list[str] | None = None) -> None:
@@ -1071,6 +1104,8 @@ class _RtcSession:
         self._closed = True
         self._generation += 1
         self._out.clear()
+        self._play_queue.clear()
+        self._note_playing()
         for task in (self._consume_task, self._turn_task,
                      self._stream_setup_task):
             if task is not None and not task.done():
@@ -1109,6 +1144,9 @@ class RtcServer:
         self.label = label
         self.mirror = mirror
         self.publish_state = publish_state
+        # Status hub (lyra_core.status), wired by production_main;
+        # None in benches.
+        self.status = None
         self.accepting = False
         self._session: _RtcSession | None = None
 

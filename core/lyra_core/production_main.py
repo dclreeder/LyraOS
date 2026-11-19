@@ -79,6 +79,7 @@ from .free_router import FreeRouter
 from .localmic import LocalMicClient
 from . import mode as mode_store
 from .rtc import RtcServer
+from .status import StatusHub, StatusPublisher, health_monitor
 from .stream_stt import StreamSttClient
 from .session import VoiceSession
 from .tv_ring import TvRinger
@@ -161,12 +162,17 @@ class _ModeManager:
         self._seat = seat
         self._rtc = rtc_server
         self.current: str | None = None
+        # Status hub (lyra_core.status), wired in amain; the
+        # status light's sleep state is the APPLIED mode.
+        self.status: StatusHub | None = None
 
     async def apply(self, mode: str) -> None:
         if mode == self.current:
             return
         previous, self.current = self.current, mode
         _LOGGER.info("mode: %s -> %s", previous, mode)
+        if self.status is not None:
+            self.status.set_mode(mode)
         if mode == mode_store.WAKEGATE:
             await self._rtc.stop()
             await self._seat.start()
@@ -192,6 +198,16 @@ class _ModeManager:
     async def shutdown(self) -> None:
         await self._rtc.stop()
         await self._seat.stop()
+
+
+async def _status_heartbeat(hub: StatusHub) -> None:
+    """Repost the status snapshot on a slow cadence: lyra-web
+    treats a core that has not pushed in ~35 s as offline (red
+    "Core offline"), so a live core must keep pushing even when
+    nothing changes."""
+    while True:
+        await asyncio.sleep(15.0)
+        hub.republish()
 
 
 async def _status_loop(session: VoiceSession, seat: _SupervisorSeat) -> None:
@@ -229,7 +245,30 @@ async def amain() -> int:
     # 2026-11-17 at Daniel's order: no InboxLog is constructed
     # or wired anywhere -- the router and the alarm both
     # default to no inbox, so no daily log is written.
-    session = VoiceSession(cfg, driver, http, verify_gate=gate, on_event=_event_hook)
+    # -- kiosk status light (2026-11-18, lyra_core.status) --
+    # The hub aggregates activity (turns + the speech clock +
+    # RTC playback), the applied mode and dependency health into
+    # the snapshot lyra-web pushes to the TV page. WakeGate
+    # thinking is the session's processing state, fed through
+    # the session event hook; every TV-mirrored synthesis feeds
+    # the speech clock through the driver's hook.
+    hub = StatusHub()
+    hub.subscribe(StatusPublisher())
+    driver.on_speech = hub.note_speech
+    _session_processing = [False]
+
+    def _status_event_hook(kind: str, detail: dict) -> None:
+        _event_hook(kind, detail)
+        if kind == "state":
+            st = detail.get("state")
+            if st == "processing" and not _session_processing[0]:
+                _session_processing[0] = True
+                hub.turn_begin()
+            elif st == "idle" and _session_processing[0]:
+                _session_processing[0] = False
+                hub.turn_end()
+
+    session = VoiceSession(cfg, driver, http, verify_gate=gate, on_event=_status_event_hook)
 
     if cfg.transport != "localmic":
         raise ValueError(
@@ -306,7 +345,10 @@ async def amain() -> int:
         driver, router.handle, via="call", label="call",
         mirror=True, publish_state=False)
     call_rtc_server.accepting = True
+    rtc_server.status = hub
+    call_rtc_server.status = hub
     mode_mgr = _ModeManager(seat, rtc_server)
+    mode_mgr.status = hub
 
     async def _rtc_offer(sdp: str, sdp_type: str) -> dict:
         """RTC signaling gate: offers live and die with the mode."""
@@ -421,6 +463,8 @@ async def amain() -> int:
             with _call_lock:
                 entry["error"] = f"call turn failed: {exc}"
                 entry["done"] = True
+        finally:
+            hub.turn_end()
 
     # -- call transcription: Nemotron streaming first (2026-11-18) --
     # RTC got the streaming sidecar this morning; call turns use
@@ -524,25 +568,33 @@ async def amain() -> int:
                 del _call_entries[k]
             if any(not e["done"] for e in _call_entries.values()):
                 return {"busy": True}
-        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
-            rate = wf.getframerate()
-            width = wf.getsampwidth()
-            channels = wf.getnchannels()
-            pcm = wf.readframes(wf.getnframes())
-        transcript = await _call_transcribe(
-            pcm, rate=rate, width=width, channels=channels
-        )
-        entry = {
-            "call_id": uuid.uuid4().hex[:16],
-            "created": now,
-            "transcript": transcript,
-            "sentences": [],
-            "done": False,
-            "reply": None,
-            "error": None,
-        }
-        with _call_lock:
-            _call_entries[entry["call_id"]] = entry
+        # Status light: the call turn is thinking from here --
+        # transcription (in this function) plus the router turn
+        # (_run_call_turn ends it in its finally).
+        hub.turn_begin()
+        try:
+            with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+                rate = wf.getframerate()
+                width = wf.getsampwidth()
+                channels = wf.getnchannels()
+                pcm = wf.readframes(wf.getnframes())
+            transcript = await _call_transcribe(
+                pcm, rate=rate, width=width, channels=channels
+            )
+            entry = {
+                "call_id": uuid.uuid4().hex[:16],
+                "created": now,
+                "transcript": transcript,
+                "sentences": [],
+                "done": False,
+                "reply": None,
+                "error": None,
+            }
+            with _call_lock:
+                _call_entries[entry["call_id"]] = entry
+        except Exception:
+            hub.turn_end()
+            raise
         asyncio.ensure_future(_run_call_turn(entry, transcript))
         return {"call_id": entry["call_id"], "transcript": transcript}
 
@@ -598,6 +650,7 @@ async def amain() -> int:
         mode_store.write_mode(mode_store.WAKEGATE)
         persisted = mode_store.WAKEGATE
     await mode_mgr.apply(persisted)
+    hub.republish()
     _shutdown = asyncio.Event()
 
     def _request_shutdown() -> None:
@@ -615,10 +668,16 @@ async def amain() -> int:
     status_task = asyncio.create_task(
         _status_loop(session, seat), name="lyra-status"
     )
+    health_task = asyncio.create_task(
+        health_monitor(hub), name="lyra-health")
+    heartbeat_task = asyncio.create_task(
+        _status_heartbeat(hub), name="lyra-status-heartbeat")
     try:
         await _shutdown.wait()
     finally:
         watch_task.cancel()
+        health_task.cancel()
+        heartbeat_task.cancel()
         await call_rtc_server.stop()
         await mode_mgr.shutdown()
         await alarm.stop()

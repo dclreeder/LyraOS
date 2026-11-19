@@ -24,6 +24,33 @@
 
 <img id="phonedelta" src="assets/room2-phonedelta.webp" alt=""></div>
 <canvas id="c"></canvas>
+<script>
+// Lyra state channel (2026-11-18): lyra-web pushes the full page
+// state over SSE (GET /status) -- status light, room layers, dim,
+// ring, next-alarm, mode -- and speech jobs as events on the same
+// socket. This page renders from pushes ONLY (Daniel's
+// state-delivery rule); there are no state polling loops left.
+// The one fetch that remains is a one-shot /latest.json resync
+// when the socket (re)connects, so a job that landed
+// mid-reconnect is adopted or queued exactly once (job ids are
+// monotonic).
+window._lyra = { state: null, _sh: [], _jh: [],
+  onState(fn) { this._sh.push(fn); if (this.state) { try { fn(this.state); } catch (e) {} } },
+  onJob(fn) { this._jh.push(fn); } };
+(function () {
+  const es = new EventSource('/status');
+  window._lyra.es = es;
+  es.onmessage = (ev) => {
+    let s; try { s = JSON.parse(ev.data); } catch (e) { return; }
+    window._lyra.state = s;
+    window._lyra._sh.forEach((fn) => { try { fn(s); } catch (e) {} });
+  };
+  es.addEventListener('job', (ev) => {
+    let j; try { j = JSON.parse(ev.data); } catch (e) { return; }
+    window._lyra._jh.forEach((fn) => { try { fn(j); } catch (e) {} });
+  });
+})();
+</script>
 
 <script>
 (async () => {
@@ -114,19 +141,33 @@
       } catch (e) {}
     }
   }, null, PIXI.UPDATE_PRIORITY.LOW);
-  setInterval(async () => {
+  // Speech jobs arrive as events on the state channel (lyra-web
+  // broadcasts each mirrored job the moment it is written) -- no
+  // polling. A job is queued at most once, in id order.
+  function takeJob(j) {
+    if (!j || !j.id || j.id <= lastId) return;
+    lastId = j.id;
+    jobQ.push(j);
+    jobQ.sort((a, b) => a.id - b.id);
+    if (!jobPlaying) playNextJob();
+  }
+  window._lyra.onJob(takeJob);
+  // One-shot resync when the state socket (re)connects: the first
+  // connect adopts the current job without playing it (a page
+  // load must not replay a stale line); a reconnect queues a job
+  // that landed while the socket was down.
+  let lyraConnects = 0;
+  window._lyra.es.addEventListener('open', async () => {
+    lyraConnects++;
     try {
       const r = await fetch('/latest.json', {cache: 'no-store'});
       if (!r.ok) return;
       const j = await r.json();
-      if (!window._adopted) { window._adopted = true; if (j.id) lastId = j.id; return; }
-      if (j.id && j.id !== lastId) {
-        lastId = j.id;
-        jobQ.push(j);
-        if (!jobPlaying) playNextJob();
-      }
+      if (!j.id) return;
+      if (lyraConnects === 1) { lastId = j.id; return; }
+      takeJob(j);
     } catch (e) {}
-  }, 150);
+  });
   // --- RTC lip sync (2026-11-18): in rtc mode her voice arrives
   // as a WebRTC stream, not a mirror job -- but the mouth reads
   // this one analyser, so the RTC client below taps the remote
@@ -159,10 +200,42 @@
 #clock .t { font-size: 54px; font-weight: 600; letter-spacing: .01em; line-height: 1; }
 #clock .d { font-size: 19px; font-weight: 500; opacity: .85; margin-top: 5px; }
 #clock .a { font-size: 19px; font-weight: 500; opacity: .85; margin-top: 5px; }
-</style><div id="clock"><div class="t"></div><div class="d"></div><div class="a"></div></div><div id="dimveil"></div><script>
-// TV brightness: lyra-web /dim is the single source of truth (voice tool + dashboard write it)
-async function pollDim(){ try{ const j = await (await fetch('/dim')).json(); document.getElementById('dimveil').style.opacity = (1 - j.brightness).toFixed(3); }catch(e){} }
-setInterval(pollDim, 1200); pollDim();
+</style><div id="clock"><div class="t"></div><div class="d"></div><div class="a"></div></div><div id="dimveil"></div>
+<style>
+#statuslight{position:fixed;left:20px;bottom:18px;z-index:10001;display:flex;align-items:center;gap:9px;
+  font-family:system-ui,'Segoe UI',sans-serif;color:#fff;pointer-events:none;
+  text-shadow:0 1px 8px rgba(0,0,0,.65)}
+#statuslight .dot{width:14px;height:14px;border-radius:50%;background:#9aa3b2;flex:none;box-shadow:0 0 8px rgba(0,0,0,.4)}
+#statuslight .lbl{font-size:15px;font-weight:600;letter-spacing:.02em}
+#statuslight[data-state="idle"] .dot{background:#2ecc71}
+#statuslight[data-state="thinking"] .dot{background:#f5a623;animation:slpulse 1.1s ease-in-out infinite}
+#statuslight[data-state="speaking"] .dot{background:#3b82f6}
+#statuslight[data-state="sleep"] .dot{background:#8b5cf6;opacity:.55}
+#statuslight[data-state="error"] .dot{background:#ef4444;animation:slpulse 2.4s ease-in-out infinite}
+@keyframes slpulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+<div id="statuslight" data-state="error"><span class="dot"></span><span class="lbl">Disconnected</span></div>
+<script>
+// Status light (2026-11-18, Daniel's design): bottom-left, a dot
+// plus a label naming her state -- green idle, amber thinking
+// (soft pulse), blue speaking, violet dim sleeping, red (slow
+// pulse) for a service fault with the label naming it. Fed only
+// by the pushed state channel; if the push socket drops, the
+// page itself shows red "Disconnected" until the snapshot that
+// arrives on reconnect replaces it.
+(function () {
+  const box = document.getElementById('statuslight');
+  const lbl = box.querySelector('.lbl');
+  function render(state, label) { box.dataset.state = state; lbl.textContent = label || ''; }
+  window._lyra.onState((s) => { render(s.state, s.label); });
+  window._lyra.es.addEventListener('error', () => { render('error', 'Disconnected'); });
+})();
+</script><script>
+// TV brightness: the dim value rides the pushed state channel (voice tool + dashboard write it server-side)
+window._lyra.onState((s) => {
+  if (typeof s.dim === 'number')
+    document.getElementById('dimveil').style.opacity = (1 - s.dim).toFixed(3);
+});
 </script><script>
 // Alarm ring (2026-11-15): the TV is the alarm's sounder now. When the
 // core fires, lyra-web flags /ring; this page loops the alarm tone and
@@ -172,21 +245,25 @@ setInterval(pollDim, 1200); pollDim();
 let ringEl = null, ringOn = false, ringSince = 0, ringAckTimer = null;
 function ringAck(){ fetch('/ring/ack', {method: 'POST'}).catch(() => {}); }
 function ringStop(){ if (ringEl) ringEl.pause(); ringOn = false; if (ringAckTimer) { clearInterval(ringAckTimer); ringAckTimer = null; } }
-async function pollRing(){
-  try {
-    const j = await (await fetch('/ring', {cache: 'no-store'})).json();
-    if (j.ringing && !ringOn) {
-      if (!ringEl) { ringEl = new Audio('/assets/alarm-tone.opus'); ringEl.loop = true; }
-      try {
-        await ringEl.play();
-        ringOn = true; ringSince = Date.now(); ringAck();
-        ringAckTimer = setInterval(() => { if (!ringEl.paused) ringAck(); }, 3000);
-      } catch (e) {}
-    } else if (!j.ringing && ringOn) ringStop();
-    else if (ringOn && Date.now() - ringSince > 16 * 60 * 1000) ringStop();
-  } catch (e) {}
+// Ring state arrives on the pushed state channel; the tone
+// starts/stops on transitions. While it sounds, the page still
+// acks every 3 s (the core's live-ring proof) and self-caps at
+// 16 min -- that loop runs only during a ring and carries no
+// state.
+async function ringUpdate(ringing){
+  if (ringing && !ringOn) {
+    if (!ringEl) { ringEl = new Audio('/assets/alarm-tone.opus'); ringEl.loop = true; }
+    try {
+      await ringEl.play();
+      ringOn = true; ringSince = Date.now(); ringAck();
+      ringAckTimer = setInterval(() => {
+        if (!ringEl.paused) ringAck();
+        if (Date.now() - ringSince > 16 * 60 * 1000) ringStop();
+      }, 3000);
+    } catch (e) {}
+  } else if (!ringing && ringOn) ringStop();
 }
-setInterval(pollRing, 700); pollRing();
+window._lyra.onState((s) => { ringUpdate(!!(s.ring && s.ring.ringing)); });
 </script><script>
 // Room window day/night (2026-11-15): the painted room's window
 // shows a day sky between sunrise and sunset (Jacksonville, computed
@@ -226,8 +303,8 @@ setInterval(pollRing, 700); pollRing();
 </script>
 <script>
 // Room state layers (2026-11-15): the painted room mirrors the real
-// one. lyra-web /roomstate (polled ~1.2 s; the light read is cached
-// server-side): ceiling light off -> the room dims and the pendant
+// one. lyra-web pushes the room state on the
+// state channel (the light read is cached server-side): ceiling light off -> the room dims and the pendant
 // and lamp lose their warm light; display off -> the painted TV goes
 // dark; a live call lights the phone on the dresser. Her voice
 // pulses the speaker's glow (window._speaking, set by the job
@@ -237,16 +314,12 @@ setInterval(pollRing, 700); pollRing();
       slp=document.getElementById('roombg-sleep'), pg=document.getElementById('phonedelta'),
       cv=document.getElementById('c');
   function set(el, on){ if (el) el.style.opacity = on ? '1' : '0'; }
-  async function tick(){
-    try {
-      var j = await (await fetch('/roomstate', {cache: 'no-store'})).json();
-      set(off, !!(j.light && j.light.on === false));
-      set(pg, !!j.call_active || (j.mode === 'rtc' && !!j.rtc_connected));
-      set(slp, !!j.sleep);
-      if (cv) cv.style.opacity = j.sleep ? '0' : '1';
-    } catch (e) {}
-  }
-  setInterval(tick, 1200); tick();
+  window._lyra.onState(function(s){
+    set(off, !!(s.light && s.light.on === false));
+    set(pg, !!s.call_active || (s.mode === 'rtc' && !!s.rtc_connected));
+    set(slp, !!s.sleep);
+    if (cv) cv.style.opacity = s.sleep ? '0' : '1';
+  });
 })();
 </script>
 <script>
@@ -269,8 +342,8 @@ setInterval(pollRing, 700); pollRing();
 })();
 </script>
 <script>
-// Next alarm under the clock (2026-11-15, Daniel's ask): polls
-// lyra-web's /alarm (the core's alarm summary) every 30 s and shows
+// Next alarm under the clock (2026-11-15, Daniel's ask): the
+// core's alarm summary rides the pushed state channel and shows
 // the next fire -- Today / Tomorrow / weekday + 12-hour time.
 (function(){
   const aEl = document.querySelector('#clock .a');
@@ -286,15 +359,10 @@ setInterval(pollRing, 700); pollRing();
       : nf.toLocaleDateString('en-US', {weekday: 'short'}));
     return '🚨 ' + day + ' ' + time;
   }
-  async function tick() {
-    try {
-      const r = await fetch('/alarm', {cache: 'no-store'});
-      const j = await r.json();
-      aEl.textContent = fmt(j);
-      aEl.style.display = aEl.textContent ? '' : 'none';
-    } catch (e) { /* keep the last shown value */ }
-  }
-  setInterval(tick, 30000); tick();
+  window._lyra.onState((s) => {
+    aEl.textContent = s.alarm ? fmt(s.alarm) : '';
+    aEl.style.display = aEl.textContent ? '' : 'none';
+  });
 })();
 </script>
 <script>
@@ -336,6 +404,7 @@ setInterval(pollRing, 700); pollRing();
       };
       pc.onconnectionstatechange = function(){
         if (pc && (pc.connectionState === 'failed' || pc.connectionState === 'closed')) stopRtc();
+        if (pc && pc.connectionState === 'connected' && remoteStream && !window._rtcTap && window._attachRtcAudio) window._attachRtcAudio(remoteStream);
       };
       var offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -352,14 +421,11 @@ setInterval(pollRing, 700); pollRing();
     } catch (e) { stopRtc(); }
     connecting = false;
   }
-  async function tick(){
-    try {
-      var j = await (await fetch('/roomstate', {cache: 'no-store'})).json();
-      if (j.mode === 'rtc') startRtc(); else if (pc || connecting) stopRtc();
-      if (remoteStream && pc && pc.connectionState === 'connected' && !window._rtcTap && window._attachRtcAudio) window._attachRtcAudio(remoteStream);
-    } catch (e) {}
-  }
-  setInterval(tick, 1500); tick();
+  // The mode arrives on the pushed state channel: the peer's
+  // life is keyed to mode transitions, never to a poll.
+  window._lyra.onState(function(s){
+    if (s.mode === 'rtc') startRtc(); else if (pc || connecting) stopRtc();
+  });
 })();
 </script>
 </body></html>

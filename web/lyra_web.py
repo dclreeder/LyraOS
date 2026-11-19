@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Lyra web viewer server: static pages, /mirror speech jobs, /ring, /dim, the streamed /call proxy to the core, and the /rtc/offer signaling proxy."""
-import base64, json, os, sys, threading, time, urllib.request, urllib.error, urllib.parse
+import base64, json, os, queue, sys, threading, time, urllib.request, urllib.error, urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.path.expanduser('~/Documents/LyraOS/web')
 _lock = threading.Lock(); _counter = [0]
@@ -175,11 +175,109 @@ def _write_job(wav, silent):
     job = {'id': _counter[0], 'file': name}
     if silent: job['silent'] = True
     with open(os.path.join(ROOT, 'latest.json'), 'w') as f: json.dump(job, f)
+    _broadcast('job', job)
     try:
         for old in os.listdir(os.path.join(ROOT, 'jobs')):
             if old.startswith('job-') and old.endswith('.wav') and int(old[4:-4]) < _counter[0] - 40:
                 os.remove(os.path.join(ROOT, 'jobs', old))
     except Exception: pass
+
+# ---------------------------------------------------------------------
+# Pushed page state (2026-11-18): ONE channel for everything
+# state-shaped on the TV / call pages -- Daniel's state-delivery
+# rule (pushed, never polled). The core pushes its slice (status
+# light state, mode, activity, dependency health) to POST
+# /statuspush on every change plus a 15 s heartbeat; this server
+# merges it with its own slice (room light, display, call
+# heartbeat, RTC peer fact, dim, ring, next-alarm line -- the
+# state files and cached core reads it already owns) and fans the
+# merged state out to the pages over SSE at GET /status. Speech
+# jobs are events on the same channel (see _write_job). Pages
+# render from pushes only; a watcher thread here recomputes the
+# web slice server-side and broadcasts ONLY on change -- that is
+# service monitoring inside the server, not UI polling.
+STATUS_STATE_PATH = os.path.join(ROOT, 'status_state.json')
+_sub_lock = threading.Lock()
+_subs = []
+_core_slice = {'state': 'idle', 'label': 'Idle', 'fault': None,
+               'mode': 'wakegate', 'activity': 'idle', 'health': {}}
+_core_seen_at = [0.0]
+_last_merged = [None]
+_alarm_cache = [0.0, None]
+CORE_STALE_S = 35
+
+def _broadcast(kind, payload):
+    with _sub_lock: subs = list(_subs)
+    for q in subs:
+        try: q.put_nowait((kind, payload))
+        except Exception: pass
+
+def _seed_core_slice():
+    try:
+        with open(STATUS_STATE_PATH) as f: snap = json.load(f)
+        for k in ('state', 'label', 'fault', 'mode', 'activity', 'health'):
+            if k in snap: _core_slice[k] = snap[k]
+        _core_seen_at[0] = os.path.getmtime(STATUS_STATE_PATH)
+    except Exception:
+        _core_slice['mode'] = get_mode()
+        _core_seen_at[0] = time.time()
+
+def _accept_core_status(snap):
+    if not isinstance(snap, dict): return
+    with _sub_lock:
+        for k in ('state', 'label', 'fault', 'mode', 'activity', 'health'):
+            if k in snap: _core_slice[k] = snap[k]
+        _core_seen_at[0] = time.time()
+    _refresh_state()
+
+def _alarm_cached():
+    now = time.time()
+    if now - _alarm_cache[0] > 15:
+        try: _alarm_cache[1] = alarm_summary()
+        except Exception: pass
+        _alarm_cache[0] = now
+    return _alarm_cache[1]
+
+def _merged_state():
+    with _sub_lock: core = dict(_core_slice)
+    if _core_seen_at[0] and time.time() - _core_seen_at[0] > CORE_STALE_S:
+        # The core pushes a heartbeat every 15 s; silence longer
+        # than this is a dead core -- a service fault, shown red.
+        core = dict(core, state='error', label='Core offline',
+                    fault='Core offline')
+    try:
+        with open(os.path.join(ROOT, 'display_state.json')) as f:
+            display_on = bool(json.load(f).get('display_on'))
+    except Exception:
+        display_on = True
+    mode = core.get('mode') or 'wakegate'
+    return {
+        'state': core.get('state'), 'label': core.get('label'),
+        'fault': core.get('fault'), 'mode': mode,
+        'activity': core.get('activity'),
+        'health': core.get('health') or {},
+        'sleep': mode == 'sleep',
+        'light': _light_state(),
+        'display_on': display_on,
+        'call_active': get_call_state()['active'],
+        'rtc_connected': get_rtc_connected(),
+        'dim': get_dim(),
+        'ring': {'ringing': bool(get_ring().get('ringing'))},
+        'alarm': _alarm_cached(),
+    }
+
+def _refresh_state():
+    state = _merged_state()
+    if state != _last_merged[0]:
+        _last_merged[0] = state
+        _broadcast('state', state)
+    return state
+
+def _status_watcher():
+    while True:
+        try: _refresh_state()
+        except Exception: pass
+        time.sleep(2)
 
 class H(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw): super().__init__(*a, directory=ROOT, **kw)
@@ -204,6 +302,37 @@ class H(SimpleHTTPRequestHandler):
         self.send_header('Content-Length', str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+    def _sse_write(self, event, payload):
+        if event: self.wfile.write(b'event: ' + event.encode() + b'\n')
+        self.wfile.write(b'data: ' + json.dumps(payload).encode() + b'\n\n')
+        self.wfile.flush()
+    def _serve_status_stream(self):
+        q = queue.Queue()
+        with _sub_lock: _subs.append(q)
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            # Snapshot first (state-driven: a fresh or reconnected
+            # page renders current truth at once), then transitions
+            # as they are broadcast. The keepalive comment only
+            # holds the socket open; it carries no state.
+            self._sse_write(None, _last_merged[0] or _refresh_state())
+            last_ping = time.time()
+            while True:
+                try: kind, payload = q.get(timeout=5)
+                except queue.Empty: kind = None
+                if kind is not None:
+                    self._sse_write(None if kind == 'state' else kind, payload)
+                if time.time() - last_ping >= 25:
+                    self.wfile.write(b': keepalive\n\n'); self.wfile.flush()
+                    last_ping = time.time()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            with _sub_lock:
+                if q in _subs: _subs.remove(q)
     def _json(self, code, obj):
         data = json.dumps(obj).encode()
         self.send_response(code); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
@@ -225,6 +354,7 @@ class H(SimpleHTTPRequestHandler):
         if u.path == '/call.html': return self._serve_call_page()
         if u.path == '/callstate': return self._json(200, get_call_state())
         if u.path == '/roomstate': return self._json(200, room_state())
+        if u.path == '/status': return self._serve_status_stream()
         if u.path == '/alarm':
             try: return self._json(200, alarm_summary())
             except Exception as e: return self._json(502, {'error': str(e)})
@@ -232,6 +362,13 @@ class H(SimpleHTTPRequestHandler):
         if u.path == '/ring': return self._json(200, get_ring())
         return super().do_GET()
     def do_POST(self):
+        if self.path == '/statuspush':
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                if n <= 0 or n > 64 * 1024: return self._json(413, {'error': 'bad size'})
+                _accept_core_status(json.loads(self.rfile.read(n) or b'{}'))
+                return self._json(200, {'ok': True})
+            except Exception as e: return self._json(400, {'error': str(e)})
         if self.path == '/call/start':
             try:
                 n = int(self.headers.get('Content-Length') or 0)
@@ -311,5 +448,8 @@ class H(SimpleHTTPRequestHandler):
         return self._json(404, {'error': 'not found'})
 if __name__ == '__main__':
     os.makedirs(os.path.join(ROOT, 'jobs'), exist_ok=True)
+    _seed_core_slice()
+    _refresh_state()
+    threading.Thread(target=_status_watcher, daemon=True).start()
     print('lyra-web on :8095', flush=True)
     ThreadingHTTPServer(('0.0.0.0', 8095), H).serve_forever()
