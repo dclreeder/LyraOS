@@ -2,8 +2,8 @@
 
 The training pipeline in-path: the session's verify gate transcribes
 the COMBINED wake+command clip via Parakeet :8096 DIRECTLY (the
-production collector's own parakeet_transcribe — not the Wyoming STT
-spool/claim path), classifies it with the production collector's
+production collector's own parakeet_transcribe), classifies it
+with the production collector's
 classifier in-process, and the verdict gates the turn. The gate runs
 DRY-RUN: classification is real, filing is computed by the real
 collector.file_clip with its write primitives swapped for recorders —
@@ -30,10 +30,10 @@ Part B — the "Hey Lyra, what time is it?" pool positive (production
          onward == "what time is it?" -> full 1c box-event sequence,
          one TTS call, URL fetch-back 200.
 
-The REAL box is never contacted; HA is untouched; the Wyoming wake
-server is only *used* (it spools each replayed Detection as in
-production — spool entries created by a part are removed by that part,
-well inside the janitor's 120 s window). Suite note (2026-11-19 consolidation): Part A's old transcript-
+The REAL box is never contacted; HA is untouched; the in-process
+gate registers each replayed Detection as in production — registry
+entries created by a part are discarded by that part, well inside
+the sweep's 120 s window. Suite note (2026-11-19 consolidation): Part A's old transcript-
 content assertion ("function" in the TV clip's transcript) was
 retired -- Parakeet's literal reading of that noisy clip drifts
 between builds while its classification does not. The gate's
@@ -67,10 +67,10 @@ from lyra_core.pipeline import PipelineDriver
 from lyra_core.session import VoiceSession
 from wakegate_session import FakeBox, _fetch, _read_pcm
 from lyra_core.verify import VerifyGate, collector, strip_wake_phrase, _normalize_with_map
+from lyra_core.wake import REGISTRY
 
 CLIPS = Path("~/Documents/LyraOS/modules/wakeword/data/clips").expanduser()
 LEDGER = CLIPS / "clips_ledger.jsonl"
-SPOOL_DIR = Path("~/Documents/LyraOS/modules/wyoming/collector_spool").expanduser()
 NEG_CLIP = CLIPS / "negatives" / "wake_negative_20261111_003531_0.885.wav"
 POS_CLIP = CLIPS / "positives" / "wake_positive_20261111_061439_0.987.wav"
 
@@ -145,17 +145,15 @@ def tree_manifest(root: Path) -> dict[str, str]:
     return out
 
 
-def spool_names() -> set[str]:
-    if not SPOOL_DIR.exists():
-        return set()
-    return {p.name for p in SPOOL_DIR.iterdir() if p.is_file()}
+def pending_ids() -> set[int]:
+    return REGISTRY.pending_ids()
 
 
-def cleanup_spool(before: set[str]) -> list[str]:
+def cleanup_pending(before: set[int]) -> list[int]:
     removed = []
-    for name in sorted(spool_names() - before):
-        (SPOOL_DIR / name).unlink()
-        removed.append(name)
+    for entry_id in sorted(pending_ids() - before):
+        if REGISTRY.discard(entry_id):
+            removed.append(entry_id)
     return removed
 
 
@@ -226,7 +224,7 @@ async def run_part(cfg: CoreConfig, clip: Path, label: str, *,
     def hook(kind: str, detail: dict) -> None:
         timeline.append((time.monotonic(), kind, detail))
 
-    spool_before = spool_names()
+    pending_before = pending_ids()
     server = AudioHttpServer(cfg.http.bind, 8199)  # suite: never the production port
     server.start()
     driver = CountingDriver(cfg)
@@ -247,7 +245,7 @@ async def run_part(cfg: CoreConfig, clip: Path, label: str, *,
     await session.start()
     result: dict = {"clip": clip.name, "label": label}
     try:
-        await asyncio.sleep(0.5)  # wake link up before audio flows
+        await asyncio.sleep(0.5)  # detector armed before audio flows
         pcm, rate, width, channels = _read_pcm(clip)
         print(f"[clip] {clip.name}: {len(pcm) / (rate * width * channels):.2f}s")
         # Feed in 0.5 s slices; inject the Detection at the production
@@ -298,10 +296,10 @@ async def run_part(cfg: CoreConfig, clip: Path, label: str, *,
                   f"{f_ctype}, {len(f_body)} B")
     finally:
         await session.stop()
-        removed = cleanup_spool(spool_before)
+        removed = cleanup_pending(pending_before)
         server.stop()
-    result["spool_cleaned"] = removed
-    print(f"[spool] removed bench entries: {removed}")
+    result["pending_cleaned"] = removed
+    print(f"[registry] discarded bench entries: {removed}")
     print("-- event timeline (t+ seconds) --")
     for ts, kind, detail in timeline:
         print(f"  t+{ts - t0:6.2f}s  {kind:14s} {detail}")
@@ -424,7 +422,7 @@ async def run() -> int:
     report["manifest_diff"] = sorted(diff)
     assert not diff, f"PRODUCTION POOL CHANGED during dry-run bench: {sorted(diff)}"
     print(f"[manifest] identical ({len(after)} files, ledger sha256={report['ledger_sha_after']})")
-    report["spool_final"] = sorted(spool_names())
+    report["pending_final"] = sorted(pending_ids())
 
     for key, clip in (("part_a", NEG_CLIP.name), ("part_b", POS_CLIP.name)):
         prod = production_ledger_line(clip)

@@ -1,9 +1,10 @@
-"""Phase 1b bench: prove the core's Wyoming loop on a recorded clip.
+"""Phase 1b bench: prove the core's wake/STT/TTS loop on a recorded clip.
 
-Stages: describe x2 (wake + TTS; STT is Parakeet direct since
-2026-11-19) -> wake (known positive clip) -> STT (same audio) ->
+Stages: describe x2 (wake in-process + TTS; STT is Parakeet direct
+since 2026-11-19) -> wake (known positive clip) -> STT (same audio) ->
 TTS -> HTTP serve + fetch-back verification. Also observes the production
-clip collector's side effects (spool -> filed clip + ledger line) so the
+clip collector's side effects (pending detection -> filed clip + ledger
+line) so the
 report states exactly what the bench run caused in the training pool.
 
 Never drives a live device, never touches any service config;
@@ -32,7 +33,8 @@ for _p in (_os.path.join(_HERE, "..", "core"), _HERE):
 from lyra_core.audio_http import AudioHttpServer
 from lyra_core.config import CoreConfig
 from lyra_core.pipeline import PipelineDriver, PipelineError
-from lyra_core.verify import finalize_spooled_detection
+from lyra_core.verify import finalize_pending_detection
+from lyra_core.wake import REGISTRY
 
 CLIP = Path(
     "~/Documents/LyraOS/modules/wakeword/data/clips/positives/"
@@ -40,7 +42,6 @@ CLIP = Path(
 ).expanduser()
 POS_DIR = Path("~/Documents/LyraOS/modules/wakeword/data/clips/positives").expanduser()
 LEDGER = Path("~/Documents/LyraOS/modules/wakeword/data/clips/clips_ledger.jsonl").expanduser()
-SPOOL_DIR = Path("~/Documents/LyraOS/modules/wyoming/collector_spool").expanduser()
 REPLY_TEXT = "Lyra core bench check complete."
 
 
@@ -86,9 +87,9 @@ async def run() -> int:
     # session benches.
     cfg = dataclasses.replace(cfg, http=dataclasses.replace(cfg.http, port=8199))
     driver = PipelineDriver(cfg)
-    # The collector janitor hook, wired exactly as production
+    # The collector finalize hook, wired exactly as production
     # wires it (the STT bridge used to do this job).
-    driver.on_transcribed = finalize_spooled_detection
+    driver.on_transcribed = finalize_pending_detection
     # Silence (house rule): the driver's TV mirror is a
     # fire-and-forget POST to lyra-web; record it in-process so no
     # bench speech ever reaches the TV page.
@@ -102,7 +103,7 @@ async def run() -> int:
     # Collector state before (the wake/STT pair files clips by design).
     before_clip = _newest(POS_DIR)
     before_ledger = _last_line(LEDGER)
-    before_spool = sorted(p.name for p in SPOOL_DIR.iterdir()) if SPOOL_DIR.exists() else []
+    before_pending = sorted(REGISTRY.pending_ids())
 
     # Stage 0: describe all three services.
     t0 = time.monotonic()
@@ -197,23 +198,23 @@ async def run() -> int:
         server.stop()
 
     # Collector side effects: the driver's transcribe hook finalizes
-    # the spooled detection asynchronously; give it a few seconds,
+    # the pending detection asynchronously; give it a few seconds,
     # then observe (never interfere).
     await asyncio.sleep(8)
     after_clip = _newest(POS_DIR)
     after_ledger = _last_line(LEDGER)
-    after_spool = sorted(p.name for p in SPOOL_DIR.iterdir()) if SPOOL_DIR.exists() else []
+    after_pending = sorted(REGISTRY.pending_ids())
     report["collector"] = {
         "new_positive_clip": (
             after_clip[0] if after_clip and after_clip != before_clip else None
         ),
         "new_ledger_line": after_ledger if after_ledger != before_ledger else None,
-        "spool_before": before_spool,
-        "spool_after": after_spool,
+        "pending_before": before_pending,
+        "pending_after": after_pending,
     }
     print(f"[collector] new clip: {report['collector']['new_positive_clip']}")
     print(f"[collector] new ledger line: {report['collector']['new_ledger_line']}")
-    print(f"[collector] spool before={before_spool} after={after_spool}")
+    print(f"[collector] pending before={before_pending} after={after_pending}")
 
     report["mirrored_wavs"] = mirrored
     print(f"[mirror] suppressed {len(mirrored)} TV mirror post(s) in-process")

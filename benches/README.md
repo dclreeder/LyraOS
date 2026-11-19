@@ -105,7 +105,7 @@ ever passes outright the runner reports a plain PASS.
   Part A asserts the FIRST turn's event order and reads the
   transcript from the timeline (the wake service can re-fire on
   the replayed pool clip -- observed 2026-11-19, detections ~2.7 s
-  apart, the same double-fire the collector spool shows in
+  apart, the same double-fire the collector registry shows in
   production -- and the repeat run overwrites `session.last_*`
   before the bench reads them); the TTS dialect check no longer
   equates the box's TTS_END URL with `last_tts_url` (since

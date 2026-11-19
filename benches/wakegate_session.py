@@ -43,7 +43,8 @@ for _p in (_os.path.join(_HERE, "..", "core"), _HERE):
 from lyra_core.audio_http import AudioHttpServer
 from lyra_core.config import CoreConfig
 from lyra_core.pipeline import PipelineDriver
-from lyra_core.verify import finalize_spooled_detection
+from lyra_core.verify import finalize_pending_detection
+from lyra_core.wake import REGISTRY
 from lyra_core.session import CANNED_REPLY, VoiceSession
 from lyra_core.supervisor import CoreSupervisor
 
@@ -53,7 +54,6 @@ CLIP = Path(
 ).expanduser()
 POS_DIR = Path("~/Documents/LyraOS/modules/wakeword/data/clips/positives").expanduser()
 LEDGER = Path("~/Documents/LyraOS/modules/wakeword/data/clips/clips_ledger.jsonl").expanduser()
-SPOOL_DIR = Path("~/Documents/LyraOS/modules/wyoming/collector_spool").expanduser()
 
 CHUNK = 3200  # 100 ms at 16 kHz / 16-bit / mono
 
@@ -139,7 +139,7 @@ async def part_a(cfg: CoreConfig) -> dict:
     driver = PipelineDriver(cfg)
     # The collector janitor hook, wired exactly as production
     # wires it (the STT bridge used to do this job).
-    driver.on_transcribed = finalize_spooled_detection
+    driver.on_transcribed = finalize_pending_detection
     session = VoiceSession(cfg, driver, server, on_event=hook)
     box = FakeBox(session.handle_audio, timeline)
     session.attach_box(box)  # type: ignore[arg-type]  (duck-typed BoxClient)
@@ -215,13 +215,13 @@ async def part_a(cfg: CoreConfig) -> dict:
                 "stt_end", "intent_start", "intent_end", "tts_start",
                 "tts_end", "run_end"]
     assert "wake_forward" in kinds, "mic audio was never forwarded to the wake server"
-    assert "detection" in kinds, "wake server never returned a Detection"
+    assert "detection" in kinds, "gate never fired a Detection"
     assert kinds.index("wake_forward") < kinds.index("detection"), "forward must precede detection"
     assert kinds.index("detection") < kinds.index("box_event"), "detection must precede box events"
-    # The contract is the FIRST turn's event order. The wake
-    # service can fire a second Detection on this replayed pool
-    # clip (observed 2026-11-19: detections ~2.7 s apart; the
-    # collector spool shows the same double-fire in production).
+    # The contract is the FIRST turn's event order. The gate
+    # can fire a second Detection on this replayed pool clip
+    # (observed 2026-11-19: detections ~2.7 s apart; the collector
+    # registry shows the same double-fire in production).
     # The session handles the repeat correctly -- a run that finds
     # no speech and errors back to idle -- so trailing events after
     # the first run_end are reported, not asserted away.
@@ -379,7 +379,7 @@ async def run() -> int:
 
     before_clip = _newest(POS_DIR)
     before_ledger = _last_line(LEDGER)
-    before_spool = sorted(p.name for p in SPOOL_DIR.iterdir()) if SPOOL_DIR.exists() else []
+    before_pending = sorted(REGISTRY.pending_ids())
     report: dict = {"reply_text": CANNED_REPLY}
     report["part_a"] = await part_a(cfg)
     report["part_b"] = await part_b(cfg)
@@ -387,15 +387,15 @@ async def run() -> int:
     await asyncio.sleep(8)
     after_clip = _newest(POS_DIR)
     after_ledger = _last_line(LEDGER)
-    after_spool = sorted(p.name for p in SPOOL_DIR.iterdir()) if SPOOL_DIR.exists() else []
+    after_pending = sorted(REGISTRY.pending_ids())
     report["collector"] = {
         "new_positive_clip": (after_clip[0] if after_clip and after_clip != before_clip else None),
         "new_ledger_line": after_ledger if after_ledger != before_ledger else None,
-        "spool_before": before_spool, "spool_after": after_spool,
+        "pending_before": before_pending, "pending_after": after_pending,
     }
     print(f"[collector] new clip: {report['collector']['new_positive_clip']}")
     print(f"[collector] new ledger line: {report['collector']['new_ledger_line']}")
-    print(f"[collector] spool before={before_spool} after={after_spool}")
+    print(f"[collector] pending before={before_pending} after={after_pending}")
     print("===SESSION_BENCH_JSON===")
     print(json.dumps(report, indent=2))
     print("===SESSION_BENCH_PASS===")
