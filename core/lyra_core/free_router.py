@@ -334,6 +334,32 @@ class FreeChatClient:
 
 _WS = re.compile(r"\s+")
 
+_MD_UNDERSCORE = re.compile(r"(?<!\w)_+|_+(?!\w)")
+_MD_LINE_LEAD = re.compile(r"^\s*(?:#{1,6}\s+|[-\u2022]\s+)")
+
+
+def _strip_markdown(text: str) -> str:
+    """Remove markdown formatting from TTS-bound text. The brain
+    still emits *emphasis*, **bold**, *stage directions* and `code`
+    ticks despite the SOUL's no-markdown rule, and the synthesizer
+    reads the '*' character aloud as the word 'asterisk' (Daniel,
+    live, 2026-11-18). The wrapped words stay; only the markup
+    characters go. Captions and page text keep her raw reply --
+    this runs only where text is bound for synthesis
+    (sanitize_spoken and the sentence splitter's emissions). A
+    fragment that was all markup comes back empty and is dropped
+    by the _speakable() guard, same as an emoji-only fragment."""
+    text = text.replace("*", "").replace("`", "").replace("\u2022", "")
+    text = _MD_UNDERSCORE.sub("", text)
+    text = _MD_LINE_LEAD.sub("", text)
+    return text
+
+
+def _tts_bound(text: str) -> str:
+    """Text on its way to the synthesizer: markdown stripped,
+    whitespace collapsed."""
+    return _WS.sub(" ", _strip_markdown(text)).strip()
+
 
 def _speakable(text: str) -> bool:
     """A fragment is speakable iff it carries at least one letter
@@ -346,13 +372,14 @@ def _speakable(text: str) -> bool:
 
 def sanitize_spoken(text: str) -> str:
     """Pipeline necessity only: the TTS stage needs a non-empty
-    string. Whitespace is collapsed; the model's words are NOT
-    trimmed, capped, or corrected -- in the free-reign trial her
+    string. Markdown is stripped (the synthesizer reads it aloud
+    as letter names) and whitespace is collapsed; the model's
+    words are NOT trimmed, capped, or corrected -- in the free-reign trial her
     output is the test data. Returns '' when nothing speakable
     remains (the caller treats that as a FREE_FAIL)."""
     if not text:
         return ""
-    text = _WS.sub(" ", text).strip()
+    text = _tts_bound(text)
     if not _speakable(text):
         return ""
     return text
@@ -393,6 +420,7 @@ class _SentenceSplitter:
             if len(sent) < 4 or any(tail.endswith(a) for a in _ABBREV_TAILS):
                 start = m.end()
                 continue
+            sent = _tts_bound(sent)
             if _speakable(sent):
                 self.pending.append(sent)
             self._buf = self._buf[m.end():]
@@ -400,7 +428,7 @@ class _SentenceSplitter:
         if len(self._buf) > 240:
             cut = self._buf.rfind(", ", 40)
             if cut > 0:
-                frag = self._buf[:cut + 1].strip()
+                frag = _tts_bound(self._buf[:cut + 1])
                 if _speakable(frag):
                     self.pending.append(frag)
                 self._buf = self._buf[cut + 2:]
@@ -414,7 +442,7 @@ class _SentenceSplitter:
     def flush(self) -> list[str]:
         out = list(self.pending)
         self.pending = []
-        tail = self._buf.strip()
+        tail = _tts_bound(self._buf)
         self._buf = ""
         if tail and _speakable(tail):
             out.append(tail)
