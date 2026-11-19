@@ -58,7 +58,6 @@ code is modified.
 """
 from __future__ import annotations
 
-import array
 import asyncio
 import base64
 import io
@@ -80,7 +79,6 @@ from .localmic import LocalMicClient
 from . import mode as mode_store
 from .rtc import RtcServer
 from .status import StatusHub, StatusPublisher, health_monitor
-from .stream_stt import StreamSttClient
 from .session import VoiceSession
 from .tv_ring import TvRinger
 from .tools import (
@@ -421,15 +419,14 @@ async def amain() -> int:
     # roughly one sentence instead of the whole reply plus the whole
     # synthesis (the old /call/turn shape). Entries are pruned at
     # 10 minutes; one call turn at a time.
-    # Since 2026-11-18 call turns transcribe through the Nemotron
-    # streaming sidecar first (see _call_transcribe below), with
-    # Parakeet TDT as the fallback -- Daniel, 2026-11-18: the
-    # phone call is supposed to be duplex.
-    # Later the same day the call became a true streaming session:
-    # the page is a WebRTC peer of the call RTC server (see
-    # _call_offer above) -- his words stream to the sidecar live
-    # and render on the page as they finalize, her replies stream
-    # sentence by sentence, and speech over her reply barges in.
+    # Call turns transcribe through Parakeet TDT (see
+    # _call_transcribe below), the house's one STT engine --
+    # Daniel, 2026-11-18: the phone call is supposed to be
+    # duplex.
+    # The call is a true streaming session: the page is a WebRTC
+    # peer of the call RTC server (see _call_offer above) -- his
+    # audio streams live, her replies stream sentence by
+    # sentence, and speech over her reply barges in.
     # The /call/start + /call/poll shape below remains as the
     # page's fallback when the streaming transport cannot be
     # established, and _call_transcribe remains its ears.
@@ -502,94 +499,14 @@ async def amain() -> int:
         finally:
             hub.turn_end()
 
-    # -- call transcription: Nemotron streaming first (2026-11-18) --
-    # RTC got the streaming sidecar this morning; call turns use
-    # the same ears. The call API is per-utterance -- the phone
-    # client VADs in the browser and uploads one complete WAV per
-    # turn -- so each turn takes its OWN sidecar connection: the
-    # recorded PCM is fed through the stream and the transcript
-    # is the stream's flush final, the same finalization contract
-    # RTC dispatches on. (RTC's live STREAM_CONFIRM_S window has
-    # no analogue here: the utterance is already complete when it
-    # arrives -- the client's silence cut is the turn end and the
-    # flush is the final.) A healthy stream's final is
-    # authoritative, empty included, mirroring RTC. Any failure
-    # -- sidecar down, busy (the sidecar serves one connection at
-    # a time and an RTC session holds its own), or dying
-    # mid-turn -- falls back to driver.transcribe_audio (Parakeet
-    # TDT) on the original PCM: the pre-streaming behavior, so a
-    # dead or busy streamer can never break a call.
-    _CALL_STREAM_CONNECT_S = 1.5
-
-    def _call_stream_pcm(pcm: bytes, rate: int, width: int,
-                         channels: int) -> bytes | None:
-        """Normalize an utterance to the sidecar's contract format
-        (s16le 16 kHz mono), stdlib only -- the core venv has no
-        numpy. The phone client already records in this format,
-        so in practice this is a pass-through; the conversions
-        cover the plausible variants. None for a shape we cannot
-        convert: the caller then goes straight to TDT, which
-        takes the original format natively."""
-        if width == 2:
-            samples = array.array("h")
-            samples.frombytes(pcm[: len(pcm) // 2 * 2])
-        elif width == 1:
-            samples = array.array("h", ((b - 128) << 8 for b in pcm))
-        elif width == 4:
-            wide = array.array("i")
-            wide.frombytes(pcm[: len(pcm) // 4 * 4])
-            samples = array.array("h", (v >> 16 for v in wide))
-        else:
-            return None
-        if channels == 2:
-            samples = array.array("h", (
-                (samples[i] + samples[i + 1]) // 2
-                for i in range(0, len(samples) - 1, 2)))
-        elif channels != 1:
-            return None
-        if rate != 16000 and len(samples) > 1:
-            ratio = rate / 16000.0
-            out = array.array("h")
-            for i in range(int(len(samples) / ratio)):
-                pos = i * ratio
-                j = int(pos)
-                a = samples[j]
-                b = samples[min(j + 1, len(samples) - 1)]
-                out.append(int(a + (b - a) * (pos - j)))
-            samples = out
-        return samples.tobytes()
-
-    async def _call_transcribe_stream(pcm16: bytes) -> str | None:
-        """One utterance through the Nemotron streaming sidecar
-        on its own connection: the flush final (possibly ''), or
-        None if the sidecar could not serve the turn."""
-        client = await StreamSttClient.connect(
-            timeout=_CALL_STREAM_CONNECT_S)
-        if client is None:
-            return None
-        try:
-            chunk = 6400  # 200 ms of 16 kHz s16 mono
-            for offset in range(0, len(pcm16), chunk):
-                await client.feed(pcm16[offset:offset + chunk])
-                if client.failed:
-                    return None
-            return await client.flush()
-        finally:
-            await client.close()
-
+    # -- call transcription: Parakeet TDT (2026-11-18) --
+    # The legacy /call/start path's ears: the uploaded utterance
+    # goes straight to driver.transcribe_audio (Parakeet TDT),
+    # the house's one STT engine. (A Nemotron streaming sidecar
+    # took first crack at these turns for part of 2026-11-18;
+    # Daniel cut it that evening -- one engine for the house.)
     async def _call_transcribe(pcm: bytes, rate: int, width: int,
                                channels: int) -> str:
-        pcm16 = _call_stream_pcm(pcm, rate, width, channels)
-        if pcm16:
-            text = await _call_transcribe_stream(pcm16)
-            if text is not None:
-                text = text.strip()
-                _LOGGER.info(
-                    "call transcript [nemotron-stream]: %r", text)
-                return text
-            _LOGGER.warning(
-                "call: stream sidecar could not serve the turn; "
-                "falling back to Parakeet TDT")
         transcript = await driver.transcribe_audio(
             pcm, rate=rate, width=width, channels=channels)
         _LOGGER.info("call transcript [parakeet-tdt]: %r", transcript)

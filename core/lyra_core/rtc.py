@@ -35,14 +35,13 @@ matters is the core's own anyway:
 - Speech is Kokoro via PipelineDriver.synthesize_speech with the
   TV mirror suppressed: the peer track is her voice path in this
   mode, and the mirror would double-play every line on the page.
-- STT is streaming Nemotron 3.5 (2026-11-18): the peer's audio
-  feeds the Nemotron streaming sidecar (lyra_core.stream_stt)
-  and a turn ends on text finalization -- finalized text plus a
-  short quiet confirmation window -- not a silence-timed batch
-  cut. If the sidecar is down at session start or dies
-  mid-session, the session falls back to the Endpointer +
-  PipelineDriver.transcribe_audio (Parakeet TDT) path,
-  unchanged. WakeGate never uses the streamer.
+- STT is Parakeet TDT, the house's one engine (2026-11-18):
+  the segmenter cuts each utterance and
+  PipelineDriver.transcribe_audio transcribes it, the same
+  ears WakeGate uses. (A Nemotron streaming sidecar served
+  RTC and calls for one day; Daniel cut it the same evening
+  -- one STT engine for the whole house, and the 50 ms mic
+  path had already taken the latency it was masking.)
 
 Echo is the system layer's job (2026-11-18): the mic feed
 arrives already echo-cancelled -- PipeWire's WebRTC AEC makes
@@ -61,11 +60,10 @@ RtcServer instance, always accepting, whose sessions carry
 via="call", a mirroring speaker (her voice also reaches the TV
 mirror, as the call feature has always done), and no rtc_state
 publishing. The call page attaches a data channel; the session
-emits his finalized-so-far text as it forms, her reply sentences
-as they generate, and barge-in events over it. The mode-gated
-server above is untouched by this: a call works in any mode, and
-the two servers share the one sidecar by the existing fallback
-rule (whoever cannot connect runs on TDT).
+emits his transcript whole when the turn dispatches, her reply
+sentences as they generate, and barge-in events over it. The
+mode-gated server above is untouched by this: a call works in
+any mode.
 """
 from __future__ import annotations
 
@@ -87,7 +85,6 @@ from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
 from .endpointer import Endpointer
 from .mode import write_rtc_state
 from .pipeline import PipelineDriver
-from .stream_stt import StreamSttClient
 
 _LOGGER = logging.getLogger("lyra_core.rtc")
 
@@ -101,10 +98,6 @@ HANGOVER_MS = 800            # silence that ends an utterance
 ONSET_TARGET = 4             # the endpointer arms' leaky-counter target
 MIN_UTTER_MS = 250           # shorter than this is a click, not speech
 MAX_UTTER_S = 30.0
-STREAM_CONFIRM_S = 0.35      # quiet + no-new-text window ending a streamed turn
-STREAM_TAIL_S = 0.10         # audio that must be fed past the last finalized word
-STREAM_IDLE_RESET_S = 8.0    # silent streamed audio before a hygiene reset
-STREAM_SEG_GRACE_S = 0.35    # grace for late finals after the segmenter cuts
 
 
 def _pcm_frame(pcm: bytes, rate: int) -> av.AudioFrame:
@@ -308,21 +301,12 @@ class _RtcSession:
         self._server = server
         self.pc = pc
         self._seg = _Segmenter()
-        self._stream: StreamSttClient | None = None
-        self._stream_setup_task: asyncio.Task | None = None
-        self._utter_streaming = False
-        self._stream_dispatched = False
-        self._pending_pcm: bytes | None = None
-        self._seg_done_at = 0.0
-        self._utter_stream_start = 0.0
-        self._last_loud_at = 0.0
         self._out = bytearray()
         self._generation = 0
         self._turn_task: asyncio.Task | None = None
         self._consume_task: asyncio.Task | None = None
         self._closed = False
         self._event_sink = None
-        self._partial_sent = ""
         self._status_playing = False
         self._status_listening = False
         self.out_track = _PeerAudioTrack(self)
@@ -399,10 +383,10 @@ class _RtcSession:
 
     def attach_event_channel(self, channel) -> None:
         """Wire the session's page events to a WebRTC data channel
-        (the phone call page). Events are JSON dicts: his
-        finalized-so-far text (partial), the dispatched transcript,
-        her reply sentences as they generate, reply completion,
-        and barge-in. The TV page creates no data channel, so RTC
+        (the phone call page). Events are JSON dicts: the
+        dispatched transcript (whole, at turn dispatch), her
+        reply sentences as they generate, reply completion, and
+        barge-in. The TV page creates no data channel, so RTC
         mode sessions never emit."""
         def _send(msg: dict) -> None:
             try:
@@ -420,48 +404,6 @@ class _RtcSession:
 
     def attach_input(self, track: MediaStreamTrack) -> None:
         self._consume_task = asyncio.ensure_future(self._consume(track))
-        self._stream_setup_task = asyncio.ensure_future(self._setup_stream())
-
-    async def _setup_stream(self) -> None:
-        """Session-start sidecar health check: connect to the
-        Nemotron streaming sidecar. Success arms the streaming STT
-        path for this session; failure leaves the session on the
-        legacy Endpointer + TDT path, exactly as before."""
-        client = await StreamSttClient.connect()
-        if client is None:
-            _LOGGER.warning(
-                "%s: stream sidecar unreachable; session falls back "
-                "to Endpointer + Parakeet TDT", self._server.label)
-            return
-        if self._closed:
-            await client.close()
-            return
-        client.on_failure = self._on_stream_failure
-        self._stream = client
-        _LOGGER.info("%s: Nemotron streaming STT armed for this session",
-                     self._server.label)
-
-    def _on_stream_failure(self) -> None:
-        """The sidecar died mid-session: fall back to the legacy
-        Endpointer + TDT path. An utterance the segmenter already
-        cut dispatches from its held PCM now; one still in flight
-        dispatches when the segmenter's hangover completes; one
-        the stream already dispatched needs nothing."""
-        if self._closed:
-            return
-        _LOGGER.warning(
-            "%s: stream sidecar lost mid-session; falling back to "
-            "Endpointer + Parakeet TDT", self._server.label)
-        if self._stream_dispatched:
-            self._note_listening(False)
-            return
-        if self._pending_pcm is not None:
-            pending, self._pending_pcm = self._pending_pcm, None
-            self._utter_streaming = False
-            self._note_listening(False)
-            self._start_turn_pcm(pending)
-        else:
-            self._utter_streaming = False
 
     async def _consume(self, track: MediaStreamTrack) -> None:
         resampler = av.AudioResampler(
@@ -479,144 +421,26 @@ class _RtcSession:
             _LOGGER.exception("rtc consume loop failed")
 
     async def _consume_pcm(self, pcm: bytes) -> None:
-        """One resampled 16 kHz chunk of peer audio: the segmenter
-        always sees it (barge-in onset + the legacy path), and the
-        stream sidecar sees it whenever this session is armed."""
-        now = time.monotonic()
-        rms = _Segmenter._rms(pcm)
-        if rms >= self._seg.end_threshold():
-            self._last_loud_at = now
+        """One resampled 16 kHz chunk of peer audio: feed the
+        segmenter; its events drive the turn. A speech onset
+        while she is talking is the barge-in; a finished
+        utterance is transcribed (Parakeet TDT) and dispatched."""
         for kind, payload in self._seg.feed(pcm):
             if kind == "speech_start":
                 self._note_listening(True)
-                was_speaking = self.speaking
-                stream = self._stream
-                self._utter_streaming = (
-                    stream is not None and not stream.failed)
-                self._stream_dispatched = False
-                self._pending_pcm = None
-                if self._utter_streaming and (
-                        stream.text or stream.audio_fed > 0.05):
-                    # The stream heard audio before this utterance
-                    # was armed (it connected late, or a previous
-                    # turn's tail lingered): start clean.
-                    await stream.reset()
-                self._utter_stream_start = (
-                    stream.audio_fed if stream is not None else 0.0)
-                if was_speaking:
-                    # Barge-in: an onset while she is talking IS the
-                    # interruption -- cancel the turn and let this
-                    # utterance become his. No echo judging: the
-                    # feed arrives echo-cancelled by PipeWire, so
-                    # her own voice does not reach this point.
+                if self.speaking:
+                    # Barge-in: an onset while she is talking IS
+                    # the interruption -- cancel the turn and let
+                    # this utterance become his. No echo judging:
+                    # the feed arrives echo-cancelled by PipeWire,
+                    # so her own voice does not reach this point.
                     self.barge_in()
             elif kind == "speech_end":
                 # The segmenter discarded a too-short blip: the
                 # capture is over and nothing else resolves it.
                 self._note_listening(False)
             elif kind == "utterance" and payload is not None:
-                self._on_segmenter_utterance(payload, now)
-        stream = self._stream
-        if stream is None or stream.failed:
-            return
-        await stream.feed(pcm)
-        if self._event_sink is not None and not stream.failed:
-            # His words, as they finalize: the call page renders
-            # them incrementally instead of one batch at turn end.
-            text = stream.text
-            if text != self._partial_sent:
-                self._partial_sent = text
-                if text.strip():
-                    self._emit({"type": "partial",
-                                "text": text.strip()})
-        if (not self._utter_streaming and not stream.text
-                and stream.audio_fed >= STREAM_IDLE_RESET_S
-                and now - self._last_loud_at >= 1.0):
-            # Minutes of room tone would otherwise pile up in the
-            # model's cache between turns; restart the stream on a
-            # quiet boundary instead. Never mid-utterance.
-            await stream.reset()
-            return
-        await self._maybe_dispatch_stream(now)
-
-    def _on_segmenter_utterance(self, pcm: bytes, now: float) -> None:
-        if not self._utter_streaming:
-            # Legacy path: no stream armed for this utterance (the
-            # sidecar was down, or it died and handed the utterance
-            # back). Transcribe the buffered PCM exactly as before.
-            self._start_turn_pcm(pcm)
-            return
-        if self._stream_dispatched:
-            # The stream already turned this speech into a turn;
-            # the segmenter's cut is just its hangover catching up.
-            self._utter_streaming = False
-            self._pending_pcm = None
-            self._note_listening(False)
-            return
-        # The segmenter cut before the stream's finals settled
-        # (finalization can lag the acoustic end by ~0.65 s). Hold
-        # the PCM: the stream dispatch proceeds when its text
-        # lands, and the PCM is the fallback if the stream dies
-        # before that.
-        self._pending_pcm = pcm
-        self._seg_done_at = now
-
-    async def _maybe_dispatch_stream(self, now: float) -> None:
-        """Turn end for the streaming path (2026-11-18): the model
-        has finalized text, no new text has landed for
-        STREAM_CONFIRM_S, the input has been energy-quiet for the
-        same window, and audio has been fed past the last
-        finalized word. The segmenter's cut short-circuits the
-        wait when it fires first with text already in hand. A
-        streamed utterance that runs to MAX_UTTER_S is flushed
-        regardless (the legacy cap)."""
-        stream = self._stream
-        if (stream is None or stream.failed or not self._utter_streaming
-                or self._stream_dispatched):
-            return
-        text = stream.text.strip()
-        seg_done = self._pending_pcm is not None
-        forced = (stream.audio_fed - self._utter_stream_start
-                  >= MAX_UTTER_S)
-        if not forced and not (seg_done and text):
-            if not text:
-                if seg_done and now - self._seg_done_at >= STREAM_SEG_GRACE_S:
-                    # The segmenter heard a full utterance and the
-                    # model finalized nothing: unintelligible or
-                    # noise. Drop it (the legacy path would have
-                    # transcribed empty and stayed silent too) and
-                    # resync the stream.
-                    self._utter_streaming = False
-                    self._pending_pcm = None
-                    self._note_listening(False)
-                    await stream.reset()
-                return
-            if now - stream.last_text_at < STREAM_CONFIRM_S:
-                return
-            if now - self._last_loud_at < STREAM_CONFIRM_S:
-                return
-            last_word_end = stream.last_word_end
-            if (last_word_end is not None
-                    and stream.audio_fed - last_word_end < STREAM_TAIL_S):
-                return
-        self._stream_dispatched = True
-        final = await stream.flush()
-        self._utter_stream_start = stream.audio_fed
-        if final is None:
-            _LOGGER.warning(
-                "%s stream flush failed; session on the legacy path now",
-                self._server.label)
-            pending, self._pending_pcm = self._pending_pcm, None
-            self._utter_streaming = False
-            self._note_listening(False)
-            if pending is not None:
-                self._start_turn_pcm(pending)
-            return
-        self._pending_pcm = None
-        if not final.strip():
-            self._note_listening(False)
-            return  # silence/noise: no turn, staying silent
-        self._start_turn_text(final.strip())
+                self._start_turn_pcm(payload)
 
     def _turn_busy(self) -> bool:
         return self._turn_task is not None and not self._turn_task.done()
@@ -651,17 +475,6 @@ class _RtcSession:
             return
         self._turn_task = asyncio.ensure_future(
             self._run_turn_pcm(pcm, self._generation))
-        self._status_turn_begin()
-
-    def _start_turn_text(self, transcript: str) -> None:
-        if self._turn_busy():
-            _LOGGER.info("%s utterance dropped: a turn is still running",
-                         self._server.label)
-            self._note_listening(False)
-            return
-        self._turn_task = asyncio.ensure_future(
-            self._run_transcript(transcript, self._generation,
-                                 source="nemotron-stream"))
         self._status_turn_begin()
 
     async def _run_turn_pcm(self, pcm: bytes, generation: int) -> None:
@@ -718,13 +531,9 @@ class _RtcSession:
         self._out.clear()
         self._note_playing()
         self._note_listening(False)
-        for task in (self._consume_task, self._turn_task,
-                     self._stream_setup_task):
+        for task in (self._consume_task, self._turn_task):
             if task is not None and not task.done():
                 task.cancel()
-        if self._stream is not None:
-            await self._stream.close()
-            self._stream = None
         try:
             await self.pc.close()
         except Exception:

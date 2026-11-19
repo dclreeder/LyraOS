@@ -351,9 +351,7 @@ window._lyra = { state: null, _sh: [], _jh: [],
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   }
   function onDcMessage(j) {
-    if (j.type === 'partial') {
-      capMe.textContent = j.text;   // his words, as they finalize
-    } else if (j.type === 'transcript') {
+    if (j.type === 'transcript') {
       capMe.textContent = j.text;
       capHer.textContent = ''; herText = '';
       try { model.motion(idleGroups[Math.floor(Math.random() * idleGroups.length)]); } catch (e) {}
