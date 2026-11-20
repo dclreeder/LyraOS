@@ -1,0 +1,11 @@
+[Unit]
+Description=Lyra local STT (whisper.cpp large-v3-turbo, Vulkan) - standalone, not yet wired into the core
+After=network.target
+
+[Service]
+ExecStart=/home/dclreeder/Documents/LyraOS/modules/whisper/build/bin/whisper-server --host 127.0.0.1 --port 8093 -m /home/dclreeder/Documents/LyraOS/modules/whisper/models/ggml-large-v3-turbo.bin
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
