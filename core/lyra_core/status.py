@@ -40,7 +40,7 @@ Inputs, all wired in production_main:
   utterance activity) = listening.
 - mode: the mode manager's applied mode (sleep shows violet).
 - health: the dependency monitor below (lyra-llm with the model
-  loaded, Kokoro, Parakeet TDT). Checking
+  loaded, Kokoro, Parakeet TDT, Whisper). Checking
   dependencies is service monitoring inside the core; the UI only
   ever receives the pushed result.
 """
@@ -62,6 +62,7 @@ FAULTS = (
     ("llm", "Model not loaded"),
     ("kokoro", "Speech service down"),
     ("parakeet", "STT service down"),
+    ("whisper", "Whisper service down"),
 )
 
 LABELS = {
@@ -263,6 +264,9 @@ class StatusPublisher:
 LLM_MODELS_URL = "http://127.0.0.1:8094/v1/models"
 KOKORO_HEALTH_URL = "http://127.0.0.1:8091/health"
 PARAKEET_HEALTH_URL = "http://127.0.0.1:8096/health"
+# whisper-server has no /health endpoint; its root page answering
+# 200 is the liveness signal (status-only check, not JSON).
+WHISPER_HEALTH_URL = "http://127.0.0.1:8093/"
 HEALTH_PERIOD_S = 5.0
 
 
@@ -277,24 +281,38 @@ def _get_json(url: str, timeout: float = 3.0) -> dict | None:
         return None
 
 
+def _get_ok(url: str, timeout: float = 3.0) -> bool:
+    """Status-only liveness: True iff the URL answers HTTP 200.
+    For services whose liveness page is not JSON (whisper-server's
+    root page)."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
 async def check_dependencies(llm_url: str = LLM_MODELS_URL,
                              kokoro_url: str = KOKORO_HEALTH_URL,
-                             parakeet_url: str = PARAKEET_HEALTH_URL) -> dict[str, bool]:
+                             parakeet_url: str = PARAKEET_HEALTH_URL,
+                             whisper_url: str = WHISPER_HEALTH_URL) -> dict[str, bool]:
     """One pass over the voice stack's dependencies. The LLM
     check requires the model list to be non-empty -- a llama-server
     that answers with no model loaded is exactly Daniel's example
     fault. URLs are parameters so tests can point the checker at
     dead endpoints without touching production services."""
-    llm_obj, kokoro_obj, parakeet_obj = await asyncio.gather(
+    llm_obj, kokoro_obj, parakeet_obj, whisper_ok = await asyncio.gather(
         asyncio.to_thread(_get_json, llm_url),
         asyncio.to_thread(_get_json, kokoro_url),
         asyncio.to_thread(_get_json, parakeet_url),
+        asyncio.to_thread(_get_ok, whisper_url),
     )
     return {
         "llm": bool(llm_obj and llm_obj.get("data")),
         "kokoro": bool(kokoro_obj and kokoro_obj.get("ok") is True),
         "parakeet": bool(
             parakeet_obj and parakeet_obj.get("status") == "ok"),
+        "whisper": whisper_ok,
     }
 
 

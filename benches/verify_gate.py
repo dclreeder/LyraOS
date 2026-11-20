@@ -1,8 +1,8 @@
 """Phase 2 bench: verify-then-fire, proven at mock-session level.
 
 The training pipeline in-path: the session's verify gate transcribes
-the COMBINED wake+command clip via Parakeet :8096 DIRECTLY (the
-production collector's own parakeet_transcribe), classifies it
+the COMBINED wake+command clip via Whisper :8093 DIRECTLY (the
+production collector's own whisper_transcribe), classifies it
 with the production collector's
 classifier in-process, and the verdict gates the turn. The gate runs
 DRY-RUN: classification is real, filing is computed by the real

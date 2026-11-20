@@ -3,7 +3,7 @@ prerequisites, verified without starting the service.
 
 Checks: config loads, the services describe OK (wake in-process, TTS
 Wyoming), the
-Parakeet/Kokoro engine ports answer, and the core's HTTP audio
+Parakeet/Kokoro/Whisper engine ports answer, and the core's HTTP audio
 endpoint binds, serves /healthz, and round-trips a stored WAV
 byte-identically. (The speaker-box seat-swap procedure this file
 was written for was retired with the box, 2026-11-16.)
@@ -21,8 +21,10 @@ from .config import CoreConfig
 from .pipeline import PipelineDriver
 
 # The shared engine services behind the Wyoming wrappers (single-instance
-# rule): Parakeet and the Kokoro HTTP wrapper on the Fedora.
-ENGINE_PORTS = (("parakeet", "127.0.0.1", 8096), ("kokoro", "127.0.0.1", 8091))
+# rule): Parakeet, the Kokoro HTTP wrapper, and whisper-server (the
+# WakeGate path's transcriber since the 2026-11-20 split) on the Fedora.
+ENGINE_PORTS = (("parakeet", "127.0.0.1", 8096), ("kokoro", "127.0.0.1", 8091),
+                ("whisper", "127.0.0.1", 8093))
 
 def _fetch(url: str) -> tuple[int, str, bytes]:
     with urllib.request.urlopen(url, timeout=15) as resp:
@@ -83,7 +85,7 @@ async def run_preflight() -> int:
     except Exception as exc:
         check(False, "services describe OK", str(exc))
 
-    # 3. Engine ports answer (Parakeet / Kokoro behind the wrappers).
+    # 3. Engine ports answer (Parakeet / Kokoro / Whisper).
     for name, host, port in ENGINE_PORTS:
         ok = await _port_answers(host, port)
         check(ok, f"{name} engine port answers", f"{host}:{port}")
