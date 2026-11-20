@@ -1,8 +1,10 @@
 """Pipeline driver: the core's client for the one remaining
-Wyoming service (TTS :10200) and for Parakeet (:8096), which the
-core calls directly over HTTP -- the Wyoming STT bridge between
-them was removed 2026-11-19, and the wake service followed it the
-same day: detection runs in-process (lyra_core.wake).
+Wyoming service (TTS :10200) and for the two STT engines, which
+the core calls directly over HTTP -- Whisper (:8093) for the
+WakeGate path, Parakeet (:8096) for RTC, split by path
+2026-11-20. The Wyoming STT bridge between the core and its
+engines was removed 2026-11-19, and the wake service followed
+it the same day: detection runs in-process (lyra_core.wake).
 
 In production this driver carries transcription and synthesis
 round trips and RTC's transcription; the benches drive the same
@@ -211,8 +213,9 @@ class PipelineDriver:
 
     async def describe_all(self) -> dict[str, dict]:
         # Wake is in-process (lyra_core.wake.wake_info); TTS is the
-        # one Wyoming service left to describe. STT is Parakeet
-        # over HTTP (see transcribe_audio) -- no Info there either.
+        # one Wyoming service left to describe. STT is Whisper /
+        # Parakeet over HTTP (see transcribe_audio) -- no Info
+        # there either.
         return {
             "wake": wake_info(),
             "tts": await self.describe(self._cfg.tts_uri),
@@ -255,14 +258,22 @@ class PipelineDriver:
         width: int = 2,
         channels: int = 1,
         timeout: float = 180.0,
+        engine: str = "parakeet",
     ) -> str:
-        """Transcribe PCM by POSTing it as a WAV to Parakeet
-        directly (2026-11-19: the Wyoming STT bridge is gone; this
-        is the same /v1/audio/transcriptions call the bridge made
-        on the core's behalf). The bridge answered a failed
-        transcription with an empty transcript; that contract is
-        preserved -- a failure reads as silence, never an
-        exception. Empty audio short-circuits, as it did there."""
+        """Transcribe PCM by POSTing it as a WAV to an STT engine
+        directly (2026-11-19: the Wyoming STT bridge is gone;
+        these are the same calls the bridge made on the core's
+        behalf). Routing is by path (2026-11-20, Daniel's order):
+        engine="parakeet" (the default) is RTC's route, the call
+        shape unchanged from the single-engine era; the WakeGate
+        path transcribes with Whisper -- session.py's gate-less
+        fallback passes engine="whisper", and the gated path's
+        own transcription lives in the clip collector (Whisper
+        there too). The bridge answered a
+        failed transcription with an empty transcript; that
+        contract is preserved on both routes -- a failure reads
+        as silence, never an exception. Empty audio
+        short-circuits, as it did there."""
         if not pcm:
             return ""
         buf = io.BytesIO()
@@ -271,9 +282,11 @@ class PipelineDriver:
             wf.setsampwidth(width)
             wf.setframerate(rate)
             wf.writeframes(pcm)
+        transcribe = (self._whisper_transcribe if engine == "whisper"
+                      else self._parakeet_transcribe)
         try:
             text = await asyncio.to_thread(
-                self._parakeet_transcribe, buf.getvalue(), timeout)
+                transcribe, buf.getvalue(), timeout)
         except Exception:
             text = ""
         if self.on_transcribed is not None:
@@ -298,6 +311,29 @@ class PipelineDriver:
         ).encode() + wav_bytes + f"\r\n--{boundary}--\r\n".encode()
         req = urllib.request.Request(
             self._cfg.parakeet_url, data=body,
+            headers={"Content-Type":
+                     f"multipart/form-data; boundary={boundary}"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            obj = json.loads(resp.read())
+        return (obj.get("text") or "").strip()
+
+    def _whisper_transcribe(self, wav_bytes: bytes,
+                            timeout: float) -> str:
+        """The Whisper POST itself (blocking; run in a thread).
+        whisper-server's /inference takes the same multipart
+        "file" field and answers the same {"text": ...} JSON as
+        Parakeet's endpoint; the text may carry a leading space,
+        stripped here as it is there. Multipart is built by hand,
+        as in _parakeet_transcribe."""
+        boundary = "lyra-stt-4c1d9e7a"
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; '
+            'filename="audio.wav"\r\n'
+            "Content-Type: audio/wav\r\n\r\n"
+        ).encode() + wav_bytes + f"\r\n--{boundary}--\r\n".encode()
+        req = urllib.request.Request(
+            self._cfg.whisper_url, data=body,
             headers={"Content-Type":
                      f"multipart/form-data; boundary={boundary}"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:

@@ -35,13 +35,13 @@ matters is the core's own anyway:
 - Speech is Kokoro via PipelineDriver.synthesize_speech with the
   TV mirror suppressed: the peer track is her voice path in this
   mode, and the mirror would double-play every line on the page.
-- STT is Parakeet TDT, the house's one engine (2026-11-18):
-  the segmenter cuts each utterance and
-  PipelineDriver.transcribe_audio transcribes it, the same
-  ears WakeGate uses. (A Nemotron streaming sidecar served
-  RTC and calls for one day; Daniel cut it the same evening
-  -- one STT engine for the whole house, and the 50 ms mic
-  path had already taken the latency it was masking.)
+- STT is Parakeet TDT: the segmenter cuts each utterance and
+  PipelineDriver.transcribe_audio transcribes it (RTC kept
+  Parakeet in the 2026-11-20 split; the WakeGate path
+  transcribes with Whisper now).
+  (A Nemotron streaming sidecar served RTC and calls for one
+  day; Daniel cut it the same evening, and the 50 ms mic path
+  had already taken the latency it was masking.)
 
 Echo is the system layer's job (2026-11-18): the mic feed
 arrives already echo-cancelled -- PipeWire's WebRTC AEC makes

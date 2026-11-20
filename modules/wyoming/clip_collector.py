@@ -21,7 +21,7 @@ Flow (in-core since 2026-11-19): the core's wake detector
 gate score) in the pending registry; when a command transcription
 completes, the core claims the entry, concatenates wake + command
 audio (positives keep attached command audio), verifies the
-combined clip through the shared Parakeet service (:8096),
+combined clip through the shared Whisper service (:8093),
 classifies the transcript, and files it. Detections never claimed
 are finalized wake-only by the core's stale sweep. (Until
 2026-11-19 the same flow ran through an on-disk spool between the
@@ -47,13 +47,14 @@ NEGATIVE_DIR = os.path.join(CLIP_DIR, "negatives")
 MAYBE_DIR = os.path.join(CLIP_DIR, "wake_maybe")
 MISSED_DIR = os.path.join(CLIP_DIR, "missed triggers")
 LEDGER = os.path.join(CLIP_DIR, "clips_ledger.jsonl")
-# STT backend (2026-11-17): Parakeet TDT 0.6B v2 served by
-# parakeet-server (parakeet-server.service, :8096; OpenAI-compatible
-# endpoint). Parakeet's home is ~/Documents/parakeet.cpp -- it lives
-# outside this tree on purpose. Whisper (whisper.cpp, :8093) was
-# removed from the project 2026-11-17 at Daniel's order; this is
-# the only transcription backend now.
-PARAKEET_URL = "http://127.0.0.1:8096/v1/audio/transcriptions"
+# STT backend for the collector's filing transcription: Whisper
+# large-v3-turbo served by whisper-server (lyra-whisper-stt.service,
+# :8093, POST /inference). Parakeet TDT (:8096) held this seat
+# 2026-11-17 -> 2026-11-20; the 2026-11-20 split (Daniel's order)
+# put the whole WakeGate path on Whisper and left Parakeet to RTC,
+# whose transcription lives in the core (lyra_core.pipeline), not
+# here.
+WHISPER_URL = "http://127.0.0.1:8093/inference"
 SAMPLE_RATE = 16000
 
 # --- Verification classifier (verbatim from localsat_service.py) ---
@@ -138,7 +139,7 @@ def file_missed(gate_score: float, transcript: str, ts: str,
                  gate_score, dest, transcript)
     return dest
 
-# --- Parakeet verification (same call shape as stt_server.py) ---
+# --- Whisper transcription (the collector's filing STT) ---
 
 def wav_bytes(audio_i16: np.ndarray) -> bytes:
     buf = io.BytesIO()
@@ -149,11 +150,11 @@ def wav_bytes(audio_i16: np.ndarray) -> bytes:
         wf.writeframes(np.ascontiguousarray(audio_i16, dtype="<i2").tobytes())
     return buf.getvalue()
 
-async def parakeet_transcribe(audio_i16: np.ndarray) -> str:
+async def whisper_transcribe(audio_i16: np.ndarray) -> str:
     data = wav_bytes(audio_i16)
     async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
         resp = await client.post(
-            PARAKEET_URL, files={"file": ("audio.wav", data, "audio/wav")})
+            WHISPER_URL, files={"file": ("audio.wav", data, "audio/wav")})
         resp.raise_for_status()
         return (resp.json().get("text") or "").strip()
 

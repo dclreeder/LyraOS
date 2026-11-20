@@ -415,8 +415,10 @@ class VoiceSession:
                 transcript, reply_text = outcome
             elif not no_speech:
                 transcript = await self._driver.transcribe_audio(
-                    pcm, RATE, WIDTH, CHANNELS
+                    pcm, RATE, WIDTH, CHANNELS, engine="whisper"
                 )
+                _LOGGER.info(
+                    "wake transcript [whisper-turbo]: %r", transcript)
             self.last_transcript = transcript
             if not transcript:
                 # HA parity: a no-text turn ends as ERROR with the code

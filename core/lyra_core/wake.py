@@ -235,7 +235,7 @@ class _NearMissCollection:
     wake phrase near its end), plus every chunk that arrives after
     it until the speaker finishes. Fed chunk-by-chunk from feed(),
     so the audio/detection path never waits on it; only the
-    Parakeet verification runs as a task."""
+    Whisper verification runs as a task."""
 
     def __init__(self, peak: float, snapshot: np.ndarray, rate: int) -> None:
         self.peak = peak
@@ -282,7 +282,7 @@ class _NearMissCollection:
 
 async def _verify_near_miss(peak: float, audio: np.ndarray) -> None:
     try:
-        text = await collector.parakeet_transcribe(audio)
+        text = await collector.whisper_transcribe(audio)
         verdict = collector.classify_wake_transcription(text)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         if verdict == "pass":
@@ -423,7 +423,7 @@ async def finalize_stale_detections(
     filed: list[str] = []
     for entry in REGISTRY.claim_stale(older_than_s):
         try:
-            text = await collector.parakeet_transcribe(entry.wake_audio)
+            text = await collector.whisper_transcribe(entry.wake_audio)
             verdict = collector.classify_wake_transcription(text)
             filed.append(collector.file_clip(
                 verdict, entry.gate_score, text, entry.ts, entry.wake_audio))

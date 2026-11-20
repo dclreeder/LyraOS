@@ -1,8 +1,8 @@
 """Phase 2 verify-then-fire gate: the training pipeline, in-path.
 
 The core transcribes the COMBINED wake+command clip directly through
-the shared Parakeet service (:8096) — the collector's own
-``parakeet_transcribe`` — runs the production collector's classifier
+the shared Whisper service (:8093) — the collector's own
+``whisper_transcribe`` — runs the production collector's classifier
 on that transcript in-process, and
 the verdict gates the turn (see session.py's verify stage):
 
@@ -173,9 +173,11 @@ class VerifyGate:
         if len(audio) == 0:
             transcript = ""
         else:
-            # The production direct call to Parakeet :8096 — the
+            # The production direct call to Whisper :8093 — the
             # same function the collector's other paths verify with.
-            transcript = await collector.parakeet_transcribe(audio)
+            transcript = await collector.whisper_transcribe(audio)
+            _LOGGER.info(
+                "verify transcript [whisper-turbo]: %r", transcript)
         verdict = collector.classify_wake_transcription(transcript)
         score = gate_score if gate_score is not None else 0.0
         ts = datetime.now(_FILING_TZ).strftime("%Y%m%d_%H%M%S")
@@ -236,7 +238,7 @@ async def finalize_pending_detection(command_pcm: bytes) -> None:
         command_audio = np.frombuffer(
             command_pcm, dtype="<i2").astype(np.int16)
         combined = np.concatenate([entry.wake_audio, command_audio])
-        text = await collector.parakeet_transcribe(combined)
+        text = await collector.whisper_transcribe(combined)
         verdict = collector.classify_wake_transcription(text)
         collector.file_clip(verdict, entry.gate_score, text,
                             entry.ts, combined)

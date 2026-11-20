@@ -18,13 +18,17 @@ class WyomingConfig:
     # Wake-word detection is NOT a service at all: it runs in the
     # core process (lyra_core.wake, hey_lyra_stable_v1) since
     # 2026-11-19 -- no wake URI remains. What is left in this
-    # config is TTS (Wyoming), Parakeet (HTTP) and the names.
-    # Speech-to-text is NOT a Wyoming service either: the core POSTs
-    # WAVs directly to Parakeet TDT 0.6B v2 on parakeet-server
-    # :8096 (home: ~/Documents/parakeet.cpp). The Wyoming STT
-    # bridge that used to sit between them was removed 2026-11-19.
-    # (Whisper was removed from the project 2026-11-17 at Daniel's
-    # order.)
+    # config is TTS (Wyoming), the two STT endpoints (HTTP) and
+    # the names. Speech-to-text is NOT a Wyoming service either:
+    # since 2026-11-20 (Daniel's order) the engines split by path
+    # -- the WakeGate path (verification, gate-less session
+    # transcription, the clip collector) POSTs WAVs to Whisper
+    # large-v3-turbo on whisper-server :8093 (whisper.cpp), and
+    # RTC keeps Parakeet TDT 0.6B v2 on parakeet-server :8096
+    # (home: ~/Documents/parakeet.cpp). The Wyoming STT bridge
+    # that used to sit between the core and its engines was
+    # removed 2026-11-19.
+    whisper_url: str = "http://127.0.0.1:8093/inference"
     parakeet_url: str = "http://127.0.0.1:8096/v1/audio/transcriptions"
     tts_uri: str = "tcp://127.0.0.1:10200"
     wake_name: str = "hey_lyra_stable_v1"
