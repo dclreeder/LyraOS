@@ -186,6 +186,7 @@ TOOL_SCHEMAS: list[dict] = [
     _fn("jellyfin_play", "Play a movie or TV show from Jellyfin on the TV. Pass the title as the user named it. For a show, this plays the next unwatched episode or resumes the episode in progress.", {"title": {"type": "string", "description": "The movie or show title."}}, ["title"]),
     _fn("jellyfin_control", "Control the Jellyfin playback on the TV.", {"action": {"type": "string", "enum": ["pause", "resume", "stop", "skip_forward", "skip_back"], "description": "pause, resume, stop, skip_forward (30 seconds ahead), or skip_back (15 seconds back)."}}, ["action"]),
     _fn("jellyfin_status", "Report what Jellyfin is doing: what is playing on the TV and how far in, or what is in progress to continue watching.", {}, []),
+    _fn("jellyfin_fullscreen", "Put the Jellyfin player fullscreen on the TV screen. Use when the user asks for fullscreen or the picture is windowed.", {}, []),
 ]
 
 
@@ -830,4 +831,6 @@ class FreeRouter:
                 return self._wrap(await self._jellyfin.control(str(args.get("action", ""))))
             if name == "jellyfin_status":
                 return self._wrap(await self._jellyfin.status())
+            if name == "jellyfin_fullscreen":
+                return self._wrap(await self._jellyfin.fullscreen())
         return {"ok": False, "result": f"Unknown tool: {name}", "state": {}}

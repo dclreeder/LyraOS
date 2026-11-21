@@ -359,6 +359,8 @@ class CoreApi:
                 if not isinstance(title, str) or not title.strip():
                     raise _BadRequest("args.title is required")
                 return await self._jellyfin.play(title.strip())
+            if action == "fullscreen":
+                return await self._jellyfin.fullscreen()
             if action in ("pause", "resume", "stop", "skip_forward", "skip_back"):
                 return await self._jellyfin.control(action)
             raise _BadRequest(f"unknown jellyfin action: {action!r}")

@@ -621,7 +621,13 @@ def on_acquired(conn, name):
 
 Gio.bus_own_name(Gio.BusType.SESSION, "org.lyra.JellyfinMove",
                  Gio.BusNameOwnerFlags.NONE, None, on_acquired, None)
-GLib.timeout_add_seconds(15, loop.quit)
+# The backstop must outlive the whole move+verify: the
+# fullscreen settle polling runs to ~a minute. (At 15s the
+# listener died mid-verification and every later report
+# vanished -- the tool then polled a dead bus, 2026-11-21.)
+# The tool terminates the listener itself; this only guards
+# a leaked process.
+GLib.timeout_add_seconds(180, loop.quit)
 loop.run()
 '''
 
@@ -637,13 +643,38 @@ for (var i = 0; i < wins.length; i++) {
   for (var j = 0; j < screens.length; j++) {
     if (screens[j].name === 'HDMI-A-1') { target = screens[j]; break; }
   }
-  if (target) {
-    workspace.sendClientToScreen(w, target);
-    try { w.fullScreen = true; } catch (e) {}
-    report = 'moved';
-  } else {
+  if (!target) {
     report = 'no-tv-output';
+  } else {
+    if (!w.output || w.output.name !== 'HDMI-A-1') {
+      workspace.sendClientToScreen(w, target);
+    }
+    // Only set what is wrong: re-setting fullscreen on an
+    // already fullscreen window restarts its transition and
+    // the readback then lags for seconds.
+    if (!w.fullScreen) {
+      try { w.fullScreen = true; } catch (e) {}
+    }
+    report = 'at=' + (w.output ? w.output.name : '?')
+      + ' fs=' + (w.fullScreen ? 'true' : 'false');
   }
+  break;
+}
+callDBus('org.lyra.JellyfinMove', '/Move', 'org.lyra.JellyfinMove', 'Report', report);
+"""
+
+# Read-only companion to the mover: reports the client window's
+# output and fullscreen state without touching anything, so the
+# tool can poll the settled state after a set.
+_STATE_JS = """
+var wins = workspace.windowList();
+var report = 'no-window';
+for (var i = 0; i < wins.length; i++) {
+  var w = wins[i];
+  var cls = (w.resourceClass || '').toLowerCase();
+  if (cls.indexOf('jellyfin') < 0) continue;
+  report = 'at=' + (w.output ? w.output.name : '?')
+    + ' fs=' + (w.fullScreen ? 'true' : 'false');
   break;
 }
 callDBus('org.lyra.JellyfinMove', '/Move', 'org.lyra.JellyfinMove', 'Report', report);
@@ -875,7 +906,7 @@ class JellyfinTool:
                 return ToolResult(
                     False,
                     f"jellyfin: no unwatched episode of {_item_label(item)}", {})
-        session, screen = await self._ensure_session()
+        session, screen, fullscreen = await self._ensure_session()
         if session is None:
             return ToolResult(
                 False, "rejected: jellyfin player did not start", {})
@@ -896,19 +927,23 @@ class JellyfinTool:
             sess = await self._desktop_session()
             npi = (sess or {}).get("NowPlayingItem") or {}
             if npi.get("Id") == target.get("Id"):
-                where = " on the TV" if screen == "tv" else ""
+                where = ""
+                if screen == "tv":
+                    where = " on the TV, fullscreen" if fullscreen else " on the TV"
                 return ToolResult(
                     True, f"jellyfin playing: {label}{where}",
                     {"playing": label, "item_id": target.get("Id"),
-                     "screen": screen})
+                     "screen": screen, "fullscreen": fullscreen})
         return ToolResult(
             False, "rejected: jellyfin did not start playing", {})
 
-    async def _ensure_session(self) -> tuple[dict | None, str]:
+    async def _ensure_session(self) -> tuple[dict | None, str, bool]:
         """The Desktop client's session, launching the client first
-        when needed. Returns (session, screen): screen is 'tv' when
-        the client's move to the TV output was verified by the
-        mover's report, else 'unconfirmed'."""
+        when needed. Returns (session, screen, fullscreen): screen
+        is 'tv' when the mover's report verifies the client window
+        sits on the TV output, and fullscreen says whether that
+        report verified the window fullscreen there. Her launches
+        are fullscreen-on-the-TV launches -- verified, not assumed."""
         session = await self._desktop_session()
         if session is None:
             env = dict(os.environ)
@@ -922,25 +957,25 @@ class JellyfinTool:
                 )
             except Exception as exc:
                 _LOGGER.warning("jellyfin client launch failed: %s", exc)
-                return None, "launch-failed"
+                return None, "launch-failed", False
             for _ in range(30):
                 await asyncio.sleep(1.5)
                 session = await self._desktop_session()
                 if session is not None:
                     break
             if session is None:
-                return None, "no-session"
-        screen = await self._move_to_tv()
-        return session, screen
+                return None, "no-session", False
+        screen, fullscreen = await self._move_to_tv()
+        return session, screen, fullscreen
 
-    async def _move_to_tv(self) -> str:
+    async def _move_to_tv(self) -> tuple[str, bool]:
         try:
             return await asyncio.to_thread(self._move_to_tv_sync)
         except Exception as exc:
             _LOGGER.warning("jellyfin move failed: %s", exc)
-            return "unconfirmed"
+            return "unconfirmed", False
 
-    def _move_to_tv_sync(self) -> str:
+    def _move_to_tv_sync(self) -> tuple[str, bool]:
         report = Path("/tmp/lyra_jellyfin_move.txt")
         ready = Path("/tmp/lyra_jellyfin_ready.txt")
         listener_src = Path("/tmp/lyra_jellyfin_listener.py")
@@ -969,38 +1004,119 @@ class JellyfinTool:
             while not ready.exists() and time.time() < deadline:
                 time.sleep(0.2)
             if not ready.exists():
-                return "unconfirmed"
+                return "unconfirmed", False
             bus = ["busctl", "--user", "call", "org.kde.KWin", "/Scripting",
                    "org.kde.kwin.Scripting"]
-            subprocess.run(
-                bus + ["loadScript", "ss", str(mover_js), "jellyfinmove"],
-                capture_output=True, timeout=8)
-            result = "unconfirmed"
-            for attempt in range(2):
+
+            def run_scripts() -> None:
                 subprocess.run(bus + ["start"], capture_output=True, timeout=8)
-                text = None
-                deadline = time.time() + (8 if attempt == 0 else 5)
+
+            def read_report(wait_s: float) -> str | None:
+                deadline = time.time() + wait_s
                 while time.time() < deadline:
                     if report.exists():
                         text = report.read_text().strip()
-                        break
-                    time.sleep(0.4)
-                if text == "moved":
-                    result = "tv"
-                    break
-                if text is not None and text != "no-window":
-                    break  # a definitive report (e.g. no-tv-output)
+                        try:
+                            report.unlink()
+                        except OSError:
+                            pass
+                        return text
+                    time.sleep(0.3)
+                return None
+
+            def parse(text: str | None) -> tuple[str, bool] | None:
+                if text is None or not text.startswith("at="):
+                    return None
+                fields = dict(
+                    part.split("=", 1) for part in text.split()
+                    if "=" in part)
+                return fields.get("at"), fields.get("fs") == "true"
+
+            state_js = Path("/tmp/lyra_jellyfin_state.js")
+            state_js.write_text(_STATE_JS)
+            try:
+                subprocess.run(
+                    bus + ["loadScript", "ss", str(mover_js), "jellyfinmove"],
+                    capture_output=True, timeout=8)
+                # Phase 1: the mover puts the window right. It only
+                # touches what is wrong, so a warm window's report
+                # is its true state, immediately.
+                run_scripts()
+                text = read_report(8)
+                seen = parse(text)
+                if seen is not None and seen == (JELLYFIN_TV_OUTPUT, True):
+                    return "tv", True
+                if text == "no-tv-output":
+                    return "unconfirmed", False
+                if seen is None:
+                    run_scripts()
+                    text = read_report(5)
+                    seen = parse(text)
+                    if seen is not None and seen == (JELLYFIN_TV_OUTPUT, True):
+                        return "tv", True
+                    if text == "no-tv-output":
+                        return "unconfirmed", False
+                # Phase 2: poll the settled state with the
+                # read-only script. A cold-launched client can
+                # apply its own initial (windowed) state AFTER the
+                # mover's first set, so twice during the polling
+                # the mover runs again to re-assert fullscreen on
+                # the by-then-ready window.
+                subprocess.run(
+                    bus + ["unloadScript", "s", "jellyfinmove"],
+                    capture_output=True, timeout=8)
+
+                def load(name: str, path: Path) -> None:
+                    subprocess.run(
+                        bus + ["loadScript", "ss", str(path), name],
+                        capture_output=True, timeout=8)
+
+                def unload(name: str) -> None:
+                    subprocess.run(
+                        bus + ["unloadScript", "s", name],
+                        capture_output=True, timeout=8)
+
+                # One script loaded at a time: with the mover and
+                # the state script loaded together, start() produced
+                # no reports at all (2026-11-21).
+                load("jellyfinstate", state_js)
+                best = seen
+                for poll in range(8):
+                    if poll in (2, 5):
+                        unload("jellyfinstate")
+                        load("jellyfinmove", mover_js)
+                        run_scripts()
+                        seen = parse(read_report(5))
+                        if seen is not None:
+                            best = seen
+                            if seen == (JELLYFIN_TV_OUTPUT, True):
+                                return "tv", True
+                        unload("jellyfinmove")
+                        load("jellyfinstate", state_js)
+                    time.sleep(1.5)
+                    run_scripts()
+                    seen = parse(read_report(5))
+                    if seen is not None:
+                        best = seen
+                        if seen == (JELLYFIN_TV_OUTPUT, True):
+                            return "tv", True
+                if best is not None:
+                    return ("tv" if best[0] == JELLYFIN_TV_OUTPUT
+                            else "unconfirmed"), best[1]
+                return "unconfirmed", False
+            finally:
+                # Leave nothing loaded behind: a resident mover
+                # would be a background sorter by another name.
+                subprocess.run(
+                    bus + ["unloadScript", "s", "jellyfinmove"],
+                    capture_output=True, timeout=8)
+                subprocess.run(
+                    bus + ["unloadScript", "s", "jellyfinstate"],
+                    capture_output=True, timeout=8)
                 try:
-                    report.unlink()
+                    state_js.unlink()
                 except OSError:
                     pass
-                time.sleep(2)
-            # Leave nothing loaded behind: a resident mover would
-            # be a background sorter by another name.
-            subprocess.run(
-                bus + ["unloadScript", "s", "jellyfinmove"],
-                capture_output=True, timeout=8)
-            return result
         finally:
             try:
                 listener.terminate()
@@ -1011,6 +1127,27 @@ class JellyfinTool:
                     path.unlink()
                 except OSError:
                     pass
+
+    async def fullscreen(self) -> ToolResult:
+        """Put the player fullscreen on the TV, launching it first
+        when it is not running (the same launch path play uses).
+        The claim comes from the mover's readback of the window's
+        own output and fullscreen state, never from the request."""
+        session, screen, fullscreen = await self._ensure_session()
+        if session is None:
+            return ToolResult(
+                False, "rejected: jellyfin player did not start", {})
+        if screen == "tv" and fullscreen:
+            return ToolResult(
+                True, "jellyfin: fullscreen on the TV",
+                {"screen": "tv", "fullscreen": True})
+        if screen == "tv":
+            return ToolResult(
+                False, "rejected: jellyfin is on the TV but not fullscreen",
+                {"screen": "tv", "fullscreen": False})
+        return ToolResult(
+            False, "rejected: jellyfin window placement unconfirmed",
+            {"screen": screen, "fullscreen": fullscreen})
 
     # -- control ---------------------------------------------------------
 
