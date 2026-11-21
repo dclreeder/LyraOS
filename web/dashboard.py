@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lyra home dashboard -- a module of lyra-web since the
 2026-11-19 web merge: lyra_web.py starts this module's server
-(0.0.0.0:8098) inside its own process; there is no separate
+(192.168.12.144:8098, LAN only) inside its own process; there is no separate
 dashboard service anymore. Same page, same /api/* routes as
 the standalone server had.
 
@@ -14,7 +14,8 @@ read from lyra-web's in-memory pushed state (injected by
 lyra_web via set_state_provider below); mode writes still go
 to the core API, which owns mode.
 
-Bind: 0.0.0.0:8098 (home LAN + tailnet only by network design).
+Bind: 192.168.12.144:8098 (home LAN only; tailnet reachability
+removed 2026-11-20 at Daniel's order).
 The page file stays at dashboard/dashboard.html in the tree.
 """
 from __future__ import annotations
@@ -590,8 +591,10 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"ok": False, "error": "not found"})
 
 
-def make_server(port: int = 8098) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer(("0.0.0.0", port), Handler)
+def make_server(port: int = 8098, host: str = "192.168.12.144") -> ThreadingHTTPServer:
+    # LAN-only bind (2026-11-20): no dashboard on the tailnet. The
+    # TV viewer keeps its own :8095 bind and Serve :443 mapping.
+    return ThreadingHTTPServer((host, port), Handler)
 
 
 if __name__ == "__main__":

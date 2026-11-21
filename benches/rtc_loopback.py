@@ -27,7 +27,7 @@ CORE_CFG = {}
 from lyra_core.config import CoreConfig as _CC
 TTS_URI = 'tcp://127.0.0.1:10200'; VOICE = 'af_heart'
 WEB = 'http://127.0.0.1:8095'
-DASH = 'http://127.0.0.1:8098' 
+DASH = 'http://192.168.12.144:8098' 
 T0 = time.time()
 def log(*a): print('[%6.1f]' % (time.time() - T0), *a, flush=True)
 

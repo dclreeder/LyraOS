@@ -15,7 +15,7 @@ import json
 import time
 import urllib.request
 
-DASH = "http://127.0.0.1:8098"
+DASH = "http://192.168.12.144:8098"
 WEB = "http://127.0.0.1:8095"
 
 
