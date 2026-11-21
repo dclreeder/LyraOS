@@ -116,16 +116,8 @@
       <button class="switch" id="sleepToggle" aria-label="Toggle Lyra sleep mode"></button>
     </div>
     <div style="margin-top:12px;">
-      <div class="label">Screen brightness <span id="tvVal" class="dim"></span></div>
-      <input type="range" id="tvBri" min="0" max="100" step="5">
-    </div>
-    <div style="margin-top:12px;">
       <div class="label">TV volume <span id="tvVolVal" class="dim"></span></div>
       <input type="range" id="tvVol" min="0" max="100" step="5">
-    </div>
-    <div class="row" style="margin-top:12px; gap:10px;">
-      <button id="tvDimBtn">Dim</button>
-      <button id="tvFullBtn">Full</button>
     </div>
   </div>
 <div class="card">
@@ -144,9 +136,14 @@
     <div class="label">Contrast <span id="monConVal" class="dim"></span></div>
     <input type="range" id="monCon" min="0" max="100" step="1">
   </div>
+</div>
+<div class="card">
+  <div class="label">Kiosk</div>
+  <div class="tile-name">Lyra kiosk</div>
+  <div class="sub">One veil over her whole page, on whichever screen is showing it.</div>
   <div style="margin-top:12px;">
-    <div class="label">Black veil <span id="monVeilVal" class="dim"></span></div>
-    <input type="range" id="monVeil" min="0" max="100" step="1">
+    <div class="label">Black veil <span id="kioskVeilVal" class="dim"></span></div>
+    <input type="range" id="kioskVeil" min="0" max="100" step="1">
   </div>
 </div>
 <div class="card">
@@ -252,9 +249,6 @@ async function refresh() {
   if (j.display && j.display.ok) {
     $('tvSub').textContent += ' - voice on TV';
   }
-  if (tb !== null && document.activeElement !== $('tvBri')) {
-    $('tvBri').value = tb; $('tvVal').textContent = tb + '%';
-  }
   const tvv = (j.tv_volume && j.tv_volume.state) || {};
   const tvo = pctOf(tvv.volume !== undefined ? tvv.volume : tvv.percent);
   if (tvo !== null && document.activeElement !== $('tvVol')) {
@@ -263,6 +257,7 @@ async function refresh() {
   renderAudio(j.audio);
   renderMode(j.mode);
   renderMonitor(j.monitor);
+  renderKiosk(j.monitor);
 }
 
 let audioSig = '';
@@ -330,17 +325,19 @@ async function setAudioMute(muted) {
   } catch (e) { toast('Mic request failed'); }
   refresh();
 }
-function renderMonitor(m) {
+function renderKiosk(m) {
   // The veil is page state, not panel state: render it whenever the
   // state carries it, even if the panel itself is unreachable, and
   // never disable it -- it veils her page wherever she is shown.
   const v = (!m || m.veil === null || m.veil === undefined)
     ? null : Math.round(m.veil);
-  if (v !== null && document.activeElement !== $('monVeil')) {
-    $('monVeil').value = v; $('monVeilVal').textContent = v + '%';
+  if (v !== null && document.activeElement !== $('kioskVeil')) {
+    $('kioskVeil').value = v; $('kioskVeilVal').textContent = v + '%';
   } else if (v === null) {
-    $('monVeilVal').textContent = '-';
+    $('kioskVeilVal').textContent = '-';
   }
+}
+function renderMonitor(m) {
   if (!m || !m.ok) {
     setSwitch($('monToggle'), null);
     $('monSub').textContent = 'Monitor unreachable';
@@ -403,10 +400,10 @@ async function setMonitorContrast(v) {
   } catch (e) { toast('Monitor request failed'); }
   refresh();
 }
-async function setMonitorVeil(v) {
+async function setKioskVeil(v) {
   // The veil is the one shared page dim: this posts through the same
-  // /api/action tv-tool path as the TV card's brightness slider, with
-  // the percent inverted (veil 0% = full brightness, 100% = black).
+  // /api/action tv-tool path that writes lyra-web's dim, with the
+  // percent inverted (veil 0% = full brightness, 100% = black).
   try {
     const r = await fetch('/api/action', { method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -467,8 +464,8 @@ $('monBri').onchange = e => setMonitorBrightness(+e.target.value);
 $('monBri').oninput = e => $('monVal').textContent = e.target.value + '%';
 $('monCon').onchange = e => setMonitorContrast(+e.target.value);
 $('monCon').oninput = e => $('monConVal').textContent = e.target.value + '%';
-$('monVeil').onchange = e => setMonitorVeil(+e.target.value);
-$('monVeil').oninput = e => $('monVeilVal').textContent = e.target.value + '%';
+$('kioskVeil').onchange = e => setKioskVeil(+e.target.value);
+$('kioskVeil').oninput = e => $('kioskVeilVal').textContent = e.target.value + '%';
 $('monToggle').onclick = () => {
   const on = !(S.monitor && S.monitor.enabled);
   setMonitorEnabled(on);
@@ -488,12 +485,8 @@ $('lightToggle').onclick = () => {
   act('light', lon ? 'off' : 'on');
 };
 $('lightBri').onchange = e => act('light', 'set_brightness', {percent: +e.target.value});
-$('tvBri').onchange = e => act('tv', 'set', {percent: +e.target.value});
-$('tvBri').oninput = e => $('tvVal').textContent = e.target.value + '%';
 $('tvVol').onchange = e => act('tv_volume', 'set', {percent: +e.target.value});
 $('tvVol').oninput = e => $('tvVolVal').textContent = e.target.value + '%';
-$('tvDimBtn').onclick = () => act('tv', 'set', {percent: 30});
-$('tvFullBtn').onclick = () => act('tv', 'set', {percent: 100});
 $('displayToggle').onclick = async () => {
   const on = !(S.display && S.display.active);
   try {

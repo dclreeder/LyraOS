@@ -161,11 +161,10 @@ def audio_set(kind: str, device: str) -> dict:
 
 # The page veil ("dim") has exactly one home: lyra-web's dim.json, the
 # file lyra_web.get_dim() reads for the pushed page state and the core's
-# tv tool writes through :8095/dim -- the path the TV card's brightness
-# slider takes via /api/action. The dashboard only READS the file here,
-# to render the Monitor card's veil slider truthfully; veil writes from
-# that slider go through the same tv-tool path. One dim variable, one
-# write path.
+# tv tool writes through :8095/dim -- the path the Lyra kiosk card's
+# veil slider takes via /api/action. The dashboard only READS the file
+# here, to render that slider truthfully; veil writes from the slider
+# go through the same tv-tool path. One dim variable, one write path.
 DIM_FILE = Path(__file__).resolve().parent / "dim.json"
 
 
