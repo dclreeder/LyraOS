@@ -32,6 +32,9 @@ MODEL = os.path.join(HOME, "Documents/LyraOS/modules/tts/kokoro/kokoro-v1.0.onnx
 VOICES = os.path.join(HOME, "Documents/LyraOS/modules/tts/kokoro/voices-v1.0.bin")
 TOKEN_FILE = os.path.join(HOME, "Documents/LyraOS/modules/tts/kokoro/server/token.txt")
 PORT = int(os.environ.get("LYRA_TTS_PORT", "8091"))
+# Local only (Daniel, 2026-11-20): every consumer is on this box and
+# dials 127.0.0.1, so the server never binds a routable interface.
+HOST = os.environ.get("LYRA_TTS_HOST", "127.0.0.1")
 DEFAULT_VOICE = os.environ.get("LYRA_TTS_VOICE", "af_heart")
 # Pitch shift applied to every synthesized line (2026-11-15 trial:
 # Daniel ear-testing af_heart shifted up). Semitones, tempo
@@ -185,4 +188,4 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     log(f"pitch shift: {PITCH_SEMITONES:+.1f} semitones")
-    ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
+    ThreadingHTTPServer((HOST, PORT), H).serve_forever()
