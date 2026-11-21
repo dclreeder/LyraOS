@@ -216,6 +216,50 @@ window._lyra = { state: null, _sh: [], _jh: [],
 @keyframes slpulse{0%,100%{opacity:1}50%{opacity:.3}}
 </style>
 <div id="statuslight" data-state="error"><span class="dot"></span><span class="lbl">Disconnected</span></div>
+<style>
+#sleepzzz{position:fixed;inset:0;z-index:5;pointer-events:none;overflow:hidden}
+#sleepzzz .zzz{position:absolute;font-family:system-ui,'Segoe UI',sans-serif;font-weight:300;color:#ddd2ff;
+  text-shadow:0 0 6px rgba(139,92,246,.22);opacity:0;animation:zzzfloat 5s ease-out forwards}
+@keyframes zzzfloat{
+  0%{opacity:0;transform:translate(0,0) scale(.72) rotate(-4deg)}
+  12%{opacity:.5}
+  30%{transform:translate(10px,-45px) scale(.85) rotate(2deg)}
+  55%{opacity:.47;transform:translate(-7px,-88px) scale(.97) rotate(-3deg)}
+  80%{opacity:.3}
+  100%{opacity:0;transform:translate(6px,-150px) scale(1.12) rotate(3deg)}}
+</style>
+<div id="sleepzzz"></div>
+<script>
+// Floating Zzz (2026-11-20, Daniel's ask; tuned subtle at his word): while
+// the pushed mode is Sleep, a small faint "Z" drifts up from beside her
+// head every couple of seconds and fades -- a quiet detail, not an alert.
+// Fed only by the pushed state channel like every other layer on this
+// page; stops and clears the moment the mode leaves Sleep.
+(function () {
+  var layer = document.getElementById('sleepzzz');
+  if (!layer) return;
+  var timer = null;
+  function spawn() {
+    if (layer.querySelectorAll('.zzz').length >= 3) return;
+    var z = document.createElement('span');
+    z.className = 'zzz';
+    z.textContent = 'Z';
+    z.style.left = (54 + Math.random() * 4) + '%';
+    z.style.top = (10 + Math.random() * 3) + '%';
+    z.style.fontSize = (19 + Math.random() * 5) + 'px';
+    z.addEventListener('animationend', function () { z.remove(); });
+    layer.appendChild(z);
+  }
+  function start() { if (timer) return; spawn(); timer = setInterval(spawn, 2000); }
+  function stop() {
+    if (timer) { clearInterval(timer); timer = null; }
+    layer.innerHTML = '';
+  }
+  window._lyra.onState(function (s) {
+    if (s.mode === 'sleep' || s.sleep) start(); else stop();
+  });
+})();
+</script>
 <script>
 // Status light (2026-11-18, Daniel's design): bottom-left, a dot
 // plus a label naming her state -- green idle, pink listening
