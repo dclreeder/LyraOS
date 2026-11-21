@@ -4,7 +4,7 @@ After=graphical-session.target lyra-web.service
 [Service]
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=MOZ_ENABLE_WAYLAND=1
-ExecStart=/usr/sbin/firefox --profile /home/dclreeder/.lyra-kiosk-profile --kiosk http://127.0.0.1:8095/
+ExecStart=/usr/sbin/firefox --name lyra-kiosk --profile /home/dclreeder/.lyra-kiosk-profile --kiosk http://127.0.0.1:8095/
 Restart=on-failure
 RestartSec=3
 [Install]
