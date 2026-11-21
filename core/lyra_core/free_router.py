@@ -172,10 +172,7 @@ TOOL_SCHEMAS: list[dict] = [
     _fn("alarm_disable", "Disable the alarm.", {}, []),
     _fn("alarm_kill", "Kill the alarm: stops a ring, or cancels a pending snooze.", {}, []),
     _fn("alarm_snooze", "Snooze the alarm (only works while it is ringing).", {}, []),
-    _fn("alarm_get_summary", "Get the alarm's time, enabled state, repeat, ring volume and whether it is ringing.", {}, []),
-    _fn("alarm_volume_set", "Set the ALARM RING volume.",
-        {"percent": _PCT}, ["percent"]),
-    _fn("alarm_volume_get", "Get the ALARM RING volume.", {}, []),
+    _fn("alarm_get_summary", "Get the alarm's time, enabled state, repeat and whether it is ringing.", {}, []),
     _fn("time_now", "Get the current time.", {}, []),
     _fn("date_today", "Get today's date.", {}, []),
     _fn("weather_report", "Get weather data for home; compose the spoken answer from the data. Pick the period that matches the question: overview for a general ask, now for the next few hours, today/tomorrow for that day, week for the days ahead. Use focus when the question is mainly about rain, temperature, or wind.", {"period": {"type": "string", "enum": ["overview", "now", "today", "tomorrow", "week"]}, "focus": {"type": "string", "enum": ["overview", "rain", "temperature", "wind"]}}, []),
@@ -793,14 +790,9 @@ class FreeRouter:
                 f"Alarm is set for {summary.get('time')}, "
                 f"{'enabled' if summary.get('enabled') else 'disabled'}, "
                 f"repeat {summary.get('repeat')}, "
-                f"ring volume {_pct_line(summary.get('ring_volume'))}, "
                 f"ringing: {bool(summary.get('ringing'))}."
             )
             return {"ok": True, "result": line, "state": summary}
-        if name == "alarm_volume_set":
-            return self._wrap(await self._alarm.set_ring_volume(_as_int(args["percent"]) / 100.0))
-        if name == "alarm_volume_get":
-            return self._wrap(await self._alarm.get_ring_volume())
         if name == "time_now":
             return self._wrap(self._clock.time_result())
         if name == "date_today":
@@ -822,9 +814,3 @@ class FreeRouter:
         if name == "tv_get_volume":
             return self._wrap(await self._tv_volume.get_volume())
         return {"ok": False, "result": f"Unknown tool: {name}", "state": {}}
-
-
-def _pct_line(volume) -> str:
-    if isinstance(volume, (int, float)):
-        return f"{int(round(volume * 100))} percent"
-    return "unknown"

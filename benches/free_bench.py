@@ -28,10 +28,6 @@ from lyra_core.free_router import FreeRouter
 from lyra_core.tools import ToolResult
 
 
-def _pct(v: float) -> int:
-    return int(round(v * 100))
-
-
 class Recorder:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -75,7 +71,6 @@ class StubAlarm:
         self._rec = rec
         self.time = "06:00"
         self.enabled = True
-        self.ring_volume = 0.7
 
     def summary(self):
         self._rec.calls.append("alarm_get_summary")
@@ -84,7 +79,7 @@ class StubAlarm:
     def _snap(self):
         return {
             "time": self.time, "enabled": self.enabled, "repeat": "Weekdays",
-            "ringing": False, "ring_volume": self.ring_volume,
+            "ringing": False,
             "snooze_until": None, "next_fire": "2026-11-12T06:00:00-05:00",
         }
 
@@ -105,15 +100,6 @@ class StubAlarm:
         self._rec.calls.append(f"alarm_{'enable' if enabled else 'disable'}")
         self.enabled = enabled
         return ToolResult(True, "Alarm enabled." if enabled else "Alarm disabled.", self._snap())
-
-    async def set_ring_volume(self, volume: float):
-        self._rec.calls.append(f"alarm_volume_set({_pct(volume)})")
-        self.ring_volume = volume
-        return ToolResult(True, f"Alarm volume set to {_pct(volume)} percent.", self._snap())
-
-    async def get_ring_volume(self):
-        self._rec.calls.append("alarm_volume_get")
-        return ToolResult(True, f"Alarm volume is {_pct(self.ring_volume)} percent.", self._snap())
 
 
 class StubClock:
@@ -165,9 +151,6 @@ CASES = [
      lambda s: None if s["alarm"].time == "07:00" else f"alarm time {s['alarm'].time}, want 07:00"),
     ("kill the alarm", "bluff-probe", None),
     ("snooze the alarm", "bluff-probe", None),
-    ("lower the alarm volume to 50", "distinct",
-     lambda s: None if _pct(s["alarm"].ring_volume) == 50
-     else f"ring={_pct(s['alarm'].ring_volume)}, want ring 50"),
 ]
 
 

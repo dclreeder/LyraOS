@@ -23,7 +23,7 @@ disk but superseded.
 
 | name | proves | origin |
 |---|---|---|
-| `alarm_fire` | Alarm fire path with a FakeRinger/FakeLight: exact fire sequence (light 100% -> ringer.start at ring volume, no volume save/restore anywhere), kill, 15-min hard stop, snooze + refire, Once self-disable. Temp state only. | `core/lyra_core/alarm_bench.py` |
+| `alarm_fire` | Alarm fire path with a FakeRinger/FakeLight: exact fire sequence (light 100% -> ringer.start, no volume save/restore anywhere), kill, 15-min hard stop, snooze + refire, Once self-disable. Temp state only. | `core/lyra_core/alarm_bench.py` |
 | `free_bench` | The live brain (RouterConfig endpoint) against stubbed tools: 18 transcripts, tool-call/end-state checks, honesty cases must make no calls. PASS = zero flagged cases. Bluff judgment beyond the mechanical flags is still a human read of the log. | `core/lyra_core/free_bench.py` |
 | `wakegate_pipeline` | The Wyoming loop end to end: describe (wake+TTS), wake detection on the canonical pool positive, Parakeet transcript, TTS + HTTP fetch-back sha match -- plus the WakeGate **regression contract**: the transcript must equal the clip's production ledger line EXACTLY. Also observes the collector filing the replayed clip (by design). | `core/lyra_core/bench.py` |
 | `verify_gate` | Verify-then-fire at mock-session level: Part 0 pure functions (normalizer/strip/classify); Part A the 2026-11-11 TV negative -> FAIL verdict -> fully silent drop, would-file negative; Part B the pool positive -> PASS -> command onward, one TTS, would-file positive. Dry-run gate: the production clips tree must be byte-identical after (hash manifest asserted). | `core/lyra_core/phase2_bench.py` |

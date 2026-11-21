@@ -7,12 +7,12 @@ looping the tone with acks, no speaker-box fallback. The Alarm
 state machine owns the ring (schedule, kill, snooze, hard stop,
 morning note); this class is just the noise-maker it drives:
 
-- start(ring_volume): spawn paplay on the tone file, aimed at
-  the DEFAULT sink (no target is ever named: the OS is the
-  router, per the standing rule). The ring loudness is the
-  playback STREAM's own volume (paplay --volume, the
-  PulseAudio 0..65536 scale) -- this class never reads or
-  writes any device or sink volume.
+- start(): spawn paplay on the tone file, aimed at the
+  DEFAULT sink (no target is ever named: the OS is the
+  router, per the standing rule). The tone plays at the
+  sink's own volume -- no per-stream volume override, and
+  this class never reads or writes any device or sink
+  volume.
 - The player is a child of the core process: a core restart
   ends any ring with it, and there is no device state to
   restore afterwards.
@@ -42,8 +42,6 @@ _LOGGER = logging.getLogger("lyra_core.sink_ring")
 _START_PROBE_S = 0.4
 # Pause between player restarts inside a ring.
 _RESPAWN_DELAY_S = 1.0
-# PulseAudio stream-volume scale: 65536 == 100%.
-_PA_VOLUME_MAX = 65536
 
 
 class SinkRinger:
@@ -52,9 +50,8 @@ class SinkRinger:
         self._proc: asyncio.subprocess.Process | None = None
         self._monitor: asyncio.Task | None = None
         self._active = False
-        self._volume = 1.0
 
-    async def start(self, ring_volume: float) -> bool:
+    async def start(self) -> bool:
         """Begin sounding on the default sink. False means the
         player could not start -- the caller must not enter a
         ring state on a ring nobody can hear."""
@@ -69,7 +66,6 @@ class SinkRinger:
                 self._tone_path,
             )
             return False
-        self._volume = max(0.0, min(1.0, float(ring_volume)))
         self._active = True
         if not await self._spawn():
             self._active = False
@@ -77,11 +73,7 @@ class SinkRinger:
         self._monitor = asyncio.create_task(
             self._watch(), name="lyra-alarm-sink-monitor"
         )
-        _LOGGER.info(
-            "sink ring: sounding on the default sink "
-            "(stream volume %.2f)",
-            self._volume,
-        )
+        _LOGGER.info("sink ring: sounding on the default sink")
         return True
 
     async def stop(self) -> None:
@@ -117,7 +109,6 @@ class SinkRinger:
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 "paplay",
-                f"--volume={round(self._volume * _PA_VOLUME_MAX)}",
                 str(self._tone_path),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,

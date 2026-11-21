@@ -335,30 +335,6 @@ class AlarmTool:
         sentence = f"alarm enabled set: {str(readback['enabled']).lower()}"
         return ToolResult(readback["enabled"] == enabled, sentence, readback)
 
-    async def set_ring_volume(self, volume: float) -> ToolResult:
-        try:
-            self._alarm.set_ring_volume(volume)
-        except ValueError:
-            return ToolResult(
-                False,
-                "rejected: ring volume must be 0-100 percent",
-                self.summary(),
-            )
-        readback = self._alarm.summary()  # the stored value, re-read
-        return ToolResult(
-            True,
-            f"ring_volume set: {_pct(readback['ring_volume'])} percent",
-            readback,
-        )
-
-    async def get_ring_volume(self) -> ToolResult:
-        readback = self._alarm.summary()
-        return ToolResult(
-            True,
-            f"ring_volume: {_pct(readback['ring_volume'])} percent",
-            readback,
-        )
-
     async def get_morning_note(self) -> ToolResult:
         note = self._alarm.morning_note()
         if note.get("morning_note"):

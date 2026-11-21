@@ -163,50 +163,12 @@ async def amain() -> int:
             and body.get("state", {}).get("repeat") == "Weekdays",
             f"{status} {body}",
         )
-        status, body = await post(
-            "/tool", {"tool": "alarm", "action": "ring_volume_get"}
-        )
-        check(
-            "tool alarm ring_volume_get -> 100 percent",
-            status == 200
-            and body.get("confirmation") == "Alarm volume is 100 percent.",
-            f"{status} {body}",
-        )
-        status, body = await post(
-            "/tool",
-            {"tool": "alarm", "action": "ring_volume_set", "args": {"percent": 80}},
-        )
-        check(
-            "tool alarm ring_volume_set 80 (bench state only)",
-            status == 200
-            and body.get("confirmation") == "Alarm volume set to 80 percent."
-            and body.get("state", {}).get("ring_volume") == 0.8,
-            f"{status} {body}",
-        )
-        status, body = await post(
-            "/tool", {"tool": "alarm", "action": "ring_volume_get"}
-        )
-        check(
-            "tool alarm ring_volume_get after set -> 80 percent",
-            status == 200
-            and body.get("confirmation") == "Alarm volume is 80 percent.",
-            f"{status} {body}",
-        )
         status, _ = await post("/tool", {"tool": "media_volume", "action": "get"})
         check("tool media_volume (removed with the box) -> 400", status == 400, f"{status}")
         status, _ = await post("/tool", {"tool": "monitor", "action": "state"})
         check("tool monitor (removed) -> 400", status == 400, f"{status}")
         status, _ = await post("/tool", {"tool": "firmware", "action": "update_status"})
         check("tool firmware (removed with the box) -> 400", status == 400, f"{status}")
-        status, body = await post(
-            "/tool", {"tool": "alarm", "action": "ring_volume_get"}
-        )
-        check(
-            "alarm ring volume still bench-state 80",
-            status == 200
-            and body.get("confirmation") == "Alarm volume is 80 percent.",
-            f"{status} {body}",
-        )
         status, body = await post("/tool", {"tool": "alarm", "action": "kill"})
         check(
             "tool alarm kill while not ringing -> ok=False refusal",

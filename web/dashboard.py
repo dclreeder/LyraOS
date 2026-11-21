@@ -483,7 +483,7 @@ def full_state() -> dict:
 ALLOWED = {
     "light": {"state", "on", "off", "set_brightness"},
     "alarm": {"summary", "set", "kill", "snooze", "enable", "disable",
-              "ring_volume_get", "ring_volume_set", "note_get"},
+              "note_get"},
     "tv": {"get", "set", "adjust"},
     "tv_volume": {"get", "set", "adjust"},
 }

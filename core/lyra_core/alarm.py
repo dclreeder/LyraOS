@@ -14,8 +14,8 @@ Replicates the proven HA alarm behaviour without HA:
   HTTP RPC (readback-verified; the light STAYS ON afterwards — the
   morning routine is alarm -> light -> stop), the core plays the
   gained 15-minute tone itself through Fedora's default sink (the
-  ring volume is the playback stream's own gain; no device volume
-  is read or written), and a 15-minute hard stop that ends the
+  tone plays at the sink's own volume; no device volume is
+  read or written), and a 15-minute hard stop that ends the
   ring even if nothing kills it.
 - Default-sink sounder (2026-11-19): when the composition wires
   a SinkRinger (set_ringer), firing sounds through Fedora's
@@ -76,7 +76,6 @@ MIGRATED_STATE: dict = {
     "last_fired_slot": "2026-11-11",
     "snooze_until": None,
     "ringing": False,
-    "ring_volume": 1.0,
 }
 
 
@@ -88,10 +87,6 @@ class AlarmState:
     last_fired_slot: str | None = None     # local date of last fired slot
     snooze_until: float | None = None      # epoch s; refire at/after this
     ringing: bool = False
-    ring_volume: float = 1.0               # playback stream volume
-                                           # during a ring (0.0-1.0);
-                                           # no device volume is ever
-                                           # read or written
     morning_note: str | None = None        # one-shot spoken note, played
                                            # after a morning kill
     morning_note_date: str | None = None   # local ISO date the note
@@ -105,7 +100,6 @@ class AlarmState:
             "last_fired_slot": self.last_fired_slot,
             "snooze_until": self.snooze_until,
             "ringing": self.ringing,
-            "ring_volume": self.ring_volume,
             "morning_note": self.morning_note,
             "morning_note_date": self.morning_note_date,
         }
@@ -129,10 +123,6 @@ class AlarmState:
             st.snooze_until = float(raw["snooze_until"])
         if isinstance(raw.get("ringing"), bool):
             st.ringing = raw["ringing"]
-        rv = raw.get("ring_volume")
-        if isinstance(rv, (int, float)) and not isinstance(rv, bool):
-            if 0.0 <= float(rv) <= 1.0:
-                st.ring_volume = float(rv)
         mn = raw.get("morning_note")
         if isinstance(mn, str) and mn.strip():
             st.morning_note = mn
@@ -649,7 +639,6 @@ class Alarm:
             "enabled": self._state.enabled,
             "repeat": self._state.repeat,
             "ringing": self._state.ringing,
-            "ring_volume": self._state.ring_volume,
             "snooze_until": self._state.snooze_until,
             "morning_note": self._state.morning_note,
             "morning_note_date": self._state.morning_note_date,
@@ -800,7 +789,7 @@ class Alarm:
         # (item I): the persisted state must never claim a ring
         # that cannot sound. The sounder is the core's own player
         # on Fedora's default sink, and the ring loudness is the
-        # playback stream's volume -- no device volume is read or
+        # sink's own volume -- no device volume is read or
         # written, and there is no fallback path left to swap to.
         # A missing tone asset (validate_assets) still degrades
         # to a light-only ring rather than a miss.
@@ -814,7 +803,7 @@ class Alarm:
             _LOGGER.error(
                 "alarm: no sounder wired; this ring is light-only"
             )
-        elif not await self._ringer.start(st.ring_volume):
+        elif not await self._ringer.start():
             # MISSED (the pre-2026-11-19 box-miss semantics): the
             # slot is consumed exactly as a fired one (no
             # all-morning retries), ringing is never set, and the
@@ -931,7 +920,7 @@ class Alarm:
     def set_ringer(self, ringer) -> None:
         """Wire the default-sink sounder (composition, 2026-11-19).
         With a ringer set, rings sound through Fedora's default
-        sink at the ring volume (the playback stream's own gain);
+        sink at the sink's own volume;
         without one, rings are light-only (benches)."""
         self._ringer = ringer
 
@@ -1049,18 +1038,6 @@ class Alarm:
         self._state.enabled = bool(enabled)
         self._save_state()
         _LOGGER.info("alarm enabled=%s: %s", self._state.enabled, self.summary())
-        return self.summary()
-
-    def set_ring_volume(self, volume: float) -> dict:
-        """Store the ring loudness (0.0-1.0). At fire time it
-        becomes the playback stream's volume on the default sink;
-        no device volume is ever read or written."""
-        v = float(volume)
-        if not 0.0 <= v <= 1.0:
-            raise ValueError(f"ring volume out of range 0.0-1.0: {volume!r}")
-        self._state.ring_volume = v
-        self._save_state()
-        _LOGGER.info("alarm ring volume set: %s", self.summary())
         return self.summary()
 
     # -- HTTP routes (registered on the core's audio endpoint) ---------------------

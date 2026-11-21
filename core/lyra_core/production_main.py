@@ -16,9 +16,9 @@ code is modified.
   Shelly light, 15-minute hard stop, snooze, and the authenticated
   HTTP kill endpoint for Daniel's iOS Action Button. Since
   2026-11-19 the core plays the tone itself through Fedora's
-  default sink (SinkRinger: paplay at the ring volume, as the
-  playback stream's own gain) -- no ADB, no TV volume
-  save/restore, no browser ring.
+  default sink (SinkRinger: paplay at the sink's own
+  volume) -- no ADB, no TV volume save/restore, no browser
+  ring.
 - The session's on_command hook is the free router
   (lyra_core.free_router): Muse Spark 1.3 via the Meta Model
   API interprets each verified command uncaged and speaks its
@@ -338,8 +338,8 @@ async def amain() -> int:
     )
     alarm = Alarm(cfg, http=http)
     # Default-sink sounder (2026-11-19): the core plays the tone
-    # itself through Fedora's default sink; the ring volume is
-    # the playback stream's gain, no device volume is touched.
+    # itself through Fedora's default sink, at the sink's own
+    # volume; no device volume is touched.
     alarm.set_ringer(SinkRinger(cfg.alarm.tone_path))
     # Item F (dial-in 2026-11-11): validate the alarm's required
     # assets BEFORE any background service starts. A missing tone

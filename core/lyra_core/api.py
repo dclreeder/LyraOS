@@ -12,8 +12,7 @@ this module by the production composition, and is never logged.
   "state": {...}}. Actions mirror the router's dispatch:
     light   state | on | off | dim {percent}
     alarm   summary | set {time "HH:MM"} | kill | snooze |
-            enable | disable | ring_volume_get |
-            ring_volume_set {percent | volume} |
+            enable | disable |
             note_get | note_set {text, date "YYYY-MM-DD"} |
             note_clear
     time    (the clock's time result)
@@ -291,12 +290,6 @@ class CoreApi:
                 return await self._alarm.set_enabled(True)
             if action == "disable":
                 return await self._alarm.set_enabled(False)
-            if action == "ring_volume_get":
-                return await self._alarm.get_ring_volume()
-            if action == "ring_volume_set":
-                return await self._alarm.set_ring_volume(
-                    self._volume_arg(args)
-                )
             if action == "note_get":
                 return await self._alarm.get_morning_note()
             if action == "note_set":
@@ -349,21 +342,6 @@ class CoreApi:
                 return await self._tv_volume.adjust_volume(delta)
             raise _BadRequest(f"unknown tv_volume action: {action!r}")
         raise _BadRequest(f"unknown tool: {tool!r}")
-
-    @staticmethod
-    def _volume_arg(args: dict) -> float:
-        """A volume argument for ring_volume_set: args.percent
-        (int 0-100) or args.volume (0.0-1.0)."""
-        if "percent" in args:
-            return _arg_percent(args) / 100.0
-        value = args.get("volume")
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise _BadRequest(
-                "args.percent (0-100) or args.volume (0.0-1.0) is required"
-            )
-        if not 0.0 <= float(value) <= 1.0:
-            raise _BadRequest("args.volume out of range 0.0-1.0")
-        return float(value)
 
     async def _light_state(self) -> ToolResult:
         state = await self._light.get_state()

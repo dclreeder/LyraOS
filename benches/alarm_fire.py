@@ -2,10 +2,10 @@
 
 - The sounder is a FakeRinger recording every call; the fire
   sequence must be exactly: light on(100) + readback ->
-  ringer.start(ring volume) -> [kill] -> ringer.stop, with the
-  light never touched again (it stays on) and NO volume
-  save/restore anywhere (2026-11-19: the ring volume is the
-  playback stream's own gain; there is no device volume here).
+  ringer.start -> [kill] -> ringer.stop, with the light never
+  touched again (it stays on) and NO volume save/restore
+  anywhere (the tone plays at the default sink's own volume;
+  there is no per-stream volume override).
 - The light is a FakeLight standing in for the Shelly RPC (the
   real RPC path gets its own one-shot round-trip proof
   separately).
@@ -62,13 +62,13 @@ class FakeLight:
 
 class FakeRinger:
     """The default-sink sounder's bench double: records start
-    (with the ring volume it was handed) and stop."""
+    and stop."""
 
     def __init__(self, calls: list) -> None:
         self._calls = calls
 
-    async def start(self, ring_volume: float) -> bool:
-        self._calls.append(("ringer.start", ring_volume))
+    async def start(self) -> bool:
+        self._calls.append(("ringer.start",))
         return True
 
     async def stop(self) -> None:
@@ -112,8 +112,8 @@ async def amain() -> None:
                 "ringer.start",
             ], names
             assert calls[0] == ("light.set_on", 100)
-            assert calls[2] == ("ringer.start", 1.0), calls[2]
-            print("[ok] fire sequence: light 100% -> ringer.start(1.0); "
+            assert calls[2] == ("ringer.start",), calls[2]
+            print("[ok] fire sequence: light 100% -> ringer.start; "
                   "no volume save/restore anywhere")
             result = await alarm.kill()
             assert result["ok"] is True and result["was_ringing"] is True

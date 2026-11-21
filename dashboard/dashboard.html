@@ -85,10 +85,6 @@
     <button class="kill" id="killBtn">Kill</button>
     <button id="snoozeBtn">Snooze</button>
   </div>
-  <div style="margin-top:14px;">
-    <div class="label">Ring volume <span id="ringVolVal" class="dim"></span></div>
-    <input type="range" id="ringVol" min="0" max="100" step="5">
-  </div>
 </div>
 
 <div class="card">
@@ -223,16 +219,12 @@ async function refresh() {
   else if (a.enabled) { badge.textContent = 'Enabled'; badge.className = 'badge'; }
   else { badge.textContent = 'Disabled'; badge.className = 'badge off'; }
   setSwitch($('alarmToggle'), a.enabled === undefined ? null : !!a.enabled);
-  let sub = (a.repeat || '') + ' - ring volume ' + (pctOf(a.ring_volume) ?? '?') + '%';
+  let sub = (a.repeat || '');
   if (a.snooze_until) sub += ' - snoozed until ' + a.snooze_until;
   if (a.ringing) sub += ' - ringing now';
   if (a.next_fire) { const d = new Date(a.next_fire);
     sub += ' - next ' + d.toLocaleDateString('en-US', {timeZone:'America/New_York', weekday:'short', month:'short', day:'numeric'}) + ' ' + d.toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', minute:'2-digit'}); }
   $('alarmSub').textContent = sub;
-  const rv = pctOf(a.ring_volume);
-  if (rv !== null && document.activeElement !== $('ringVol')) {
-    $('ringVol').value = rv; $('ringVolVal').textContent = rv + '%';
-  }
   const note = a.morning_note;
   $('alarmNote').hidden = !note;
   if (note) $('alarmNote').textContent = 'Morning note: ' + note;
@@ -522,8 +514,6 @@ $('alarmToggle').onclick = () => {
   const a = (S.alarm && S.alarm.state) || {};
   act('alarm', a.enabled ? 'disable' : 'enable');
 };
-$('ringVol').onchange = e => act('alarm', 'ring_volume_set', {percent: +e.target.value});
-$('ringVol').oninput = e => $('ringVolVal').textContent = e.target.value + '%';
 $('lightToggle').onclick = () => {
   const lon = onOf((S.light && S.light.state) || {});
   act('light', lon ? 'off' : 'on');
