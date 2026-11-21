@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Lyra web server: the TV viewer (static pages, /mirror speech jobs, /dim, the /rtc/offer signaling proxy, pushed /status) plus the home dashboard module on :8098 (web/dashboard.py)."""
 import base64, json, os, queue, sys, threading, time, urllib.request, urllib.error, urllib.parse
-import subprocess
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 ROOT = os.path.expanduser('~/Documents/LyraOS/web')
 _lock = threading.Lock(); _counter = [0]
@@ -73,98 +72,7 @@ def room_state():
     mode = get_mode()
     return {'light': _light_state(), 'display_on': display_on,
             'sleep': mode == 'sleep', 'mode': mode,
-            'rtc_connected': get_rtc_connected(), 'tv': _tv_state()}
-
-# Painted-TV state (2026-11-21): the TV in Lyra's room mirrors the
-# real TV -- off, Jellyfin idle (logo), or playing (backdrop art).
-# Power comes from the TV itself over ADB (mWakefulness); playback
-# comes from the Jellyfin server's session list, read server-side
-# with the API key, so the page never holds a Jellyfin credential.
-# Both reads are cached; this runs on the state watcher thread.
-_jf_key_cache = [0.0, None]
-def _jellyfin_key():
-    now = time.time()
-    if _jf_key_cache[1] and now - _jf_key_cache[0] < 300:
-        return _jf_key_cache[1]
-    key = None
-    try:
-        with open(os.path.expanduser('~/Documents/APIKeys/.env')) as f:
-            for line in f:
-                if line.startswith('JELLYFIN_API_KEY='):
-                    key = line.split('=', 1)[1].strip().strip('"').strip("'")
-                    break
-    except Exception:
-        pass
-    _jf_key_cache[0] = now; _jf_key_cache[1] = key
-    return key
-_tv_power_cache = [0.0, None]
-def _tv_power():
-    now = time.time()
-    if _tv_power_cache[1] is not None and now - _tv_power_cache[0] < 15:
-        return _tv_power_cache[1]
-    val = None
-    try:
-        out = subprocess.run(['adb', '-s', '192.168.12.132:5555', 'shell',
-                              'dumpsys', 'power'], capture_output=True,
-                             text=True, timeout=5).stdout
-        for line in out.splitlines():
-            if 'mWakefulness=' in line:
-                val = 'Asleep' not in line
-                break
-    except Exception:
-        val = None
-    _tv_power_cache[0] = now; _tv_power_cache[1] = val
-    return val
-_tv_cache = [0.0, None]
-def _tv_state():
-    now = time.time()
-    if _tv_cache[1] is not None and now - _tv_cache[0] < 5:
-        return _tv_cache[1]
-    val = {'state': 'off'}
-    key = _jellyfin_key()
-    if key:
-        try:
-            req = urllib.request.Request(
-                'http://127.0.0.1:8097/Sessions',
-                headers={'Authorization': 'MediaBrowser Token="%s"' % key})
-            with urllib.request.urlopen(req, timeout=4) as r:
-                sessions = json.loads(r.read())
-            playing = None; idle = False
-            for s in sessions:
-                if s.get('Client') != 'Jellyfin Desktop':
-                    continue
-                np = s.get('NowPlayingItem')
-                if np:
-                    playing = {'state': 'playing', 'item': np.get('Id'),
-                               'title': np.get('Name'),
-                               'paused': bool((s.get('PlayState') or {}).get('IsPaused'))}
-                    break
-                idle = True
-            if playing: val = playing
-            elif idle: val = {'state': 'idle'}
-        except Exception:
-            pass
-    if _tv_power() is False:
-        val = {'state': 'off'}
-    _tv_cache[0] = now; _tv_cache[1] = val
-    return val
-def _fetch_poster(item):
-    if not item or len(item) > 40 or not all(
-            c in '0123456789abcdefABCDEF-' for c in item):
-        return None
-    key = _jellyfin_key()
-    if not key: return None
-    for kind in ('Backdrop', 'Primary'):
-        try:
-            req = urllib.request.Request(
-                'http://127.0.0.1:8097/Items/%s/Images/%s/0?maxWidth=800'
-                % (item, kind),
-                headers={'Authorization': 'MediaBrowser Token="%s"' % key})
-            with urllib.request.urlopen(req, timeout=6) as r:
-                return r.read(), r.headers.get_content_type()
-        except Exception:
-            continue
-    return None
+            'rtc_connected': get_rtc_connected()}
 DIM_PATH = os.path.join(ROOT, 'dim.json')
 def get_dim():
     try:
@@ -259,7 +167,6 @@ def _merged_state():
         'light': _light_state(),
         'display_on': display_on,
         'rtc_connected': get_rtc_connected(),
-        'tv': _tv_state(),
         'dim': get_dim(),
         'alarm': _alarm_cached(),
     }
@@ -335,18 +242,6 @@ class H(SimpleHTTPRequestHandler):
         self.send_response(code); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
-        if u.path == '/tvposter':
-            item = (urllib.parse.parse_qs(u.query).get('item') or [''])[0]
-            got = _fetch_poster(item)
-            if not got: return self._json(404, {'error': 'no poster'})
-            data, ctype = got
-            self.send_response(200)
-            self.send_header('Content-Type', ctype or 'image/jpeg')
-            self.send_header('Content-Length', str(len(data)))
-            self.send_header('Cache-Control', 'max-age=3600')
-            self.end_headers()
-            self.wfile.write(data)
-            return
         if u.path == '/roomstate': return self._json(200, room_state())
         if u.path == '/status': return self._serve_status_stream()
         if u.path == '/alarm':
