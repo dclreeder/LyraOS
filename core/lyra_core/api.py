@@ -78,6 +78,7 @@ TOOL_PATH = "/tool"
 ANNOUNCE_PATH = "/announce"
 RTC_OFFER_PATH = "/rtc/offer"
 MODE_PATH = "/mode"
+BRAIN_PATH = "/brain"
 ANNOUNCE_MAX_CHARS = 200
 _TOOL_TIMEOUT_S = 90.0
 _ANNOUNCE_TIMEOUT_S = 75.0
@@ -98,6 +99,8 @@ RtcOfferFn = Callable[[str, str], Awaitable[dict]]
 # the currently applied mode.
 ModeSetFn = Callable[[str], Awaitable[str]]
 ModeGetFn = Callable[[], str]
+BrainSetFn = Callable[[str], Awaitable[str]]
+BrainGetFn = Callable[[], str]
 
 
 class AnnounceUnavailable(Exception):
@@ -148,6 +151,8 @@ class CoreApi:
         rtc_offer: RtcOfferFn | None = None,
         mode_set: ModeSetFn | None = None,
         mode_get: ModeGetFn | None = None,
+        brain_set: BrainSetFn | None = None,
+        brain_get: BrainGetFn | None = None,
         tv: TvTool | None = None,
         tv_volume: TvVolumeTool | None = None,
         jellyfin: JellyfinTool | None = None,
@@ -162,6 +167,8 @@ class CoreApi:
         self._rtc_offer = rtc_offer
         self._mode_set = mode_set
         self._mode_get = mode_get
+        self._brain_set = brain_set
+        self._brain_get = brain_get
         self._tv = tv
         self._tv_volume = tv_volume
         self._jellyfin = jellyfin
@@ -186,6 +193,16 @@ class CoreApi:
             self._http.add_route(MODE_PATH, self._serve_mode_get)
             _LOGGER.info(
                 "core API registered: GET %s (token auth)", MODE_PATH
+            )
+        if self._brain_set is not None:
+            self._http.add_post_route(BRAIN_PATH, self._serve_brain_post)
+            _LOGGER.info(
+                "core API registered: POST %s (token auth)", BRAIN_PATH
+            )
+        if self._brain_get is not None:
+            self._http.add_route(BRAIN_PATH, self._serve_brain_get)
+            _LOGGER.info(
+                "core API registered: GET %s (token auth)", BRAIN_PATH
             )
         _LOGGER.info(
             "core API registered: POST %s, POST %s (token auth)",
@@ -514,3 +531,49 @@ class CoreApi:
             return _json(500, {"ok": False, "error": "mode change failed"})
         _LOGGER.info("core API /mode: applied %s", applied)
         return _json(200, {"ok": True, "mode": applied})
+
+    # -- /brain -----------------------------------------------------
+    # Brain ownership mirrors mode ownership: POST persists +
+    # applies the requested brain through the composition's
+    # callback and answers with the applied brain; GET reports
+    # it. Same token discipline as every route here.
+
+    def _serve_brain_get(self, query: dict) -> tuple[int, str, bytes]:
+        if not self._authorized(query):
+            _LOGGER.warning("core API /brain: rejected (bad token)")
+            return _json(403, {"ok": False, "error": "forbidden"})
+        if self._brain_get is None:
+            return _json(503, {"ok": False, "error": "brain not available"})
+        return _json(200, {"ok": True, "brain": self._brain_get()})
+
+    def _serve_brain_post(self, query: dict, body: bytes) -> tuple[int, str, bytes]:
+        if not self._authorized(query):
+            _LOGGER.warning("core API /brain: rejected (bad token)")
+            return _json(403, {"ok": False, "error": "forbidden"})
+        try:
+            payload = _parse_json_body(body)
+        except _BadRequest as exc:
+            return _json(400, {"ok": False, "error": str(exc)})
+        brain = payload.get("brain")
+        if not isinstance(brain, str) or not brain.strip():
+            return _json(400, {"ok": False, "error": "missing 'brain'"})
+        if self._brain_set is None or self._loop is None:
+            return _json(503, {"ok": False, "error": "brain not available"})
+        brain = brain.strip().lower()
+        _LOGGER.info("core API /brain: set %s", brain)
+        future = asyncio.run_coroutine_threadsafe(
+            self._brain_set(brain), self._loop)
+        try:
+            applied = future.result(timeout=_MODE_TIMEOUT_S)
+        except ValueError as exc:
+            _LOGGER.warning("core API /brain: bad brain: %s", exc)
+            return _json(400, {"ok": False, "error": str(exc)})
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            _LOGGER.error("core API /brain: timed out; future cancelled")
+            return _json(504, {"ok": False, "error": "brain change timed out"})
+        except Exception as exc:
+            _LOGGER.error("core API /brain: failed: %s", exc)
+            return _json(500, {"ok": False, "error": "brain change failed"})
+        _LOGGER.info("core API /brain: applied %s", applied)
+        return _json(200, {"ok": True, "brain": applied})

@@ -47,6 +47,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .router import DIDNT_CATCH, NOT_UNDERSTOOD, LlmError, looks_garbled, normalize
+from .brain import read_brain
 from .tools import ToolResult
 
 _LOGGER = logging.getLogger("lyra_core.free_router")
@@ -55,6 +56,9 @@ _LOGGER = logging.getLogger("lyra_core.free_router")
 # 2026-11-16 move to the Meta Model API, whose observed tail
 # latency can pass 10s on a single tool round.
 FREE_DEADLINE_S = 30.0
+# Muse turns are whole agent turns (a reply may include real
+# work over HomeLink), so the Muse brain gets a longer budget.
+MUSE_DEADLINE_S = 90.0
 # History has no turn limit since 2026-11-16 (Daniel's order):
 # the full session history goes to the model. This token
 # estimate (chars/4, see _history_tokens) is only a safety valve
@@ -504,6 +508,7 @@ class FreeRouter:
         jellyfin=None,
         inbox=None,
         client=None,
+        muse_client=None,
     ) -> None:
         self._cfg = cfg
         self._light = light
@@ -528,6 +533,7 @@ class FreeRouter:
                 reasoning_effort=getattr(cfg, "reasoning_effort", "minimal"),
             )
         self._client = client
+        self._muse_client = muse_client
         self._history: list[list[dict]] = []
         self._inbox = inbox
         self._last_slice: list = []
@@ -537,8 +543,20 @@ class FreeRouter:
         return (
             f"FREE router: uncaged model via {self._cfg.llm_model} "
             f"@ {self._cfg.llm_url}, {len(TOOL_SCHEMAS)} tools, "
-            f"deadline {FREE_DEADLINE_S:.0f}s"
+            f"deadline {FREE_DEADLINE_S:.0f}s; "
+            f"brain={read_brain()} (dashboard-switchable local/muse)"
         )
+
+    def _muse_active(self) -> bool:
+        """The dashboard brain switch, read fresh every turn: a
+        flip lands on the next sentence without a restart
+        (brain_state.json is core-owned state, like
+        mode_state.json). No Muse client wired means the switch
+        can never engage -- local always."""
+        return self._muse_client is not None and read_brain() == "muse"
+
+    def _turn_deadline_s(self) -> float:
+        return MUSE_DEADLINE_S if self._muse_active() else FREE_DEADLINE_S
 
     # -- the hook ------------------------------------------------------
 
@@ -599,12 +617,13 @@ class FreeRouter:
         self._last_slice = []
         try:
             raw_final, calls, turn_slice = await asyncio.wait_for(
-                self._run_turn(command, on_sentence), timeout=FREE_DEADLINE_S
+                self._run_turn(command, on_sentence),
+                timeout=self._turn_deadline_s(),
             )
         except asyncio.TimeoutError:
             _LOGGER.error(
                 "FREE_FAIL timeout after %.1fs for %r raw=%r",
-                FREE_DEADLINE_S, command, raw_final,
+                self._turn_deadline_s(), command, raw_final,
             )
             self._remember(command, "Sorry, something went wrong.")
             return "Sorry, something went wrong."
@@ -671,7 +690,10 @@ class FreeRouter:
             self._history.pop(0)
 
     async def _run_turn(self, command: str, on_sentence=None):
-        deadline = time.monotonic() + FREE_DEADLINE_S
+        muse = self._muse_active()
+        client = self._muse_client if muse else self._client
+        deadline = time.monotonic() + (
+            MUSE_DEADLINE_S if muse else FREE_DEADLINE_S)
         history = [m for turn in self._history for m in turn]
         system_content = load_soul()
         # Model plumbing appended to her soul at turn time (kept
@@ -693,14 +715,14 @@ class FreeRouter:
         for round_no in range(MAX_TOOL_ROUNDS + 1):
             last_round = round_no == MAX_TOOL_ROUNDS
             if on_sentence is None:
-                message = await self._client.chat(
+                message = await client.chat(
                     messages,
                     None if last_round else TOOL_SCHEMAS,
                     deadline - time.monotonic(),
                 )
             else:
                 message = await _stream_round(
-                    self._client,
+                    client,
                     messages,
                     None if last_round else TOOL_SCHEMAS,
                     deadline - time.monotonic(),

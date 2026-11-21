@@ -60,6 +60,7 @@ WEB_PUSH_URL = "http://127.0.0.1:8095/statuspush"
 # is the one the label names.
 FAULTS = (
     ("llm", "Model not loaded"),
+    ("muse", "Muse link down"),
     ("kokoro", "Speech service down"),
     ("parakeet", "STT service down"),
     ("whisper", "Whisper service down"),
@@ -85,6 +86,7 @@ class StatusHub:
         self._rtc_playing: set = set()
         self._listening: set = set()
         self._mode = "wakegate"
+        self._brain = "local"
         self._rtc_connected = False
         self._health: dict[str, bool] = {}
         self._subs: list = []
@@ -150,6 +152,11 @@ class StatusHub:
             self._mode = mode
             self._recompute()
 
+    def set_brain(self, brain: str) -> None:
+        if brain != self._brain:
+            self._brain = brain
+            self._recompute()
+
     def set_rtc_connected(self, connected: bool) -> None:
         """The RTC peer fact, reported by rtc.py on transitions.
         It rides this snapshot to lyra-web, whose merged page
@@ -167,7 +174,13 @@ class StatusHub:
     # -- output ---------------------------------------------------
 
     def _fault(self) -> str | None:
+        # Only the ACTIVE brain's health can fault her: the local
+        # model's state is irrelevant while Muse is her brain,
+        # and the Muse link's while the local model is.
+        brain_key = "muse" if self._brain == "muse" else "llm"
         for name, label in FAULTS:
+            if name in ("llm", "muse") and name != brain_key:
+                continue
             if self._health.get(name) is False:
                 return label
         return None
@@ -196,6 +209,7 @@ class StatusHub:
             "label": label,
             "fault": fault,
             "mode": self._mode,
+            "brain": self._brain,
             "rtc_connected": self._rtc_connected,
             "activity": activity,
             "health": dict(self._health),
@@ -205,7 +219,7 @@ class StatusHub:
     def _recompute(self) -> None:
         snap = self.snapshot()
         shown = (snap["state"], snap["label"], snap["mode"],
-                 snap["fault"], snap["rtc_connected"])
+                 snap["brain"], snap["fault"], snap["rtc_connected"])
         if shown == self._shown:
             return
         self._shown = shown
@@ -262,6 +276,9 @@ class StatusPublisher:
 # ---------------------------------------------------------------------
 
 LLM_MODELS_URL = "http://127.0.0.1:8094/v1/models"
+# The Muse brain path's liveness: the musegadget service socket
+# (the same one the CLI connects to for every send).
+MUSEGADGET_SOCKET = "/run/musegadget/musegadget.sock"
 KOKORO_HEALTH_URL = "http://127.0.0.1:8091/health"
 PARAKEET_HEALTH_URL = "http://127.0.0.1:8096/health"
 # whisper-server has no /health endpoint; its root page answering
@@ -292,6 +309,19 @@ def _get_ok(url: str, timeout: float = 3.0) -> bool:
         return False
 
 
+def _muse_link_ok() -> bool:
+    """Connect-and-close on the musegadget socket: the Muse
+    brain is reachable exactly when its service accepts."""
+    import socket as _socket
+    try:
+        with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
+            s.settimeout(2.0)
+            s.connect(MUSEGADGET_SOCKET)
+        return True
+    except Exception:
+        return False
+
+
 async def check_dependencies(llm_url: str = LLM_MODELS_URL,
                              kokoro_url: str = KOKORO_HEALTH_URL,
                              parakeet_url: str = PARAKEET_HEALTH_URL,
@@ -301,14 +331,18 @@ async def check_dependencies(llm_url: str = LLM_MODELS_URL,
     that answers with no model loaded is exactly Daniel's example
     fault. URLs are parameters so tests can point the checker at
     dead endpoints without touching production services."""
-    llm_obj, kokoro_obj, parakeet_obj, whisper_ok = await asyncio.gather(
-        asyncio.to_thread(_get_json, llm_url),
-        asyncio.to_thread(_get_json, kokoro_url),
-        asyncio.to_thread(_get_json, parakeet_url),
-        asyncio.to_thread(_get_ok, whisper_url),
+    llm_obj, kokoro_obj, parakeet_obj, whisper_ok, muse_ok = (
+        await asyncio.gather(
+            asyncio.to_thread(_get_json, llm_url),
+            asyncio.to_thread(_get_json, kokoro_url),
+            asyncio.to_thread(_get_json, parakeet_url),
+            asyncio.to_thread(_get_ok, whisper_url),
+            asyncio.to_thread(_muse_link_ok),
+        )
     )
     return {
         "llm": bool(llm_obj and llm_obj.get("data")),
+        "muse": muse_ok,
         "kokoro": bool(kokoro_obj and kokoro_obj.get("ok") is True),
         "parakeet": bool(
             parakeet_obj and parakeet_obj.get("status") == "ok"),
