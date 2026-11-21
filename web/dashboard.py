@@ -75,6 +75,20 @@ def _source_muted() -> bool | None:
         return None
 
 
+def _sink_volume() -> int | None:
+    # Fedora's default-sink volume as a percent, read live via pactl
+    # (the first channel's figure; channels are balanced in
+    # practice). None when the read fails -- the Audio card shows
+    # "-" rather than a made-up number.
+    try:
+        out = subprocess.run(["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
+                             capture_output=True, text=True, timeout=4).stdout
+        m = re.search(r"(\d+)%", out)
+        return int(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
 # The raw ReSpeaker source node: WakeGate's pinned capture since
 # the 2026-11-19 feed split (see lyra_core/localmic.py). The mute
 # toggle below sets BOTH this node and the default source --
@@ -119,7 +133,8 @@ def audio_devices() -> dict:
         nodes = json.loads(out)
     except Exception as exc:
         return {"ok": False, "error": str(exc), "sinks": [], "sources": [],
-                "default_sink": "", "default_source": "", "source_muted": None}
+                "default_sink": "", "default_source": "", "source_muted": None,
+                "sink_volume": None}
     for obj in nodes:
         if obj.get("type") != "PipeWire:Interface:Node":
             continue
@@ -146,7 +161,8 @@ def audio_devices() -> dict:
     return {"ok": True, "sinks": sinks, "sources": sources,
             "default_sink": _default("get-default-sink"),
             "default_source": _default("get-default-source"),
-            "source_muted": _source_muted()}
+            "source_muted": _source_muted(),
+            "sink_volume": _sink_volume()}
 
 
 def audio_set(kind: str, device: str) -> dict:
@@ -156,6 +172,18 @@ def audio_set(kind: str, device: str) -> dict:
         raise ValueError("unknown audio device")
     cmd = "set-default-sink" if kind == "sink" else "set-default-source"
     subprocess.run(["pactl", cmd, device], capture_output=True, timeout=4)
+    return audio_devices()
+
+
+def audio_volume_set(percent: int) -> dict:
+    # Speaker volume for Fedora's DEFAULT sink -- whichever sink the
+    # Speakers dropdown currently picks. Clamped to 0-100: the
+    # dashboard never over-amplifies. Returns the re-read state, so
+    # the slider shows the verified volume (the Audio card's
+    # verify-by-reread pattern, same as the monitor setters).
+    percent = max(0, min(100, int(percent)))
+    subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@",
+                    f"{percent}%"], capture_output=True, timeout=4)
     return audio_devices()
 
 
@@ -529,6 +557,10 @@ class Handler(BaseHTTPRequestHandler):
                 if "muted" in payload:
                     self._json(200, {"ok": True,
                                      "audio": audio_mute_set(bool(payload["muted"]))})
+                    return
+                if "volume" in payload:
+                    self._json(200, {"ok": True,
+                                     "audio": audio_volume_set(int(payload["volume"]))})
                     return
                 kind = str(payload.get("kind", ""))
                 if kind not in ("sink", "source"):

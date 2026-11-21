@@ -154,6 +154,10 @@
     <select id="audioSink" aria-label="Default speaker"></select>
   </div>
   <div style="margin-top:12px;">
+    <div class="label">Speaker volume <span id="spkVolVal" class="dim"></span></div>
+    <input type="range" id="spkVol" min="0" max="100" step="1">
+  </div>
+  <div style="margin-top:12px;">
     <div class="label">Microphone</div>
     <select id="audioSource" aria-label="Default microphone"></select>
   </div>
@@ -280,6 +284,21 @@ function fillSelect(sel, devices, current, emptyLabel) {
 }
 function renderAudio(a, force) {
   if (!a || !a.ok) return;
+  // Speaker volume is live state, not device-list state: it changes
+  // without any device changing, so it renders on every pass, ahead
+  // of the signature early-return below -- but never mid-drag.
+  const vol = (a.sink_volume === null || a.sink_volume === undefined)
+    ? null : Math.round(a.sink_volume);
+  if (document.activeElement !== $('spkVol')) {
+    if (vol !== null) {
+      $('spkVol').value = vol;
+      $('spkVolVal').textContent = vol + '%';
+      $('spkVol').disabled = false;
+    } else {
+      $('spkVolVal').textContent = '-';
+      $('spkVol').disabled = true;
+    }
+  }
   const sig = JSON.stringify([a.sinks, a.sources, a.default_sink, a.default_source, a.source_muted]);
   if (!force && sig === audioSig) return;
   if (!force && (document.activeElement === $('audioSink') ||
@@ -323,6 +342,29 @@ async function setAudioMute(muted) {
       toast(j.error || 'Mic change failed');
     }
   } catch (e) { toast('Mic request failed'); }
+  refresh();
+}
+async function setSpeakerVolume(v) {
+  try {
+    const r = await fetch('/api/audio', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({volume: v}) });
+    const j = await r.json();
+    if (j.ok && j.audio) {
+      renderAudio(j.audio, true);
+      const vol = j.audio.sink_volume;
+      if (vol !== null && vol !== undefined) {
+        // Show the verified read-back, not the requested value.
+        $('spkVol').value = Math.round(vol);
+        $('spkVolVal').textContent = Math.round(vol) + '%';
+        toast('Speaker volume: ' + Math.round(vol) + '%');
+      } else {
+        toast('Volume set (read-back unavailable)');
+      }
+    } else {
+      toast(j.error || 'Volume change failed');
+    }
+  } catch (e) { toast('Audio request failed'); }
   refresh();
 }
 function renderKiosk(m) {
@@ -472,6 +514,8 @@ $('monToggle').onclick = () => {
 };
 $('audioSink').onchange = e => setAudio('sink', e.target.value);
 $('audioSource').onchange = e => setAudio('source', e.target.value);
+$('spkVol').onchange = e => setSpeakerVolume(+e.target.value);
+$('spkVol').oninput = e => $('spkVolVal').textContent = e.target.value + '%';
 $('killBtn').onclick = () => act('alarm', 'kill');
 $('snoozeBtn').onclick = () => act('alarm', 'snooze');
 $('alarmToggle').onclick = () => {
