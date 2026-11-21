@@ -129,6 +129,19 @@
     </div>
   </div>
 <div class="card">
+  <div class="label">Monitor</div>
+  <div class="tile-name">ViewSonic</div>
+  <div class="sub" id="monSub">...</div>
+  <div class="row spread" style="margin-top:12px;">
+    <div class="tile-name" style="font-size:15px;">Display</div>
+    <button class="switch" id="monToggle" aria-label="Toggle monitor display"></button>
+  </div>
+  <div style="margin-top:12px;">
+    <div class="label">Panel brightness <span id="monVal" class="dim"></span></div>
+    <input type="range" id="monBri" min="0" max="100" step="1">
+  </div>
+</div>
+<div class="card">
   <div class="label">Audio</div>
   <div class="sub" style="margin-top:0;">Lyra uses Fedora's default devices - these pick her speakers and mic.</div>
   <div style="margin-top:12px;">
@@ -241,6 +254,7 @@ async function refresh() {
   }
   renderAudio(j.audio);
   renderMode(j.mode);
+  renderMonitor(j.monitor);
 }
 
 let audioSig = '';
@@ -308,6 +322,58 @@ async function setAudioMute(muted) {
   } catch (e) { toast('Mic request failed'); }
   refresh();
 }
+function renderMonitor(m) {
+  if (!m || !m.ok) {
+    setSwitch($('monToggle'), null);
+    $('monSub').textContent = 'Monitor unreachable';
+    $('monVal').textContent = '-';
+    return;
+  }
+  setSwitch($('monToggle'), !!m.enabled);
+  const b = (m.brightness === null || m.brightness === undefined)
+    ? null : Math.round(m.brightness);
+  $('monSub').textContent = !m.enabled
+    ? 'Off - Lyra is on the TV'
+    : (b !== null ? 'On - real panel brightness (DDC)' : 'On');
+  if (document.activeElement !== $('monBri')) {
+    if (b !== null) { $('monBri').value = b; $('monVal').textContent = b + '%'; }
+    else $('monVal').textContent = '-';
+  }
+  $('monBri').disabled = !m.enabled;
+}
+async function setMonitorBrightness(v) {
+  try {
+    const r = await fetch('/api/monitor', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({brightness: v}) });
+    const j = await r.json();
+    if (j.ok && j.monitor) {
+      renderMonitor(j.monitor);
+      const b = j.monitor.brightness;
+      toast(b !== null && b !== undefined
+        ? 'Monitor brightness: ' + Math.round(b) + '%'
+        : 'Brightness set (read-back unavailable)');
+    } else {
+      toast(j.error || 'Monitor change failed');
+    }
+  } catch (e) { toast('Monitor request failed'); }
+  refresh();
+}
+async function setMonitorEnabled(on) {
+  try {
+    const r = await fetch('/api/monitor', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({on}) });
+    const j = await r.json();
+    if (j.ok && j.monitor) {
+      renderMonitor(j.monitor);
+      toast(on ? 'Monitor on' : 'Monitor off - Lyra is on the TV');
+    } else {
+      toast(j.error || 'Monitor change failed');
+    }
+  } catch (e) { toast('Monitor request failed'); }
+  refresh();
+}
 let modeSig = '';
 function renderMode(m) {
   if (!m || !m.mode) return;
@@ -339,6 +405,12 @@ $('modeSleep').onclick = () => setMode('sleep');
 $('micMuteToggle').onclick = () => {
   const muted = !(S.audio && S.audio.source_muted);
   setAudioMute(muted);
+};
+$('monBri').onchange = e => setMonitorBrightness(+e.target.value);
+$('monBri').oninput = e => $('monVal').textContent = e.target.value + '%';
+$('monToggle').onclick = () => {
+  const on = !(S.monitor && S.monitor.enabled);
+  setMonitorEnabled(on);
 };
 $('audioSink').onchange = e => setAudio('sink', e.target.value);
 $('audioSource').onchange = e => setAudio('source', e.target.value);

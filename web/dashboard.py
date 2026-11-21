@@ -20,7 +20,10 @@ The page file stays at dashboard/dashboard.html in the tree.
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
+import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -156,6 +159,160 @@ def audio_set(kind: str, device: str) -> dict:
     return audio_devices()
 
 
+# --- Monitor (2026-11-20): the ViewSonic VX2467 on DP-2, Lyra's primary
+# display since the monitor move. Brightness here is the panel's REAL
+# backlight level over DDC/CI (VCP 0x10) via ddcutil -- never an overlay.
+# Every ddcutil call is pinned to the ViewSonic's I2C bus, resolved from
+# `ddcutil detect` by EDID model + serial; no display number is guessed
+# and the TV (which does not answer DDC/CI) can never be addressed. The
+# on/off toggle enables/disables the DP-2 output itself via kscreen --
+# off removes the output so her kiosk window migrates to the TV, on
+# brings it back (the follow-the-output behavior proven 2026-11-20).
+# It is NOT DDC power (VCP D6): the output toggle is the migration path.
+# Reads on this panel are flaky, so they retry; a read that still fails
+# reports brightness as None (unknown), never an invented number. All
+# ddcutil use is serialized on _DDC_LOCK: the DDC channel does not
+# tolerate overlapping transactions.
+
+MONITOR_OUTPUT = "DP-2"
+_MONITOR_EDID_MODEL = "VX2467"
+_MONITOR_EDID_SERIAL = "XMW241842736"
+_DDC_LOCK = threading.Lock()
+_monitor_bus: int | None = None
+
+
+def _monitor_forget_bus() -> None:
+    global _monitor_bus
+    _monitor_bus = None
+
+
+def _monitor_resolve_bus() -> int | None:
+    """I2C bus of the ViewSonic, matched on its EDID (model + serial)."""
+    global _monitor_bus
+    if _monitor_bus is not None:
+        return _monitor_bus
+    try:
+        out = subprocess.run(["ddcutil", "detect"], capture_output=True,
+                             text=True, timeout=25).stdout
+    except Exception:
+        return None
+    for block in out.split("\n\n"):
+        if _MONITOR_EDID_MODEL in block and _MONITOR_EDID_SERIAL in block:
+            m = re.search(r"/dev/i2c-(\d+)", block)
+            if m:
+                _monitor_bus = int(m.group(1))
+                break
+    return _monitor_bus
+
+
+def _monitor_read_brightness() -> int | None:
+    bus = _monitor_resolve_bus()
+    if bus is None:
+        return None
+    for _ in range(4):
+        try:
+            out = subprocess.run(
+                ["ddcutil", "--bus", str(bus), "getvcp", "10"],
+                capture_output=True, text=True, timeout=15).stdout
+            m = re.search(r"current value\s*=\s*(\d+)", out)
+            if m:
+                return int(m.group(1))
+        except Exception:
+            pass
+        time.sleep(0.3)
+    # Persistent failure: the bus may have been re-enumerated since the
+    # resolve; forget it so the next call re-detects instead of
+    # hammering a stale bus forever.
+    _monitor_forget_bus()
+    return None
+
+
+def _kscreen_env() -> dict:
+    # lyra-web runs as a user service and normally inherits the session
+    # environment (WAYLAND_DISPLAY included) from the user manager. If
+    # the display var is ever missing, discover the compositor socket
+    # so kscreen-doctor can still reach KWin.
+    env = dict(os.environ)
+    if "WAYLAND_DISPLAY" not in env:
+        runtime = env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        for sock in sorted(Path(runtime).glob("wayland-*")):
+            if sock.suffix != ".lock":
+                env["WAYLAND_DISPLAY"] = sock.name
+                break
+    return env
+
+
+def _monitor_output_state() -> dict | None:
+    try:
+        out = subprocess.run(["kscreen-doctor", "-j"], capture_output=True,
+                             text=True, timeout=8, env=_kscreen_env()).stdout
+        outputs = json.loads(out).get("outputs", [])
+    except Exception:
+        return None
+    for output in outputs:
+        if output.get("name") == MONITOR_OUTPUT:
+            return output
+    return None
+
+
+def _monitor_state() -> dict:
+    output = _monitor_output_state()
+    if output is None:
+        return {"ok": False, "error": "DP-2 output not found",
+                "enabled": None, "brightness": None}
+    enabled = bool(output.get("enabled"))
+    # A disabled output is not being driven, so there is no live panel
+    # value to report; brightness is only read while it is enabled.
+    brightness = _monitor_read_brightness() if enabled else None
+    return {"ok": True, "enabled": enabled, "brightness": brightness}
+
+
+def monitor_state() -> dict:
+    with _DDC_LOCK:
+        return _monitor_state()
+
+
+def monitor_set_brightness(value: int) -> dict:
+    value = max(0, min(100, int(value)))
+    with _DDC_LOCK:
+        ok = False
+        for _ in range(2):
+            bus = _monitor_resolve_bus()
+            if bus is None:
+                break
+            try:
+                res = subprocess.run(
+                    ["ddcutil", "--bus", str(bus), "setvcp", "10", str(value)],
+                    capture_output=True, text=True, timeout=20)
+                ok = res.returncode == 0
+            except Exception:
+                ok = False
+            if ok:
+                break
+            _monitor_forget_bus()
+        if not ok:
+            raise ValueError("ddcutil could not set monitor brightness")
+        time.sleep(0.3)
+        # The returned state carries the read-back value, not the
+        # requested one (the Audio card's verify-by-reread pattern).
+        return _monitor_state()
+
+
+def monitor_set_enabled(on: bool) -> dict:
+    with _DDC_LOCK:
+        verb = "enable" if on else "disable"
+        try:
+            subprocess.run(
+                ["kscreen-doctor", f"output.{MONITOR_OUTPUT}.{verb}"],
+                capture_output=True, text=True, timeout=15, env=_kscreen_env())
+        except Exception as exc:
+            raise ValueError(f"kscreen-doctor {verb} failed: {exc}")
+        # Give KWin a moment to apply the change (and migrate her
+        # kiosk window) before reading the state back.
+        time.sleep(0.6)
+        return _monitor_state()
+
+
 DISPLAY_STATE_FILE = HOME / "Documents/LyraOS/web/display_state.json"
 
 
@@ -254,6 +411,7 @@ def full_state() -> dict:
             state[key] = {"ok": False, "error": str(exc)}
     state["audio"] = audio_devices()
     state["display"] = display_state()
+    state["monitor"] = monitor_state()
     state["sleep"] = sleep_state()
     state["mode"] = mode_state()
     return state
@@ -342,6 +500,20 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("kind must be sink or source")
                 self._json(200, {"ok": True,
                                  "audio": audio_set(kind, str(payload.get("device", "")))})
+            except Exception as exc:
+                self._json(502, {"ok": False, "error": str(exc)})
+            return
+        if self.path == "/api/monitor":
+            try:
+                if "brightness" in payload:
+                    self._json(200, {"ok": True, "monitor":
+                                     monitor_set_brightness(int(payload["brightness"]))})
+                elif "on" in payload:
+                    self._json(200, {"ok": True, "monitor":
+                                     monitor_set_enabled(bool(payload["on"]))})
+                else:
+                    self._json(400, {"ok": False,
+                                     "error": "brightness or on required"})
             except Exception as exc:
                 self._json(502, {"ok": False, "error": str(exc)})
             return
