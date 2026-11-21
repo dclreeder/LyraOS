@@ -140,6 +140,14 @@
     <div class="label">Panel brightness <span id="monVal" class="dim"></span></div>
     <input type="range" id="monBri" min="0" max="100" step="1">
   </div>
+  <div style="margin-top:12px;">
+    <div class="label">Contrast <span id="monConVal" class="dim"></span></div>
+    <input type="range" id="monCon" min="0" max="100" step="1">
+  </div>
+  <div style="margin-top:12px;">
+    <div class="label">Black veil <span id="monVeilVal" class="dim"></span></div>
+    <input type="range" id="monVeil" min="0" max="100" step="1">
+  </div>
 </div>
 <div class="card">
   <div class="label">Audio</div>
@@ -323,15 +331,28 @@ async function setAudioMute(muted) {
   refresh();
 }
 function renderMonitor(m) {
+  // The veil is page state, not panel state: render it whenever the
+  // state carries it, even if the panel itself is unreachable, and
+  // never disable it -- it veils her page wherever she is shown.
+  const v = (!m || m.veil === null || m.veil === undefined)
+    ? null : Math.round(m.veil);
+  if (v !== null && document.activeElement !== $('monVeil')) {
+    $('monVeil').value = v; $('monVeilVal').textContent = v + '%';
+  } else if (v === null) {
+    $('monVeilVal').textContent = '-';
+  }
   if (!m || !m.ok) {
     setSwitch($('monToggle'), null);
     $('monSub').textContent = 'Monitor unreachable';
     $('monVal').textContent = '-';
+    $('monConVal').textContent = '-';
     return;
   }
   setSwitch($('monToggle'), !!m.enabled);
   const b = (m.brightness === null || m.brightness === undefined)
     ? null : Math.round(m.brightness);
+  const c = (m.contrast === null || m.contrast === undefined)
+    ? null : Math.round(m.contrast);
   $('monSub').textContent = !m.enabled
     ? 'Off - Lyra is on the TV'
     : (b !== null ? 'On - real panel brightness (DDC)' : 'On');
@@ -339,7 +360,12 @@ function renderMonitor(m) {
     if (b !== null) { $('monBri').value = b; $('monVal').textContent = b + '%'; }
     else $('monVal').textContent = '-';
   }
+  if (document.activeElement !== $('monCon')) {
+    if (c !== null) { $('monCon').value = c; $('monConVal').textContent = c + '%'; }
+    else $('monConVal').textContent = '-';
+  }
   $('monBri').disabled = !m.enabled;
+  $('monCon').disabled = !m.enabled;
 }
 async function setMonitorBrightness(v) {
   try {
@@ -357,6 +383,37 @@ async function setMonitorBrightness(v) {
       toast(j.error || 'Monitor change failed');
     }
   } catch (e) { toast('Monitor request failed'); }
+  refresh();
+}
+async function setMonitorContrast(v) {
+  try {
+    const r = await fetch('/api/monitor', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({contrast: v}) });
+    const j = await r.json();
+    if (j.ok && j.monitor) {
+      renderMonitor(j.monitor);
+      const c = j.monitor.contrast;
+      toast(c !== null && c !== undefined
+        ? 'Monitor contrast: ' + Math.round(c) + '%'
+        : 'Contrast set (read-back unavailable)');
+    } else {
+      toast(j.error || 'Monitor change failed');
+    }
+  } catch (e) { toast('Monitor request failed'); }
+  refresh();
+}
+async function setMonitorVeil(v) {
+  // The veil is the one shared page dim: this posts through the same
+  // /api/action tv-tool path as the TV card's brightness slider, with
+  // the percent inverted (veil 0% = full brightness, 100% = black).
+  try {
+    const r = await fetch('/api/action', { method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({tool:'tv', action:'set', args:{percent: 100 - v}}) });
+    const j = await r.json();
+    toast(j.ok ? 'Black veil: ' + v + '%' : (j.error || 'Veil change failed'));
+  } catch (e) { toast('Veil request failed'); }
   refresh();
 }
 async function setMonitorEnabled(on) {
@@ -408,6 +465,10 @@ $('micMuteToggle').onclick = () => {
 };
 $('monBri').onchange = e => setMonitorBrightness(+e.target.value);
 $('monBri').oninput = e => $('monVal').textContent = e.target.value + '%';
+$('monCon').onchange = e => setMonitorContrast(+e.target.value);
+$('monCon').oninput = e => $('monConVal').textContent = e.target.value + '%';
+$('monVeil').onchange = e => setMonitorVeil(+e.target.value);
+$('monVeil').oninput = e => $('monVeilVal').textContent = e.target.value + '%';
 $('monToggle').onclick = () => {
   const on = !(S.monitor && S.monitor.enabled);
   setMonitorEnabled(on);

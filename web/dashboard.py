@@ -159,9 +159,32 @@ def audio_set(kind: str, device: str) -> dict:
     return audio_devices()
 
 
+# The page veil ("dim") has exactly one home: lyra-web's dim.json, the
+# file lyra_web.get_dim() reads for the pushed page state and the core's
+# tv tool writes through :8095/dim -- the path the TV card's brightness
+# slider takes via /api/action. The dashboard only READS the file here,
+# to render the Monitor card's veil slider truthfully; veil writes from
+# that slider go through the same tv-tool path. One dim variable, one
+# write path.
+DIM_FILE = Path(__file__).resolve().parent / "dim.json"
+
+
+def _veil_percent() -> int:
+    # Current black-veil level as a percent: 100 - dim brightness.
+    try:
+        dim = float(json.loads(DIM_FILE.read_text()).get("brightness", 1.0))
+    except Exception:
+        dim = 1.0
+    return round((1.0 - max(0.0, min(1.0, dim))) * 100)
+
+
 # --- Monitor (2026-11-20): the ViewSonic VX2467 on DP-2, Lyra's primary
 # display since the monitor move. Brightness here is the panel's REAL
 # backlight level over DDC/CI (VCP 0x10) via ddcutil -- never an overlay.
+# Contrast gets the same treatment on VCP 0x12. The card's third
+# slider, the black veil, is NOT a panel control: it drives lyra-web's
+# page dim (the one dim state the TV card's brightness slider and the
+# core's tv tool share), for going darker than the panel's own floor.
 # Every ddcutil call is pinned to the ViewSonic's I2C bus, resolved from
 # `ddcutil detect` by EDID model + serial; no display number is guessed
 # and the TV (which does not answer DDC/CI) can never be addressed. The
@@ -205,14 +228,14 @@ def _monitor_resolve_bus() -> int | None:
     return _monitor_bus
 
 
-def _monitor_read_brightness() -> int | None:
+def _monitor_read_vcp(code: str) -> int | None:
     bus = _monitor_resolve_bus()
     if bus is None:
         return None
     for _ in range(4):
         try:
             out = subprocess.run(
-                ["ddcutil", "--bus", str(bus), "getvcp", "10"],
+                ["ddcutil", "--bus", str(bus), "getvcp", code],
                 capture_output=True, text=True, timeout=15).stdout
             m = re.search(r"current value\s*=\s*(\d+)", out)
             if m:
@@ -259,12 +282,17 @@ def _monitor_state() -> dict:
     output = _monitor_output_state()
     if output is None:
         return {"ok": False, "error": "DP-2 output not found",
-                "enabled": None, "brightness": None}
+                "enabled": None, "brightness": None, "contrast": None,
+                "veil": _veil_percent()}
     enabled = bool(output.get("enabled"))
-    # A disabled output is not being driven, so there is no live panel
-    # value to report; brightness is only read while it is enabled.
-    brightness = _monitor_read_brightness() if enabled else None
-    return {"ok": True, "enabled": enabled, "brightness": brightness}
+    # A disabled output is not being driven, so there are no live panel
+    # values to report; brightness and contrast are only read while it
+    # is enabled. The veil is page state, independent of the panel, so
+    # it is always reported.
+    brightness = _monitor_read_vcp("10") if enabled else None
+    contrast = _monitor_read_vcp("12") if enabled else None
+    return {"ok": True, "enabled": enabled, "brightness": brightness,
+            "contrast": contrast, "veil": _veil_percent()}
 
 
 def monitor_state() -> dict:
@@ -272,7 +300,7 @@ def monitor_state() -> dict:
         return _monitor_state()
 
 
-def monitor_set_brightness(value: int) -> dict:
+def _monitor_set_vcp(code: str, value: int, label: str) -> dict:
     value = max(0, min(100, int(value)))
     with _DDC_LOCK:
         ok = False
@@ -282,7 +310,7 @@ def monitor_set_brightness(value: int) -> dict:
                 break
             try:
                 res = subprocess.run(
-                    ["ddcutil", "--bus", str(bus), "setvcp", "10", str(value)],
+                    ["ddcutil", "--bus", str(bus), "setvcp", code, str(value)],
                     capture_output=True, text=True, timeout=20)
                 ok = res.returncode == 0
             except Exception:
@@ -291,11 +319,19 @@ def monitor_set_brightness(value: int) -> dict:
                 break
             _monitor_forget_bus()
         if not ok:
-            raise ValueError("ddcutil could not set monitor brightness")
+            raise ValueError(f"ddcutil could not set monitor {label}")
         time.sleep(0.3)
         # The returned state carries the read-back value, not the
         # requested one (the Audio card's verify-by-reread pattern).
         return _monitor_state()
+
+
+def monitor_set_brightness(value: int) -> dict:
+    return _monitor_set_vcp("10", value, "brightness")
+
+
+def monitor_set_contrast(value: int) -> dict:
+    return _monitor_set_vcp("12", value, "contrast")
 
 
 def monitor_set_enabled(on: bool) -> dict:
@@ -508,12 +544,15 @@ class Handler(BaseHTTPRequestHandler):
                 if "brightness" in payload:
                     self._json(200, {"ok": True, "monitor":
                                      monitor_set_brightness(int(payload["brightness"]))})
+                elif "contrast" in payload:
+                    self._json(200, {"ok": True, "monitor":
+                                     monitor_set_contrast(int(payload["contrast"]))})
                 elif "on" in payload:
                     self._json(200, {"ok": True, "monitor":
                                      monitor_set_enabled(bool(payload["on"]))})
                 else:
                     self._json(400, {"ok": False,
-                                     "error": "brightness or on required"})
+                                     "error": "brightness, contrast or on required"})
             except Exception as exc:
                 self._json(502, {"ok": False, "error": str(exc)})
             return
