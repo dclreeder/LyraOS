@@ -218,14 +218,14 @@ window._lyra = { state: null, _sh: [], _jh: [],
 <div id="statuslight" data-state="error"><span class="dot"></span><span class="lbl">Disconnected</span></div>
 <style>
 #sleepzzz{position:fixed;inset:0;z-index:5;pointer-events:none;overflow:hidden}
-#sleepzzz .zzz{position:absolute;font-family:system-ui,'Segoe UI',sans-serif;font-weight:300;color:#ddd2ff;
+#sleepzzz .zzz{position:absolute;font-family:system-ui,'Segoe UI',sans-serif;font-weight:400;color:#ddd2ff;
   text-shadow:0 0 6px rgba(139,92,246,.22);opacity:0;animation:zzzfloat 5s ease-out forwards}
 @keyframes zzzfloat{
   0%{opacity:0;transform:translate(0,0) scale(.72) rotate(-4deg)}
-  12%{opacity:.5}
+  12%{opacity:.75}
   30%{transform:translate(10px,-45px) scale(.85) rotate(2deg)}
-  55%{opacity:.47;transform:translate(-7px,-88px) scale(.97) rotate(-3deg)}
-  80%{opacity:.3}
+  55%{opacity:.71;transform:translate(-7px,-88px) scale(.97) rotate(-3deg)}
+  80%{opacity:.45}
   100%{opacity:0;transform:translate(6px,-150px) scale(1.12) rotate(3deg)}}
 </style>
 <div id="sleepzzz"></div>
@@ -235,10 +235,19 @@ window._lyra = { state: null, _sh: [], _jh: [],
 // head every couple of seconds and fades -- a quiet detail, not an alert.
 // Fed only by the pushed state channel like every other layer on this
 // page; stops and clears the moment the mode leaves Sleep.
-// Anchor is measured from the SLEEP PLATE artwork (her head on the
-// pillow at left ~20%, mid-height) -- NOT the Live2D layout: the
-// first anchor (54%/11%) landed beside the ceiling pendant lamp
-// in the plate scene (Daniel's photo, 2026-11-20).
+// Anchor is measured from the SLEEP PLATE artwork, NOT the Live2D
+// layout: the first anchor (54%/11%) landed beside the ceiling
+// pendant lamp in the plate scene (Daniel's photo, 2026-11-20).
+// Measured from a real frame of the plate (2026-11-20): her head
+// lies on the pillow at frame left ~5-19%, top ~61-74%, face
+// center ~(13%, 67%), top of her hair ~y 61% -- so the spawn sits
+// right at her hairline, left 15-18% / top 62-65%, each Z emerging
+// beside her face and rising up over the headboard, in her corner
+// of the scene. (Second anchor, 21-24%/41-44%, still read as
+// detached -- up by the curtain -- and too faint; Daniel asked for
+// closer and a little less subtle, then twice more for lower --
+// "a tad lower", "tad more" -- to rest at her hairline,
+// 2026-11-20.)
 (function () {
   var layer = document.getElementById('sleepzzz');
   if (!layer) return;
@@ -248,9 +257,9 @@ window._lyra = { state: null, _sh: [], _jh: [],
     var z = document.createElement('span');
     z.className = 'zzz';
     z.textContent = 'Z';
-    z.style.left = (21 + Math.random() * 3) + '%';
-    z.style.top = (41 + Math.random() * 3) + '%';
-    z.style.fontSize = (19 + Math.random() * 5) + 'px';
+    z.style.left = (15 + Math.random() * 3) + '%';
+    z.style.top = (62 + Math.random() * 3) + '%';
+    z.style.fontSize = (28 + Math.random() * 6) + 'px';
     z.addEventListener('animationend', function () { z.remove(); });
     layer.appendChild(z);
   }
