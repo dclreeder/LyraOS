@@ -235,6 +235,10 @@ window._lyra = { state: null, _sh: [], _jh: [],
 // head every couple of seconds and fades -- a quiet detail, not an alert.
 // Fed only by the pushed state channel like every other layer on this
 // page; stops and clears the moment the mode leaves Sleep.
+// Anchor is measured from the SLEEP PLATE artwork (her head on the
+// pillow at left ~20%, mid-height) -- NOT the Live2D layout: the
+// first anchor (54%/11%) landed beside the ceiling pendant lamp
+// in the plate scene (Daniel's photo, 2026-11-20).
 (function () {
   var layer = document.getElementById('sleepzzz');
   if (!layer) return;
@@ -244,8 +248,8 @@ window._lyra = { state: null, _sh: [], _jh: [],
     var z = document.createElement('span');
     z.className = 'zzz';
     z.textContent = 'Z';
-    z.style.left = (54 + Math.random() * 4) + '%';
-    z.style.top = (10 + Math.random() * 3) + '%';
+    z.style.left = (21 + Math.random() * 3) + '%';
+    z.style.top = (41 + Math.random() * 3) + '%';
     z.style.fontSize = (19 + Math.random() * 5) + 'px';
     z.addEventListener('animationend', function () { z.remove(); });
     layer.appendChild(z);
