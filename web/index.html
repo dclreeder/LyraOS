@@ -14,16 +14,19 @@
 #roombg-off{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .8s ease}
 #roombg-sleep{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 1.2s ease}
 #tvwrap{position:absolute;inset:0;overflow:hidden;pointer-events:none;opacity:0;transition:opacity .6s ease}
-#tvimg{position:absolute;left:5.8%;top:11.2%;width:20%;height:48%;background:#000 center/cover no-repeat;transform-origin:0 0}
+#tvimg{position:absolute;left:78.7%;top:11.5%;width:15.6%;height:45.2%;background:#000 center/cover no-repeat;transform-origin:0 0}
 #tvlogo{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:radial-gradient(120% 120% at 30% 20%,#1b2a4a 0%,#0a1122 70%);color:#fff;font:700 2.6vw system-ui,'Segoe UI',sans-serif;letter-spacing:.02em}
 #c{transition:opacity 1.2s ease}
 .roomlayer{position:absolute;pointer-events:none;transition:opacity .8s ease}
-#daywin{left:71%;top:0%;width:29%;height:61%;background:radial-gradient(circle at 72% 20%, rgba(255,244,190,.95), rgba(255,244,190,0) 42%),linear-gradient(180deg,#79bfe8 0%,#cfeafb 58%,#a9cba0 100%);opacity:0;transition:opacity 1.5s ease}
+#skyview{position:absolute;left:9.7%;top:7.4%;width:64.9%;height:61.2%;overflow:hidden;pointer-events:none}
+#skyview img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#viewnight{opacity:0;transition:opacity 1.5s ease}
+#skyview .mull{position:absolute;top:0;bottom:0;width:2%;background:#23272e}
 @keyframes sgpulse{0%,100%{opacity:.45}50%{opacity:1}}
 </style>
-<div id="bgwrap"><img id="roombg" src="assets/room3-base.webp" alt=""><img id="roombg-off" src="assets/room3-lightoff.webp" alt=""><div id="tvwrap"><div id="tvimg"><div id="tvlogo">Jellyfin</div></div></div>
-<img id="roombg-sleep" src="assets/room3-sleep.webp" alt="">
-<div id="daywin"></div>
+<div id="bgwrap"><img id="roombg" src="assets/room4-base.webp" alt=""><img id="roombg-off" src="assets/room4-lightoff.webp" alt=""><div id="tvwrap"><div id="tvimg"><div id="tvlogo">Jellyfin</div></div></div>
+<img id="roombg-sleep" src="assets/room4-sleep.webp" alt="">
+<div id="skyview"><img id="viewday" src="assets/view-day.webp" alt=""><img id="viewnight" src="assets/view-night.webp" alt=""><div class="mull" style="left:19.3%"></div><div class="mull" style="left:64%"></div><div class="mull" style="left:77.6%"></div><div class="mull" style="left:81.6%"></div></div>
 
 </div>
 <canvas id="c"></canvas>
@@ -260,8 +263,8 @@ window._lyra = { state: null, _sh: [], _jh: [],
     var z = document.createElement('span');
     z.className = 'zzz';
     z.textContent = 'Z';
-    z.style.left = (81 + Math.random() * 3) + '%';
-    z.style.top = (72 + Math.random() * 3) + '%';
+    z.style.left = (77 + Math.random() * 3) + '%';
+    z.style.top = (70 + Math.random() * 3) + '%';
     z.style.fontSize = (28 + Math.random() * 6) + 'px';
     z.addEventListener('animationend', function () { z.remove(); });
     layer.appendChild(z);
@@ -328,21 +331,25 @@ window._lyra.onState((s) => {
     var Jrise=Jnoon-(Jset-Jnoon);
     return {sunrise:fromJulian(Jrise), sunset:fromJulian(Jset)};
   }
-  var el = document.getElementById('daywin');
+  var el = document.getElementById('viewnight');
   function desired(){ var n=new Date(), t=getSunTimes(n); return (n>t.sunrise&&n<t.sunset); }
-  function apply(){ var d = desired(); window._isNight = !d; if (el) el.style.opacity = d ? '1' : '0'; }
+  function apply(){ var d = desired(); window._isNight = !d; if (el) el.style.opacity = d ? '0' : '1'; }
   apply();
   setInterval(apply, 60000);
 })();
 </script>
 <script>
-// Room state layers (2026-11-15; plates regenerated 2026-11-21
-// as room3 -- same room drawn with a clean TV screen slot, no
-// lamp or phone props): the painted room mirrors the real one.
-// lyra-web pushes the room state on the state channel: ceiling
-// light off -> the light-off plate; sleep mode -> the sleep
-// plate; and the painted TV follows the real TV (see the
-// applyTv block below).
+// Room state layers (2026-11-15; plates regenerated
+// 2026-11-21 as room4 -- modern room, old layout: big back
+// window, bed forward, TV on the right wall above the
+// dresser, clean screen slot, no lamp or phone props):
+// the painted room mirrors the real one. lyra-web pushes
+// the room state on the state channel: ceiling light off
+// -> the light-off plate; sleep mode -> the sleep plate;
+// the painted TV follows the real TV (applyTv below);
+// and the window's outside view is its OWN layer
+// (#skyview: day/night art crossfaded by SunCalc --
+// weather variants belong to that layer, not the plates).
 (function(){
   var off=document.getElementById('roombg-off'),
       slp=document.getElementById('roombg-sleep'),
@@ -361,7 +368,7 @@ window._lyra.onState((s) => {
   // while paused). Corners in % of frame: TL TR BR BL.
   var tvw=document.getElementById('tvwrap'), tvi=document.getElementById('tvimg'),
       tvl=document.getElementById('tvlogo'), tvItem=null;
-  var TVC=[[5.8,11.2],[25.8,23.2],[25.8,54.4],[5.8,59.2]];
+  var TVC=[[78.7,21.7],[94.3,11.5],[94.3,56.7],[78.7,50.5]];
   function adj(m){return [m[4]*m[8]-m[5]*m[7],m[2]*m[7]-m[1]*m[8],m[1]*m[5]-m[2]*m[4],
     m[5]*m[6]-m[3]*m[8],m[0]*m[8]-m[2]*m[6],m[2]*m[3]-m[0]*m[5],
     m[3]*m[7]-m[4]*m[6],m[1]*m[6]-m[0]*m[7],m[0]*m[4]-m[1]*m[3]];}
