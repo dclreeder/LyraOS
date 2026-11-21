@@ -301,5 +301,11 @@ if __name__ == '__main__':
     _dashboard.set_state_provider(_dashboard_state)
     _dash = _dashboard.make_server(8098)
     threading.Thread(target=_dash.serve_forever, daemon=True).start()
-    print('lyra-web on :8095 + dashboard on :8098', flush=True)
-    ThreadingHTTPServer(('0.0.0.0', 8095), H).serve_forever()
+    print('lyra-web on :8095 (loopback + LAN) + dashboard on :8098', flush=True)
+    # Local only (2026-11-20, Daniel: "Lyra is local only for now"):
+    # the TV viewer binds loopback + the LAN address, never 0.0.0.0,
+    # so nothing answers on the tailnet; the Tailscale Serve
+    # :443 -> :8095 entry was removed the same night.
+    _tv_lan = ThreadingHTTPServer(('192.168.12.144', 8095), H)
+    threading.Thread(target=_tv_lan.serve_forever, daemon=True).start()
+    ThreadingHTTPServer(('127.0.0.1', 8095), H).serve_forever()
