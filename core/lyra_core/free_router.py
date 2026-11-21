@@ -182,6 +182,10 @@ TOOL_SCHEMAS: list[dict] = [
     _fn("tv_set_volume", "Set the volume of the TV's own speakers. This is the television's volume, not the screen brightness.", {"percent": _PCT}, ["percent"]),
     _fn("tv_adjust_volume", "Change the TV's speaker volume by signed points.", {"delta_points": _DELTA}, ["delta_points"]),
     _fn("tv_get_volume", "Get the TV's current speaker volume.", {}, []),
+    _fn("jellyfin_find", "Search the Jellyfin media library for a movie or TV show by title. Returns the matching titles with type, year, and watched state.", {"query": {"type": "string", "description": "Title or part of a title to search for."}}, ["query"]),
+    _fn("jellyfin_play", "Play a movie or TV show from Jellyfin on the TV. Pass the title as the user named it. For a show, this plays the next unwatched episode or resumes the episode in progress.", {"title": {"type": "string", "description": "The movie or show title."}}, ["title"]),
+    _fn("jellyfin_control", "Control the Jellyfin playback on the TV.", {"action": {"type": "string", "enum": ["pause", "resume", "stop", "skip_forward", "skip_back"], "description": "pause, resume, stop, skip_forward (30 seconds ahead), or skip_back (15 seconds back)."}}, ["action"]),
+    _fn("jellyfin_status", "Report what Jellyfin is doing: what is playing on the TV and how far in, or what is in progress to continue watching.", {}, []),
 ]
 
 
@@ -496,6 +500,7 @@ class FreeRouter:
         weather,
         tv=None,
         tv_volume=None,
+        jellyfin=None,
         inbox=None,
         client=None,
     ) -> None:
@@ -506,6 +511,7 @@ class FreeRouter:
         self._weather = weather
         self._tv = tv
         self._tv_volume = tv_volume
+        self._jellyfin = jellyfin
         if client is None:
             api_key = _load_model_api_key(cfg)
             if not api_key:
@@ -813,4 +819,15 @@ class FreeRouter:
             return self._wrap(await self._tv_volume.adjust_volume(_as_int(args["delta_points"])))
         if name == "tv_get_volume":
             return self._wrap(await self._tv_volume.get_volume())
+        if name.startswith("jellyfin_"):
+            if self._jellyfin is None:
+                return {"ok": False, "result": "Jellyfin is not wired in this core.", "state": {}}
+            if name == "jellyfin_find":
+                return self._wrap(await self._jellyfin.find(str(args.get("query", ""))))
+            if name == "jellyfin_play":
+                return self._wrap(await self._jellyfin.play(str(args.get("title", ""))))
+            if name == "jellyfin_control":
+                return self._wrap(await self._jellyfin.control(str(args.get("action", ""))))
+            if name == "jellyfin_status":
+                return self._wrap(await self._jellyfin.status())
         return {"ok": False, "result": f"Unknown tool: {name}", "state": {}}

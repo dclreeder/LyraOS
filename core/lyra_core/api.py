@@ -64,6 +64,7 @@ from .audio_http import AudioHttpServer
 from .tools import (
     AlarmTool,
     ClockTool,
+    JellyfinTool,
     LightTool,
     ToolResult,
     TvTool,
@@ -149,6 +150,7 @@ class CoreApi:
         mode_get: ModeGetFn | None = None,
         tv: TvTool | None = None,
         tv_volume: TvVolumeTool | None = None,
+        jellyfin: JellyfinTool | None = None,
     ) -> None:
         self._http = http
         self._token = token
@@ -162,6 +164,7 @@ class CoreApi:
         self._mode_get = mode_get
         self._tv = tv
         self._tv_volume = tv_volume
+        self._jellyfin = jellyfin
         self._loop: asyncio.AbstractEventLoop | None = None
 
     async def start(self) -> None:
@@ -341,6 +344,24 @@ class CoreApi:
                     raise _BadRequest("args.delta_points (integer) is required")
                 return await self._tv_volume.adjust_volume(delta)
             raise _BadRequest(f"unknown tv_volume action: {action!r}")
+        if tool == "jellyfin":
+            if self._jellyfin is None:
+                raise _BadRequest("jellyfin is not wired in this core")
+            if action in (None, "status"):
+                return await self._jellyfin.status()
+            if action == "find":
+                query = args.get("query")
+                if not isinstance(query, str) or not query.strip():
+                    raise _BadRequest("args.query is required")
+                return await self._jellyfin.find(query.strip())
+            if action == "play":
+                title = args.get("title") or args.get("query")
+                if not isinstance(title, str) or not title.strip():
+                    raise _BadRequest("args.title is required")
+                return await self._jellyfin.play(title.strip())
+            if action in ("pause", "resume", "stop", "skip_forward", "skip_back"):
+                return await self._jellyfin.control(action)
+            raise _BadRequest(f"unknown jellyfin action: {action!r}")
         raise _BadRequest(f"unknown tool: {tool!r}")
 
     async def _light_state(self) -> ToolResult:

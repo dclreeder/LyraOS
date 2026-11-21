@@ -5,7 +5,7 @@ reports a ToolResult whose ``confirmation`` is the short spoken line
 (Decision D2) built from the ACTUAL outcome -- a readback that
 contradicts the command produces a sentence saying what really
 happened, never a success claim. The set is closed: light, tv brightness,
-tv volume, alarm, clock, weather. Nothing here can call anything outside it
+tv volume, alarm, clock, weather, jellyfin. Nothing here can call anything outside it
 (the Companion lesson: a deterministic router cannot bluff, and
 neither can its tools).
 
@@ -25,8 +25,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import subprocess
+import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -571,3 +575,549 @@ class WeatherTool:
             _LOGGER.warning("weather fetch/digest failed: %s", exc)
             return ToolResult(False, "I couldn't get the weather.")
         return ToolResult(True, text, {})
+
+
+# ---------------------------------------------------------------------------
+# Jellyfin (local server + the Desktop client on this machine)
+# ---------------------------------------------------------------------------
+
+JELLYFIN_BASE = "http://127.0.0.1:8097"
+JELLYFIN_ENV = Path("~/Documents/APIKeys/.env").expanduser()
+JELLYFIN_TV_OUTPUT = "HDMI-A-1"
+_TICKS_PER_SECOND = 10_000_000
+
+# One-shot window mover: the tool spawns the listener, loads the
+# script into KWin, and the script moves the Jellyfin client window
+# to the TV output, fullscreens it, and reports back through the
+# listener. Nothing stays running afterward -- this is a function
+# call, not a background sorter (the standing guard script was
+# deleted at Daniel's order on 2026-11-21 and stays deleted).
+_MOVER_LISTENER = '''
+import sys
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+xml = (
+    '<node><interface name="org.lyra.JellyfinMove">'
+    '<method name="Report">'
+    '<arg type="s" name="text" direction="in"/>'
+    '</method></interface></node>'
+)
+node = Gio.DBusNodeInfo.new_for_xml(xml)
+out_path = sys.argv[1]
+loop = GLib.MainLoop()
+
+def on_call(conn, sender, path, iface, method, params, invocation):
+    with open(out_path, "w") as fh:
+        fh.write(params.unpack()[0])
+    invocation.return_value(None)
+
+def on_acquired(conn, name):
+    conn.register_object("/Move", node.interfaces[0], on_call, None, None)
+    if len(sys.argv) > 2:
+        with open(sys.argv[2], "w") as fh:
+            fh.write("ready")
+
+Gio.bus_own_name(Gio.BusType.SESSION, "org.lyra.JellyfinMove",
+                 Gio.BusNameOwnerFlags.NONE, None, on_acquired, None)
+GLib.timeout_add_seconds(15, loop.quit)
+loop.run()
+'''
+
+_MOVER_JS = """
+var wins = workspace.windowList();
+var report = 'no-window';
+for (var i = 0; i < wins.length; i++) {
+  var w = wins[i];
+  var cls = (w.resourceClass || '').toLowerCase();
+  if (cls.indexOf('jellyfin') < 0) continue;
+  var screens = workspace.screens;
+  var target = null;
+  for (var j = 0; j < screens.length; j++) {
+    if (screens[j].name === 'HDMI-A-1') { target = screens[j]; break; }
+  }
+  if (target) {
+    workspace.sendClientToScreen(w, target);
+    try { w.fullScreen = true; } catch (e) {}
+    report = 'moved';
+  } else {
+    report = 'no-tv-output';
+  }
+  break;
+}
+callDBus('org.lyra.JellyfinMove', '/Move', 'org.lyra.JellyfinMove', 'Report', report);
+"""
+
+
+def _jellyfin_key() -> str | None:
+    """The Jellyfin API key from Daniel's central APIKeys .env.
+    Read fresh on every call so a rotation never needs a core
+    restart; the value lives only in memory, never logged."""
+    try:
+        lines = JELLYFIN_ENV.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):]
+        if line.startswith("JELLYFIN_API_KEY="):
+            value = line.split("=", 1)[1].strip().strip('"').strip("'")
+            return value or None
+    return None
+
+
+def _jf_request(method: str, path: str, key: str,
+                params: dict | None = None) -> tuple[int, object]:
+    url = JELLYFIN_BASE + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, method=method)
+    # Jellyfin 12 takes API keys ONLY in the Authorization header;
+    # X-Emby-Token gets a 401 (learned 2026-11-21).
+    req.add_header("Authorization", f'MediaBrowser Token="{key}"')
+    try:
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            raw = resp.read().decode()
+            return resp.status, (json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+    except Exception:
+        return 0, None
+
+
+def _ticks_clock(ticks) -> str:
+    secs = int((ticks or 0) // _TICKS_PER_SECOND)
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _item_label(item: dict) -> str:
+    name = item.get("Name") or "unknown title"
+    if item.get("Type") == "Episode":
+        series = item.get("SeriesName") or ""
+        s = item.get("ParentIndexNumber")
+        e = item.get("IndexNumber")
+        ep = f" S{s}E{e}" if s is not None and e is not None else ""
+        return f"{series}{ep}: {name}" if series else name
+    year = item.get("ProductionYear")
+    return f"{name} ({year})" if year else name
+
+
+def _watched_note(item: dict) -> str:
+    ud = item.get("UserData") or {}
+    if ud.get("Played"):
+        return "watched"
+    unplayed = ud.get("UnplayedItemCount")
+    if isinstance(unplayed, int) and unplayed > 0:
+        return f"{unplayed} unwatched"
+    if (ud.get("PlaybackPositionTicks") or 0) > 0:
+        return "in progress"
+    return "unwatched"
+
+
+class JellyfinTool:
+    """Jellyfin on the TV. The server runs on this machine
+    (127.0.0.1:8097); the player is the Jellyfin Desktop client on
+    this machine, launched on demand, moved to the TV output, and
+    driven through the server's session API. Every outcome is
+    verified against the session's own report (NowPlayingItem /
+    PlayState) before it is claimed -- a command having been sent
+    is never treated as proof it happened. Playback runs through
+    the machine's default audio like everything else of hers, so
+    pausing the movie to hear a command is an ordinary control
+    call."""
+
+    CLIENT_APP = "org.jellyfin.JellyfinDesktop"
+    CLIENT_NAME = "Jellyfin Desktop"
+    _PLAYABLE = ("Movie", "Series", "Episode")
+
+    def __init__(self) -> None:
+        self._user_id: str | None = None
+
+    # -- plumbing ----------------------------------------------------
+
+    async def _call(self, method: str, path: str,
+                    params: dict | None = None) -> tuple[int, object]:
+        key = _jellyfin_key()
+        if not key:
+            _LOGGER.warning("jellyfin: no API key in %s", JELLYFIN_ENV)
+            return 0, None
+        return await asyncio.to_thread(_jf_request, method, path, key, params)
+
+    async def _primary_user_id(self) -> str | None:
+        if self._user_id:
+            return self._user_id
+        code, data = await self._call("GET", "/Users")
+        if code == 200 and isinstance(data, list) and data:
+            self._user_id = data[0].get("Id")
+        return self._user_id
+
+    async def _sessions(self) -> list:
+        code, data = await self._call("GET", "/Sessions")
+        if code != 200 or not isinstance(data, list):
+            return []
+        return data
+
+    async def _desktop_session(self) -> dict | None:
+        for sess in await self._sessions():
+            if (sess.get("Client") == self.CLIENT_NAME
+                    and sess.get("SupportsRemoteControl")):
+                return sess
+        return None
+
+    async def _search(self, query: str) -> list[dict] | None:
+        """Playable library matches, or None when the server call
+        itself failed (unreachable / unauthorized)."""
+        params: dict = {
+            "SearchTerm": query, "Recursive": "true", "Limit": 10,
+        }
+        uid = await self._primary_user_id()
+        if uid:
+            params["UserId"] = uid
+        code, data = await self._call("GET", "/Items", params)
+        if code != 200 or not isinstance(data, dict):
+            return None
+        return [i for i in data.get("Items") or []
+                if i.get("Type") in self._PLAYABLE]
+
+    # -- find ----------------------------------------------------------
+
+    async def find(self, query: str) -> ToolResult:
+        query = (query or "").strip()
+        if not query:
+            return ToolResult(False, "rejected: no search title given", {})
+        matches = await self._search(query)
+        if matches is None:
+            return ToolResult(False, "rejected: jellyfin server unreachable", {})
+        if not matches:
+            return ToolResult(True, f'jellyfin search "{query}": no matches',
+                              {"matches": []})
+        lines = [f'jellyfin search "{query}": {len(matches)} match(es)']
+        brief = []
+        for item in matches:
+            kind = (item.get("Type") or "").lower()
+            lines.append(
+                f"- {_item_label(item)}, {kind}, {_watched_note(item)}")
+            brief.append({
+                "id": item.get("Id"), "name": item.get("Name"),
+                "type": item.get("Type"),
+                "year": item.get("ProductionYear"),
+            })
+        return ToolResult(True, "\n".join(lines), {"matches": brief})
+
+    # -- play ----------------------------------------------------------
+
+    def _resolve(self, matches: list[dict], title: str) -> dict | None:
+        want = title.strip().lower()
+        for item in matches:
+            if (item.get("Name") or "").strip().lower() == want:
+                return item
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    async def _next_episode(self, series: dict) -> dict | None:
+        uid = await self._primary_user_id()
+        if not uid:
+            return None
+        code, data = await self._call("GET", "/Shows/NextUp", {
+            "UserId": uid, "SeriesId": series.get("Id"), "Limit": 1,
+        })
+        if code == 200 and isinstance(data, dict):
+            items = data.get("Items") or []
+            if items:
+                return items[0]
+        # NextUp keys off the last-played episode, so a series
+        # whose finale is played but early episodes are not
+        # (Daniel's Seven Havens: E4-E12 played, E1-E3 not)
+        # returns nothing. Fall back to the episode list: an
+        # in-progress episode first, else the first unplayed.
+        code, data = await self._call("GET", "/Items", {
+            "ParentId": series.get("Id"), "Recursive": "true",
+            "IncludeItemTypes": "Episode", "UserId": uid,
+            "SortBy": "ParentIndexNumber,IndexNumber", "Limit": 50,
+        })
+        if code == 200 and isinstance(data, dict):
+            episodes = data.get("Items") or []
+            for ep in episodes:
+                ud = ep.get("UserData") or {}
+                if not ud.get("Played") and (ud.get("PlaybackPositionTicks") or 0) > 0:
+                    return ep
+            for ep in episodes:
+                if not (ep.get("UserData") or {}).get("Played"):
+                    return ep
+        return None
+
+    async def play(self, title: str) -> ToolResult:
+        title = (title or "").strip()
+        if not title:
+            return ToolResult(False, "rejected: no title given", {})
+        matches = await self._search(title)
+        if matches is None:
+            return ToolResult(False, "rejected: jellyfin server unreachable", {})
+        if not matches:
+            return ToolResult(
+                False, f'jellyfin: nothing in the library matches "{title}"', {})
+        item = self._resolve(matches, title)
+        if item is None:
+            names = "; ".join(
+                f"{_item_label(m)} ({(m.get('Type') or '').lower()})"
+                for m in matches[:4])
+            return ToolResult(
+                False, f'jellyfin: several matches for "{title}": {names}', {})
+        target = item
+        if item.get("Type") == "Series":
+            target = await self._next_episode(item)
+            if target is None:
+                return ToolResult(
+                    False,
+                    f"jellyfin: no unwatched episode of {_item_label(item)}", {})
+        session, screen = await self._ensure_session()
+        if session is None:
+            return ToolResult(
+                False, "rejected: jellyfin player did not start", {})
+        params: dict = {"ItemIds": target.get("Id"), "PlayCommand": "PlayNow"}
+        start = (target.get("UserData") or {}).get("PlaybackPositionTicks") or 0
+        if start > 0:
+            params["StartPositionTicks"] = start
+        # The Playing endpoint takes its arguments as query
+        # parameters; a JSON body fails validation (400).
+        code, _ = await self._call(
+            "POST", f"/Sessions/{session['Id']}/Playing", params)
+        if code not in (200, 204):
+            return ToolResult(
+                False, f"rejected: jellyfin refused the play command ({code})", {})
+        label = _item_label(target)
+        for _ in range(6):
+            await asyncio.sleep(1.0)
+            sess = await self._desktop_session()
+            npi = (sess or {}).get("NowPlayingItem") or {}
+            if npi.get("Id") == target.get("Id"):
+                where = " on the TV" if screen == "tv" else ""
+                return ToolResult(
+                    True, f"jellyfin playing: {label}{where}",
+                    {"playing": label, "item_id": target.get("Id"),
+                     "screen": screen})
+        return ToolResult(
+            False, "rejected: jellyfin did not start playing", {})
+
+    async def _ensure_session(self) -> tuple[dict | None, str]:
+        """The Desktop client's session, launching the client first
+        when needed. Returns (session, screen): screen is 'tv' when
+        the client's move to the TV output was verified by the
+        mover's report, else 'unconfirmed'."""
+        session = await self._desktop_session()
+        if session is None:
+            env = dict(os.environ)
+            env.setdefault("WAYLAND_DISPLAY", "wayland-1")
+            env.setdefault("DISPLAY", ":0")
+            try:
+                subprocess.Popen(
+                    ["flatpak", "run", self.CLIENT_APP],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True, env=env,
+                )
+            except Exception as exc:
+                _LOGGER.warning("jellyfin client launch failed: %s", exc)
+                return None, "launch-failed"
+            for _ in range(30):
+                await asyncio.sleep(1.5)
+                session = await self._desktop_session()
+                if session is not None:
+                    break
+            if session is None:
+                return None, "no-session"
+        screen = await self._move_to_tv()
+        return session, screen
+
+    async def _move_to_tv(self) -> str:
+        try:
+            return await asyncio.to_thread(self._move_to_tv_sync)
+        except Exception as exc:
+            _LOGGER.warning("jellyfin move failed: %s", exc)
+            return "unconfirmed"
+
+    def _move_to_tv_sync(self) -> str:
+        report = Path("/tmp/lyra_jellyfin_move.txt")
+        ready = Path("/tmp/lyra_jellyfin_ready.txt")
+        listener_src = Path("/tmp/lyra_jellyfin_listener.py")
+        mover_js = Path("/tmp/lyra_jellyfin_mover.js")
+        for stale in (report, ready):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        listener_src.write_text(_MOVER_LISTENER)
+        mover_js.write_text(_MOVER_JS)
+        listener = subprocess.Popen(
+            # System python, NOT sys.executable: the core runs on
+            # a venv without PyGObject and the listener needs gi
+            # (the first version died on that import, so every
+            # move reported 'unconfirmed', 2026-11-21).
+            ["/usr/bin/python3", str(listener_src), str(report), str(ready)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            # Wait until the listener actually owns its bus name:
+            # a fixed sleep races the script's report and loses it
+            # (the first live play moved the window to the TV but
+            # the report went nowhere, 2026-11-21).
+            deadline = time.time() + 5
+            while not ready.exists() and time.time() < deadline:
+                time.sleep(0.2)
+            if not ready.exists():
+                return "unconfirmed"
+            bus = ["busctl", "--user", "call", "org.kde.KWin", "/Scripting",
+                   "org.kde.kwin.Scripting"]
+            subprocess.run(
+                bus + ["loadScript", "ss", str(mover_js), "jellyfinmove"],
+                capture_output=True, timeout=8)
+            result = "unconfirmed"
+            for attempt in range(2):
+                subprocess.run(bus + ["start"], capture_output=True, timeout=8)
+                text = None
+                deadline = time.time() + (8 if attempt == 0 else 5)
+                while time.time() < deadline:
+                    if report.exists():
+                        text = report.read_text().strip()
+                        break
+                    time.sleep(0.4)
+                if text == "moved":
+                    result = "tv"
+                    break
+                if text is not None and text != "no-window":
+                    break  # a definitive report (e.g. no-tv-output)
+                try:
+                    report.unlink()
+                except OSError:
+                    pass
+                time.sleep(2)
+            # Leave nothing loaded behind: a resident mover would
+            # be a background sorter by another name.
+            subprocess.run(
+                bus + ["unloadScript", "s", "jellyfinmove"],
+                capture_output=True, timeout=8)
+            return result
+        finally:
+            try:
+                listener.terminate()
+            except Exception:
+                pass
+            for path in (listener_src, mover_js, report, ready):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+    # -- control ---------------------------------------------------------
+
+    async def control(self, action: str) -> ToolResult:
+        action = (action or "").strip().lower()
+        session = await self._desktop_session()
+        if session is None:
+            return ToolResult(
+                False, "rejected: jellyfin player is not running", {})
+        sid = session["Id"]
+        npi = session.get("NowPlayingItem") or {}
+        label = npi.get("Name")
+        if action == "stop":
+            if not label:
+                return ToolResult(False, "rejected: nothing is playing", {})
+            code, _ = await self._call("POST", f"/Sessions/{sid}/Playing/Stop")
+            if code not in (200, 204):
+                return ToolResult(
+                    False, f"rejected: jellyfin refused stop ({code})", {})
+            await asyncio.sleep(1.0)
+            sess = await self._desktop_session()
+            if not (sess or {}).get("NowPlayingItem"):
+                return ToolResult(True, f"jellyfin stopped: {label}", {})
+            return ToolResult(False, "rejected: jellyfin is still playing", {})
+        if action in ("pause", "resume"):
+            if not label:
+                return ToolResult(False, "rejected: nothing is playing", {})
+            verb = "Pause" if action == "pause" else "Unpause"
+            code, _ = await self._call(
+                "POST", f"/Sessions/{sid}/Playing/{verb}")
+            if code not in (200, 204):
+                return ToolResult(
+                    False, f"rejected: jellyfin refused {action} ({code})", {})
+            await asyncio.sleep(1.0)
+            sess = await self._desktop_session()
+            paused = ((sess or {}).get("PlayState") or {}).get("IsPaused")
+            if action == "pause" and paused is True:
+                return ToolResult(True, f"jellyfin paused: {label}", {})
+            if action == "resume" and paused is False:
+                return ToolResult(True, f"jellyfin playing: {label}", {})
+            return ToolResult(
+                False, f"rejected: jellyfin {action} unconfirmed", {})
+        if action in ("skip_forward", "skip_back"):
+            if not label:
+                return ToolResult(False, "rejected: nothing is playing", {})
+            play_state = session.get("PlayState") or {}
+            pos = play_state.get("PositionTicks") or 0
+            delta_s = 30 if action == "skip_forward" else -15
+            target = max(0, pos + delta_s * _TICKS_PER_SECOND)
+            code, _ = await self._call(
+                "POST", f"/Sessions/{sid}/Playing/Seek",
+                {"SeekPositionTicks": int(target)})
+            if code not in (200, 204):
+                return ToolResult(
+                    False, f"rejected: jellyfin refused seek ({code})", {})
+            await asyncio.sleep(1.0)
+            sess = await self._desktop_session()
+            new_pos = ((sess or {}).get("PlayState") or {}).get("PositionTicks")
+            runtime = npi.get("RunTimeTicks")
+            if new_pos is not None and abs(new_pos - target) < 15 * _TICKS_PER_SECOND:
+                direction = "forward" if delta_s > 0 else "back"
+                return ToolResult(
+                    True,
+                    f"jellyfin skipped {direction}: at {_ticks_clock(new_pos)}"
+                    f" of {_ticks_clock(runtime)}",
+                    {"position_ticks": new_pos})
+            return ToolResult(False, "rejected: jellyfin seek unconfirmed", {})
+        return ToolResult(False, f"rejected: unknown jellyfin action {action!r}", {})
+
+    # -- status ----------------------------------------------------------
+
+    async def _resume_lines(self) -> list[str]:
+        uid = await self._primary_user_id()
+        if not uid:
+            return []
+        code, data = await self._call(
+            "GET", f"/Users/{uid}/Items/Resume",
+            {"UserId": uid, "Limit": 3})
+        if code != 200 or not isinstance(data, dict):
+            return []
+        lines = []
+        for item in data.get("Items") or []:
+            ud = item.get("UserData") or {}
+            pct = ud.get("PlayedPercentage")
+            note = f", {int(round(pct))}% watched" if pct else ""
+            lines.append(f"- continue: {_item_label(item)}{note}")
+        return lines
+
+    async def status(self) -> ToolResult:
+        session = await self._desktop_session()
+        if session is not None:
+            npi = session.get("NowPlayingItem") or {}
+            if npi.get("Name"):
+                play_state = session.get("PlayState") or {}
+                pos = play_state.get("PositionTicks")
+                runtime = npi.get("RunTimeTicks")
+                mode = "paused" if play_state.get("IsPaused") else "playing"
+                return ToolResult(
+                    True,
+                    f"jellyfin now playing: {_item_label(npi)} -- "
+                    f"{_ticks_clock(pos)} of {_ticks_clock(runtime)}, {mode}",
+                    {"playing": npi.get("Name"),
+                     "paused": bool(play_state.get("IsPaused"))})
+            lines = ["jellyfin: player open, nothing playing"]
+            state: dict = {"playing": None}
+        else:
+            lines = ["jellyfin: player not running"]
+            state = {"playing": None}
+        lines.extend(await self._resume_lines())
+        return ToolResult(True, "\n".join(lines), state)

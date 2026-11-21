@@ -81,6 +81,7 @@ from .sink_ring import SinkRinger
 from .tools import (
     AlarmTool,
     ClockTool,
+    JellyfinTool,
     LightTool,
     TvTool,
     TvVolumeTool,
@@ -361,6 +362,7 @@ async def amain() -> int:
         cfg.router.weather_longitude,
         cfg.router.timezone,
     )
+    jellyfin_tool = JellyfinTool()
     router = FreeRouter(
         cfg.router,
         light=light_tool,
@@ -369,6 +371,7 @@ async def amain() -> int:
         weather=weather_tool,
         tv=tv_tool,
         tv_volume=tv_volume_tool,
+        jellyfin=jellyfin_tool,
     )
     session._on_command = router.handle
     _LOGGER.info("FREE MODE live: %s", router.describe())
@@ -421,6 +424,7 @@ async def amain() -> int:
         mode_get=_mode_get,
         tv=tv_tool,
         tv_volume=tv_volume_tool,
+        jellyfin=jellyfin_tool,
     )
     await session.start()
     try:
