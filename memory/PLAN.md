@@ -25,7 +25,7 @@ Everything durable traces back to an append-only record that code writes and not
 - **L1 — Claims (durable facts).** The curator extracts discrete claims: subject entity, relation, object, the source quote with a pointer into the record (an inbox line, a notebook entry, or a source passage), date learned, confidence, salience, and an optional validity window (some facts expire). A correction creates a new claim that *supersedes* the old one; the chain is preserved, never edited away.
 - **L2 — Entities.** People, places, and things get pages (plain markdown, portable). Facts hang off entities; this is where cross-fact connections live (the two-hop problem: Daniel → works at → Stuart Jones Electric → located in → Jacksonville). Entity resolution — noticing two mentions are the same thing — is an explicit, named job of the curator.
 - **Embeddings + vector index.** Claims, entity pages, and source chunks are embedded when written (and a query is embedded at lookup time) by the embedding model served beside the stack — the single-instance rule applies to it like every shared service. The model is NVIDIA's Nemotron-3.5-Embed-1B (Daniel, 2026-11-21), run at BF16 — deliberately not quantized: an embedding is a permanent artifact that every future match depends on, quantization noise would be baked into the index forever, and at ~2.2 GB for the text tower the saving buys nothing. Text tower only — the vision projector is not loaded (embedding document images as sources is a possible future, not this plan). The GGUF is converted from NVIDIA's official BF16 checkpoint with llama.cpp's own converter, keeping the sourcing rule clean. The vectors live with the store (SQLite alongside the claim index; portable, inspectable, no external service). Retrieval is hybrid: vector similarity for meaning, keyword/entity match for exact names, merged before anything reaches her.
-- **Maybe a graph.** Claims are already (subject, relation, object) triples, so the store is a graph in embryo: entities are nodes, claims are edges, and a two-hop question is a walk. Whether that walk needs a dedicated graph structure or is served well enough by the claim index plus entity pages is an open decision (below) — the triples keep both options open, which is the point of storing them that way.
+- **A graph in shape, not in store (decided, Daniel, 2026-11-21).** Claims are (subject, relation, object) triples tied to stable entity IDs, so the store IS a graph from day one: entities are nodes, claims are edges, and multi-hop questions are answered by walking the claim index (chained lookups) plus the entity pages. No dedicated graph database: at this scale a walk is graph traversal in substance, and a second store would be a copy of the truth that can drift. If walks ever get slow or shallow, a graph store can be generated from the triples later without re-curating a single claim.
 
 ## Her view — L3 state card, L4 runtime state
 
@@ -97,11 +97,10 @@ Explicitly **not** in this plan: the live model curating itself; fine-tuning/LoR
 
 _The sweep list. Each gets decided, folded into the body above, and struck from here. When this list is empty, the plan is ready to build — and building still waits for Daniel's word._
 
-1. **Graph:** a dedicated graph structure for the claim triples, or walks over the claim index + entity pages?
-2. **Claim-store machinery:** how much to borrow from Muse's stack vs keep simpler and files-first.
-3. **State card budget:** is ~800 tokens the right cap?
-4. **Ambient injection tuning:** the relevance bar and the per-turn cap — set values now, or calibrate at build time against real claims?
-5. **Curation report:** where Daniel reads it — a file, the dashboard, a spoken morning summary?
-6. **Memory on the Muse brain:** when the dashboard brain switch is set to Muse, do the state card, ambient injection, and lookup apply to those turns too — and how, given that path takes no tool calls?
-7. **Correction-detection backup:** the running brain's judgment files the correction notes — should code also flag candidate corrections from the day's transcript for the curator to check, as a safety net?
-8. **Upload limits:** file types and size caps for the source spot.
+1. **Claim-store machinery:** how much to borrow from Muse's stack vs keep simpler and files-first.
+2. **State card budget:** is ~800 tokens the right cap?
+3. **Ambient injection tuning:** the relevance bar and the per-turn cap — set values now, or calibrate at build time against real claims?
+4. **Curation report:** where Daniel reads it — a file, the dashboard, a spoken morning summary?
+5. **Memory on the Muse brain:** when the dashboard brain switch is set to Muse, do the state card, ambient injection, and lookup apply to those turns too — and how, given that path takes no tool calls?
+6. **Correction-detection backup:** the running brain's judgment files the correction notes — should code also flag candidate corrections from the day's transcript for the curator to check, as a safety net?
+7. **Upload limits:** file types and size caps for the source spot.
