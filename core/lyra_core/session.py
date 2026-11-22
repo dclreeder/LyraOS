@@ -157,7 +157,12 @@ class VoiceSession:
         on_event: EventHook | None = None,
         endpointer: Endpointer | None = None,
         preroll_s: float = 0.5,
-        no_speech_timeout_s: float = 6.0,
+        # 3.0 since 2026-11-21 (Daniel's order): a false wake's
+        # Listening window and a real command's start window are
+        # the same timer; 6 s of pink after every stray "thank
+        # you" was too long, and a real command starts well
+        # inside 3 s of the wake phrase.
+        no_speech_timeout_s: float = 3.0,
         max_capture_s: float = 30.0,
         verify_gate=None,
         on_command: Callable[[str], object] | None = None,

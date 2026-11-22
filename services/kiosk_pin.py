@@ -97,7 +97,7 @@ try {
   for (var i = 0; i < wins.length; i++) {
     var w = wins[i];
     try {
-      if ((w.resourceClass || '').toLowerCase() !== 'lyra-kiosk') continue;
+      var rc = (w.resourceClass || '').toLowerCase(); if (rc !== 'lyra-kiosk' && !(rc === 'google-chrome' && (w.caption || '').indexOf('Lyra') === 0)) continue;
       var target = null;
       var screens = workspace.screens;
       for (var j = 0; j < screens.length; j++) {
@@ -129,7 +129,7 @@ try {
   for (var i = 0; i < wins.length; i++) {
     var w = wins[i];
     try {
-      if ((w.resourceClass || '').toLowerCase() !== 'lyra-kiosk') continue;
+      var rc = (w.resourceClass || '').toLowerCase(); if (rc !== 'lyra-kiosk' && !(rc === 'google-chrome' && (w.caption || '').indexOf('Lyra') === 0)) continue;
       report = 'at=' + (w.output ? w.output.name : '?')
         + ' fs=' + (w.fullScreen ? 'true' : 'false');
       break;

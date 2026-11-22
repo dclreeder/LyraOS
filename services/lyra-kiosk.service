@@ -1,10 +1,9 @@
 [Unit]
-Description=Lyra on the TV (Firefox kiosk, web viewer)
+Description=Lyra on the TV (Chrome kiosk, web viewer)
 After=graphical-session.target lyra-web.service
 [Service]
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=MOZ_ENABLE_WAYLAND=1
-ExecStart=/usr/sbin/firefox --name lyra-kiosk --profile /home/dclreeder/.lyra-kiosk-profile --kiosk http://127.0.0.1:8095/
+ExecStart=/usr/sbin/google-chrome --kiosk http://127.0.0.1:8095/ --user-data-dir=/home/dclreeder/.lyra-kiosk-chrome-profile --password-store=basic --no-first-run --no-default-browser-check --autoplay-policy=no-user-gesture-required --disable-gpu-rasterization
 ExecStartPost=-/usr/bin/python3 /home/dclreeder/Documents/LyraOS/services/kiosk_pin.py
 Restart=on-failure
 RestartSec=3

@@ -5,15 +5,17 @@ This client fills the client seat VoiceSession and the alarm were
 built against (the surface the old box clients exposed) -- but
 there is no satellite hardware anywhere in the path:
 
-- Ears: a PipeWire capture (parecord) of the RAW ReSpeaker
-  source, pinned by node name (see RAW_SOURCE below). This is a
-  deliberate exception to the follow-the-default rule, ordered
-  2026-11-19: Fedora's default source is the echo-cancelled
-  feed, and the canceller's residual-echo suppressor
-  intermittently gates the wake phrase on it, breaking this
-  session's transcript-verify. WakeGate hears raw; the
-  echo-cancelled feed stays the default source for everything
-  else. Audio reaches the session in the pipeline's contract
+- Ears: a PipeWire capture (parecord) of the echo-cancelled
+  source, pinned by node name (see CAPTURE_SOURCE below).
+  Ordered 2026-11-21 by Daniel, reversing the 2026-11-19 raw
+  pin: the canceller's whole point is that playback through
+  Fedora (a video, her own voice) is subtracted from the mic,
+  so it cannot garble what he says to her mid-conversation.
+  The 2026-11-19 warning stands as a known risk, not a veto:
+  the canceller's residual-echo suppressor intermittently
+  gated the wake phrase back then, breaking transcript-verify
+  as a ~50% coin flip; if verify regresses, this pin is the
+  first suspect. Audio reaches the session in the pipeline's contract
   format -- 16 kHz / 16-bit / mono -- in 20 ms chunks, the
   shape the box's frames arrive in.
 - Voice: nothing plays into a microphone. Her replies already
@@ -61,21 +63,21 @@ StopCallback = Callable[[bool], Awaitable[None]]
 RATE, WIDTH, CHANNELS = 16000, 2, 1
 CHUNK_BYTES = RATE * WIDTH * CHANNELS * 20 // 1000  # 20 ms per chunk
 
-# --device pins the capture to the raw ReSpeaker source
-# (2026-11-19, Daniel's order -- the feed split). This capture
-# is WakeGate's only ears: the wake gate, the transcript-verify
-# and the command STT all consume this one stream. On the
-# echo-cancelled feed (Fedora's default source) the WebRTC
-# canceller's residual-echo suppressor intermittently mutes the
-# wake phrase mid-phrase when it loses sync between the HDMI
-# playback reference and this USB mic, and verify dropped live
-# attempts as a ~50% coin flip; the raw feed passed verify
-# cleanly for months before the AEC existed. Do not "fix" this
-# back to the default source -- the pin is the fix. The
-# echo-cancelled feed remains the default source for every
-# other consumer (RTC, the call page), and output still follows
-# the default sink: the OS is the router (Daniel's rule,
-# 2026-11-16) everywhere except this one pinned capture.
+# --device pins the capture to the echo-cancelled source
+# (2026-11-21, Daniel's order -- reversing the 2026-11-19 raw
+# pin). This capture is WakeGate's only ears: the wake gate,
+# the transcript-verify and the command STT all consume this
+# one stream. The echo-cancelled feed is Fedora's default
+# source (PipeWire's WebRTC canceller, reference = the default
+# sink's monitor), so anything Fedora plays is subtracted
+# from what she hears. Known risk carried over from the raw
+# pin's record: the canceller's residual-echo suppressor
+# intermittently muted the wake phrase when it lost sync
+# between the HDMI playback reference and the USB mic, and
+# verify dropped live attempts as a ~50% coin flip in Nov 19
+# testing; the raw feed passed verify cleanly in the same
+# tests. Daniel ordered the flip anyway for clean
+# conversation over playback; watch verify after this change.
 # --raw with NO file argument writes headerless s16le PCM to
 # stdout (a "-" argument would be a literal file).
 # --latency-msec is load-bearing (2026-11-18): without it the
@@ -87,13 +89,10 @@ CHUNK_BYTES = RATE * WIDTH * CHANNELS * 20 // 1000  # 20 ms per chunk
 # light exposed it, showing "listening" only after Daniel had
 # already spoken. 50 ms keeps the feed effectively live; the
 # pump re-slices to 20 ms chunks regardless of fragment size.
-RAW_SOURCE = (
-    "alsa_input.usb-Seeed_Studio_reSpeaker_XVF3800_"
-    "4-Mic_Array_100070894262500433-00.analog-stereo"
-)
+CAPTURE_SOURCE = "lyra-echo-cancelled-mic"
 CAPTURE_CMD = (
     "parecord", "--raw", "--format=s16le", "--rate=16000",
-    "--channels=1", "--latency-msec=50", f"--device={RAW_SOURCE}",
+    "--channels=1", "--latency-msec=50", f"--device={CAPTURE_SOURCE}",
 )
 PLAY_CMD = ("pw-cat", "--playback")
 
@@ -124,7 +123,7 @@ class LocalMicClient:
         # capture_cmd is a test seam (the bench feeds a paced file);
         # production always uses CAPTURE_CMD.
         self._capture_cmd = tuple(capture_cmd) if capture_cmd else CAPTURE_CMD
-        self.device_name: str | None = "localmic (ReSpeaker raw source)"
+        self.device_name: str | None = "localmic (echo-cancelled source)"
         self.entity_count: int | None = None  # no entities here
         self._proc: asyncio.subprocess.Process | None = None
         self._pump_task: asyncio.Task | None = None
@@ -145,7 +144,7 @@ class LocalMicClient:
         await asyncio.sleep(0.5)
         if not self.is_connected:
             raise NotConnectedError("localmic capture failed to start")
-        _LOGGER.info("localmic connected (ReSpeaker raw source)")
+        _LOGGER.info("localmic connected (echo-cancelled source)")
 
     async def disconnect(self) -> None:
         if self._pump_task is not None:
