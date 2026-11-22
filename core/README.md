@@ -9,9 +9,9 @@ then stop lyra-core.service. Production runs as the user service
 
     python -m lyra_core.production_main
 
-under the ESPHome venv interpreter
-(`~/Documents/esphome-probe/venv/bin/python`) with `~/lyra-core` on
-PYTHONPATH.
+under the in-tree venv interpreter
+(`~/Documents/LyraOS/core/venv/bin/python`), with this directory as
+the service's working directory.
 
 ## What runs
 
@@ -70,7 +70,7 @@ PYTHONPATH.
   pending-detection registry entry — the id the session held from
   the moment the gate fired — so no turn is ever filed twice.
 - `lyra_core/router.py` — the LLM router: the shared local LLM
-  (lyra-llm, Qwen3-4B-Instruct-2507) classifies each verified
+  (lyra-llm, Nemotron Nano 9B v2) classifies each verified
   command into a closed set of 17 intents under a JSON-schema
   grammar; slots are re-validated in the router, and routed
   commands run the readback-verified tools in `tools.py` (light /
