@@ -1,0 +1,13 @@
+[Unit]
+Description=Parakeet TDT 0.6B v2 transcription server (standalone eval, not part of LyraOS)
+After=network.target
+
+[Service]
+WorkingDirectory=/home/dclreeder/Documents/parakeet.cpp
+Environment=PARAKEET_DEVICE=Vulkan0
+ExecStart=/bin/bash -c 'set -o pipefail; /home/dclreeder/Documents/parakeet.cpp/build/examples/server/parakeet-server --model /home/dclreeder/Documents/parakeet.cpp/models/tdt-0.6b-v2-q8_0.gguf --host 127.0.0.1 --port 8096 2>&1 | tee -a /home/dclreeder/Documents/parakeet.cpp/parakeet.log'
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
