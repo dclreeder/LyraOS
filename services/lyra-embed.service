@@ -3,7 +3,7 @@ Description=Lyra memory embeddings (Nemotron-3.5-Embed-1B BF16, text tower only)
 After=network.target
 
 [Service]
-ExecStart=/home/dclreeder/Documents/LyraOS/modules/llm/llama.cpp/build/bin/llama-server -m /home/dclreeder/Documents/LyraOS/data/models/nvidia_Nemotron-3.5-Embed-1B-BF16.gguf --host 127.0.0.1 --port 8092 --embedding --pooling mean -ngl 99 -c 8192 --alias nemotron-3.5-embed-1b
+ExecStart=/home/dclreeder/Documents/LyraOS/modules/llm/llama.cpp/build/bin/llama-server -m /home/dclreeder/Documents/LyraOS/data/models/nvidia_Nemotron-3.5-Embed-1B-BF16.gguf --host 127.0.0.1 --port 8092 --embedding --pooling mean -ngl 99 -c 8192 --alias nemotron-3.5-embed-1b -ub 2048
 Restart=on-failure
 RestartSec=2
 
