@@ -562,8 +562,15 @@ class FreeRouter:
     # -- the hook ------------------------------------------------------
 
     async def handle(self, command: str, verify=None, on_sentence=None, via: str = "box") -> object:
-        reply = await self._handle_impl(command, verify=verify, on_sentence=on_sentence)
-        self._log_turn(command, reply, via, _speaker_label(verify))
+        speaker = _speaker_label(verify)
+        if speaker == "unknown" and via == "rtc":
+            # RTC is Daniel's own client (Daniel, 2026-11-22):
+            # his turns carry his name stamp, same as a voiceprint
+            # match on the room path. Guests are a room-path
+            # thing, where the voiceprint stamp separates them.
+            speaker = "daniel"
+        reply = await self._handle_impl(command, verify=verify, on_sentence=on_sentence, speaker=speaker)
+        self._log_turn(command, reply, via, speaker)
         return reply
 
     def _log_turn(self, command: str, reply: object, via: str,
@@ -645,7 +652,7 @@ class FreeRouter:
         if self._notebook is not None:
             self._notebook.log({"type": "note", **entry})
 
-    async def _handle_impl(self, command: str, verify=None, on_sentence=None) -> object:
+    async def _handle_impl(self, command: str, verify=None, on_sentence=None, speaker: str | None = None) -> object:
         normalized = normalize(command)
         if looks_garbled(normalized):
             _LOGGER.info("garbled command %r -> didn't catch", command)
@@ -659,7 +666,8 @@ class FreeRouter:
             self._history.clear()
             self._surfaced.clear()
         started = time.monotonic()
-        speaker = _speaker_label(verify)
+        if speaker is None:
+            speaker = _speaker_label(verify)
         raw_final = None
         turn_slice: list = []
         self._last_slice = []
