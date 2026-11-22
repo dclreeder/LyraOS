@@ -16,7 +16,7 @@ _Consolidated 2026-11-21 (Daniel + Lyra). This is the single document for Lyra's
 
 Everything durable traces back to an append-only record that code writes and nothing interprets:
 
-- **Inbox.** Code appends every turn to a per-day JSONL log (`memory/inbox/YYYY-MM-DD.jsonl`): timestamp, speaker, transcript, tool calls and their results, alarm/device events, and her memory proposals. Immutable once written. No fact exists only as a summary.
+- **Inbox.** Code appends every turn to a per-day JSONL log (`memory/inbox/YYYY-MM-DD.jsonl`): timestamp, speaker, transcript, tool calls and their results, alarm/device events, and her memory proposals. Immutable once written. No fact exists only as a summary. A "day" is the calendar day (America/New_York), midnight to midnight: at 00:00 the day's inbox and notebook close, the new day's open, and the completed day goes to the sleep pass.
 - **Notebook.** The running brain's notes live in a parallel per-day stream (`memory/notes/YYYY-MM-DD.jsonl`) — also code-written, also append-only — so every day has two files: what was said, and what the running brain marked about it. Two kinds of notes: *proposals* (moments she judges worth remembering) and *corrections* (moments Daniel fixes a fact in conversation: what memory said, what he said instead, the quote — filed automatically the moment the correction happens, never an extra step for him). A correction note is an instruction to the curator: the supersession it calls for gets made.
 - **Raw sources.** Material Daniel hands her through a dashboard upload spot (a mailbox, not an editor): chat exports, documents, anything text-shaped. An upload lands in `memory/sources/` as an immutable original with a manifest line (name, date uploaded, size, hash), and is chunked and embedded on arrival, so a source far bigger than any context window stays workable. A source is a document, not Daniel asserting facts in the room today: in-chat statements and notebook corrections outrank source-derived claims wherever they disagree.
 
@@ -62,7 +62,7 @@ Memory does not have to *live* in her context to be hers. Three channels:
 
 ## The sleep cycle
 
-- **Window.** Nightly, after the house is quiet — trigger on extended idle or a fixed hour (~02:00) [OPEN — decision 1 below]. NO finish deadline: the pass runs until the catch-up queue is drained, however long that takes. If she is still asleep come morning, she simply is not usable until it finishes — accepted, for now. The alarm is no part of this trade: it sits outside her, in code-owned clockwork (L4), and fires on schedule whether she is awake, asleep, or mid-curation.
+- **Window.** Fixed at midnight (Daniel, 2026-11-21): at 00:00 the completed day's logs close, she enters sleep, and the pass takes that day first; when she wakes, the new day's log is already open and collecting. NO finish deadline: the pass runs until the catch-up queue is drained, however long that takes. If she is still asleep come morning, she simply is not usable until it finishes — accepted, for now. The alarm is no part of this trade: it sits outside her, in code-owned clockwork (L4), and fires on schedule whether she is awake, asleep, or mid-curation.
 - **Face.** While state = asleep, the TV plays her sleep animation (SLEEP_MOTION, haru_g_m19 — reserved 2026-11-15). The display state machine gains a third state: awake / off / asleep.
 - **GPU swap.** The live llama-server (9B, 8K context) stops. A sleep llama-server loads the curator model with a large context (target 64K). Whisper and Kokoro stay running (single-instance rule) but idle. After curation, the sleep server stops and the live server restarts.
 - **The pass — a day-by-day catch-up.** The curator works a queue, not just last night: starting from the first day not yet completed, she takes that day's inbox log *plus* that day's notebook, and reads them together with the existing claims and entity pages in the same window — this is why the big context matters: superseding a fact requires seeing the old claim and the correction together, and resolving an entity requires seeing both mentions. She applies everything that day calls for — promotions, merges, and every supersession the correction notes instruct — rebuilds the state card, marks the day complete, and moves to the next day, until every day through today is completed. Only then does she turn to raw sources: pending uploads in upload order, each read and mined for durable claims and marked curated when done — sources never jump ahead of days. A completion cursor (the last completed day) is the pass's only bookkeeping. Each completed day also gets its line in the curation report (what it promoted, merged, superseded, and why) that Daniel can review.
@@ -72,7 +72,7 @@ Memory does not have to *live* in her context to be hers. Three channels:
 
 Requirements: a clear step up from the 9B in reasoning; large context; must run on the night-time GPU budget (16 GB VRAM, with system-RAM offload acceptable — it is a batch job, speed is secondary).
 
-- **The field (narrowed by Daniel, 2026-11-21): two thinking-enabled candidates.** (a) The same model she runs live — Nemotron Nano 9B v2 — with thinking ENABLED for the night shift: live runs it with thinking off for speed; the curator trades that speed for reasoning, which is this option's "move up" step. (b) A 12B-class model, thinking enabled [the specific 12B is OPEN — decision 3 below]. Both fit the 16 GB card outright, so the GPU swap may shrink to a context-size change rather than a model swap with offload. Decided by bake-off, not by spec sheet — and because thinking traces are long, the bake-off also scores tokens-per-night and wall-clock: there is no hard deadline, but a curator that routinely runs into the morning leaves her unusable, so speed still counts.
+- **The field (narrowed by Daniel, 2026-11-21): two thinking-enabled candidates.** (a) The same model she runs live — Nemotron Nano 9B v2 — with thinking ENABLED for the night shift: live runs it with thinking off for speed; the curator trades that speed for reasoning, which is this option's "move up" step. (b) A 12B-class model, thinking enabled [the specific 12B is OPEN — decision 1 below]. Both fit the 16 GB card outright, so the GPU swap may shrink to a context-size change rather than a model swap with offload. Decided by bake-off, not by spec sheet — and because thinking traces are long, the bake-off also scores tokens-per-night and wall-clock: there is no hard deadline, but a curator that routinely runs into the morning leaves her unusable, so speed still counts.
 - **Bake-off protocol.** Once the inbox has real days in it, run each candidate over the same days of actual conversation logs. Grade: extraction precision (no invented facts), recall of durable facts, entity merges done correctly, corrections superseded correctly, and a planted two-hop connection (Stuart Jones test) found. Winner curates.
 - **The pipeline is model-agnostic** (an OpenAI-compatible endpoint plus a context size). On the future Strix Halo box (128 GB unified), the curator becomes a 70B-class model with 128K context with no redesign — the swap is a config change.
 - Model sourcing rule stands: official publisher repos (Daniel's Unsloth waiver was for the current 9B; a curator pick gets its own decision).
@@ -97,15 +97,13 @@ Explicitly **not** in this plan: the live model curating itself; fine-tuning/LoR
 
 _The sweep list. Each gets decided, folded into the body above, and struck from here. When this list is empty, the plan is ready to build — and building still waits for Daniel's word._
 
-1. **Sleep trigger:** fixed hour (~02:00) vs idle-triggered.
-2. **Day boundary:** what makes a "day" for the inbox/notebook files and the catch-up queue — calendar day (America/New_York), or the sleep cycle (a 01:00 conversation belongs to the day that is ending)?
-3. **The 12B curator candidate:** which specific model joins the bake-off against the thinking-enabled 9B?
-4. **Embedding model pick** (small, local, served beside the stack).
-5. **Graph:** a dedicated graph structure for the claim triples, or walks over the claim index + entity pages?
-6. **Claim-store machinery:** how much to borrow from Muse's stack vs keep simpler and files-first.
-7. **State card budget:** is ~800 tokens the right cap?
-8. **Ambient injection tuning:** the relevance bar and the per-turn cap — set values now, or calibrate at build time against real claims?
-9. **Curation report:** where Daniel reads it — a file, the dashboard, a spoken morning summary?
-10. **Memory on the Muse brain:** when the dashboard brain switch is set to Muse, do the state card, ambient injection, and lookup apply to those turns too — and how, given that path takes no tool calls?
-11. **Correction-detection backup:** the running brain's judgment files the correction notes — should code also flag candidate corrections from the day's transcript for the curator to check, as a safety net?
-12. **Upload limits:** file types and size caps for the source spot.
+1. **The 12B curator candidate:** which specific model joins the bake-off against the thinking-enabled 9B?
+2. **Embedding model pick** (small, local, served beside the stack).
+3. **Graph:** a dedicated graph structure for the claim triples, or walks over the claim index + entity pages?
+4. **Claim-store machinery:** how much to borrow from Muse's stack vs keep simpler and files-first.
+5. **State card budget:** is ~800 tokens the right cap?
+6. **Ambient injection tuning:** the relevance bar and the per-turn cap — set values now, or calibrate at build time against real claims?
+7. **Curation report:** where Daniel reads it — a file, the dashboard, a spoken morning summary?
+8. **Memory on the Muse brain:** when the dashboard brain switch is set to Muse, do the state card, ambient injection, and lookup apply to those turns too — and how, given that path takes no tool calls?
+9. **Correction-detection backup:** the running brain's judgment files the correction notes — should code also flag candidate corrections from the day's transcript for the curator to check, as a safety net?
+10. **Upload limits:** file types and size caps for the source spot.
