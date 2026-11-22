@@ -197,6 +197,7 @@ TOOL_SCHEMAS: list[dict] = [
     _fn("jellyfin_status", "Report what Jellyfin is doing: what is playing on the TV and how far in, or what is in progress to continue watching.", {}, []),
     _fn("jellyfin_fullscreen", "Put the Jellyfin player fullscreen on the TV screen. Use when the user asks for fullscreen or the picture is windowed.", {}, []),
     _fn("memory_lookup", "Look up what you remember about a person, a project, a place, or a topic -- things Daniel has told you or that came up before, beyond this conversation. Use it when an answer depends on something from the past rather than the live world.", {"query": {"type": "string", "description": "Who or what to look up, in plain words."}}, ["query"]),
+    _fn("memory_note", "Write a note in your memory notebook, the moment it happens -- this is how things you learn in conversation reach your long-term memory. Use kind 'correction' the moment Daniel corrects a fact (something you believed, said, or had stored): text states the corrected fact, corrects names the wrong belief it replaces. A correction note outranks your stored memory immediately. Use kind 'proposal' when Daniel asks you to remember something, or tells you something plainly worth keeping. Filing a note is not the memory itself -- the curator weighs proposals tonight; corrections are applied as Daniel's word.", {"kind": {"type": "string", "enum": ["correction", "proposal"], "description": "correction when Daniel sets a fact right; proposal for something that should become memory."}, "text": {"type": "string", "description": "The note itself, in plain words: the corrected fact, or the thing to remember."}, "corrects": {"type": "string", "description": "Corrections only: the wrong belief this replaces, in plain words."}, "subject": {"type": "string", "description": "Optional: who or what the note is about."}}, ["kind", "text"]),
 ]
 
 
@@ -618,18 +619,17 @@ class FreeRouter:
         except Exception as exc:
             _LOGGER.warning("memory block failed: %s", exc)
             return ""
+        def _line(c: dict) -> str:
+            tag = " [inferred]" if c.get("inference") else ""
+            return f"- {c.get('statement')} ({c.get('learned')}){tag}"
         sections = []
         if inplay:
-            lines = "\n".join(
-                f"- {c.get('statement')} ({c.get('learned')})"
-                for c in inplay)
+            lines = "\n".join(_line(c) for c in inplay)
             sections.append(
                 "Things currently in play between you and Daniel:\n"
                 + lines)
         if ambient:
-            lines = "\n".join(
-                f"- {c.get('statement')} ({c.get('learned')})"
-                for c in ambient)
+            lines = "\n".join(_line(c) for c in ambient)
             sections.append("Things that come to mind:\n" + lines)
             self._surfaced.update(
                 c.get("id") for c in ambient if c.get("id"))
@@ -930,6 +930,9 @@ class FreeRouter:
                     line += f" [window ended {c['valid_to']}]"
                 if c.get("corrected"):
                     line += " [a correction about this is pending]"
+                if c.get("inference"):
+                    line += (" [inferred -- not something Daniel "
+                             "stated; the quote is the basis]")
                 lines.append(line)
             if not lines:
                 return {"ok": True,
@@ -937,5 +940,33 @@ class FreeRouter:
                         "state": {}}
             return {"ok": True,
                     "result": "From memory:\n" + "\n".join(lines),
+                    "state": {}}
+        if name == "memory_note":
+            if self._notebook is None:
+                return {"ok": False,
+                        "result": "Notebook is not wired in this core.",
+                        "state": {}}
+            kind = str(args.get("kind", ""))
+            text = str(args.get("text", "")).strip()
+            if kind not in ("correction", "proposal") or not text:
+                return {"ok": False,
+                        "result": "A note needs a kind (correction or "
+                                  "proposal) and the note text.",
+                        "state": {}}
+            entry: dict = {"kind": kind, "text": text}
+            if args.get("corrects"):
+                entry["corrects"] = str(args["corrects"])
+            if args.get("subject"):
+                entry["subject"] = str(args["subject"])
+            self.log_note(entry)
+            if kind == "correction":
+                return {"ok": True,
+                        "result": "Correction filed in your notebook. "
+                                  "It outranks the stored memory now; "
+                                  "the curator formalizes it tonight.",
+                        "state": {}}
+            return {"ok": True,
+                    "result": "Proposal filed in your notebook; the "
+                              "curator will weigh it tonight.",
                     "state": {}}
         return {"ok": False, "result": f"Unknown tool: {name}", "state": {}}
