@@ -274,7 +274,7 @@ _SPINDOWN_UNITS = (
 )
 _CURATOR_GGUF = Path(
     "~/Documents/LyraOS/data/models/"
-    "NVIDIA-Nemotron-Nano-12B-v2-Q8_0.gguf").expanduser()
+    "nvidia_Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf").expanduser()
 _CURATOR_SERVER_BIN = Path(
     "~/Documents/LyraOS/modules/llm/llama.cpp/build/bin/llama-server"
 ).expanduser()
@@ -322,7 +322,7 @@ async def _sleep_cycle(mode_mgr: _ModeManager, hub: StatusHub,
             curator_proc = await asyncio.create_subprocess_exec(
                 str(_CURATOR_SERVER_BIN), "-m", str(_CURATOR_GGUF),
                 "--host", "127.0.0.1", "--port", "8090",
-                "-ngl", "99", "-c", "65536",
+                "-ngl", "26", "-c", "65536",
                 "--alias", "nemotron-nano-12b-v2", "--jinja",
                 "--flash-attn", "on",
                 "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",

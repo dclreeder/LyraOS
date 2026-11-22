@@ -25,6 +25,7 @@ the real memory root. Expectations:
 import asyncio
 import json
 import shutil
+import pathlib
 import sys
 from pathlib import Path
 
@@ -45,6 +46,9 @@ RECORD = [
     turn("2026-02-09T07:02:00-05:00",
          "Morning. Why did the scarecrow win an award?",
          "Because he was outstanding in his field."),
+    turn("2026-02-09T07:06:00-05:00",
+         "I'm okay, just tired tonight.",
+         "Long day?"),
     turn("2026-02-09T07:15:00-05:00",
          "My sister Jessica moved to Tampa last month -- she's "
          "working at a hospital there now.",
@@ -172,8 +176,11 @@ async def main() -> None:
     root = build_root()
     store = MemoryStore(root)
     client = CuratorClient(model="nemotron-nano-12b-v2")
+    _sys_file = __import__("os").environ.get("CURATOR_SYSTEM_FILE")
+    _sys_kw = ({"system": pathlib.Path(_sys_file).read_text()}
+               if _sys_file else {})
     result = await curate_day(DAY, root=root, store=store,
-                              client=client)
+                              client=client, **_sys_kw)
     print("RESULT:", json.dumps(result, default=str)[:600])
     report = root / "reports" / f"{DAY}.md"
     if report.exists():
@@ -209,6 +216,9 @@ async def main() -> None:
                 for c in claims)
             and any("Wednesdays" in str(c.get("object"))
                     for c in live),
+        "officer closed as change (valid_to = day)":
+            any(c.get("id") == "c-seed-001"
+                and c.get("valid_to") == "2026-02-09" for c in claims),
         "refund letter open":
             any(c.get("open") and "refund" in
                 str(c.get("statement", "")).lower() for c in live),
@@ -216,6 +226,20 @@ async def main() -> None:
             report.exists()
             and "landlord" in report.read_text().lower()
             and "unresolved" in report.read_text().lower(),
+        "landlord not stored as fact":
+            not any(c.get("relation") == "landlord" for c in live),
+        "jessica claims stored":
+            any(c.get("subject") == "jessica" for c in live),
+        "shift preference stored":
+            any("day shift" in str(c.get("statement", "")).lower()
+                or "day shift" in str(c.get("object", "")).lower()
+                for c in live),
+        "no mood/state claim":
+            not any("okay" in str(c.get("statement", "")).lower()
+                    or "tired" in str(c.get("statement", "")).lower()
+                    for c in live),
+        "no lyra entity":
+            "lyra" not in ents,
         "joe only as inference":
             all(c.get("inference") for c in live
                 if "joe" in str(c.get("subject"))),
