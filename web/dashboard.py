@@ -413,18 +413,20 @@ def set_state_provider(fn) -> None:
 
 
 def mode_state() -> dict:
-    mode, connected, ok = "wakegate", False, False
+    mode, connected, ok, locked = "wakegate", False, False, False
     if _state_provider is not None:
         try:
             snap = _state_provider()
             mode = snap.get("mode") or "wakegate"
             connected = bool(snap.get("rtc_connected"))
             ok = bool(snap.get("core_seen"))
+            locked = bool(snap.get("mode_locked"))
         except Exception:
-            mode, connected, ok = "wakegate", False, False
+            mode, connected, ok, locked = "wakegate", False, False, False
     if mode not in MODES:
         mode = "wakegate"
-    return {"mode": mode, "rtc_connected": connected, "ok": ok}
+    return {"mode": mode, "rtc_connected": connected, "ok": ok,
+            "locked": locked}
 
 
 def mode_set(mode: str) -> dict:
@@ -454,13 +456,26 @@ def sleep_state() -> dict:
 
 
 def sleep_set(on: bool) -> dict:
-    # Toggling sleep on selects the sleep mode; toggling it off
-    # returns her to the resting WakeGate mode.
-    if on:
-        mode_set("sleep")
-    elif mode_state()["mode"] == "sleep":
-        mode_set("wakegate")
+    # Sleep is entered only by the nightly sleep cycle (memory
+    # build Phase 2), never by hand: this switch is an indicator
+    # now. The core refuses a manual sleep regardless, the page
+    # disables the toggle, and a stale client just gets the state.
     return sleep_state()
+
+
+def memory_reports() -> list:
+    """The curation report view (memory build Phase 2): one
+    dated file per curated day under memory/reports/, read-only
+    here, latest first. The dashboard never writes memory."""
+    out = []
+    try:
+        reports = Path("~/Documents/LyraOS/memory/reports").expanduser()
+        for path in sorted(reports.glob("*.md"), reverse=True)[:10]:
+            out.append({"day": path.stem,
+                        "text": path.read_text(encoding="utf-8")[:4000]})
+    except Exception:
+        pass
+    return out
 
 
 def full_state() -> dict:
@@ -480,6 +495,7 @@ def full_state() -> dict:
     state["monitor"] = monitor_state()
     state["sleep"] = sleep_state()
     state["mode"] = mode_state()
+    state["memory_reports"] = memory_reports()
     return state
 
 

@@ -51,6 +51,11 @@ modules/embed/hf/
 modules/embed/venv/
 modules/embed/*.done
 modules/embed/*.log
+modules/curator/hf/
+modules/curator/venv/
+modules/curator/*.done
+modules/curator/*.log
+benches/memory_bakeoff_*.log
 
 # llama.cpp checkout + build artifacts (re-clone to rebuild; see modules/llm/README.md)
 modules/llm/llama.cpp/

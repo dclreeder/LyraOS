@@ -65,7 +65,10 @@ import asyncio
 import logging
 import signal
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .alarm import Alarm, ShellyLight
 from .api import CoreApi
@@ -165,6 +168,10 @@ class _ModeManager:
         self._rtc = rtc_server
         self.current: str | None = None
         self._lock = asyncio.Lock()
+        # Sleep-cycle lock (memory build Phase 2): True while the
+        # nightly curation owns the mode. Only the cycle's own
+        # internal transitions may pass while it is held.
+        self.locked = False
         # Status hub (lyra_core.status), wired in amain; the
         # status light's sleep state is the APPLIED mode.
         self.status: StatusHub | None = None
@@ -186,12 +193,23 @@ class _ModeManager:
             await self._rtc.stop()
             await self._seat.stop()
 
-    async def set_mode(self, mode: str) -> str:
+    async def set_mode(self, mode: str, *, internal: bool = False) -> str:
         """Persist + apply a mode change (the core API's entry
         point). write_mode validates the mode name first -- an
         unknown mode raises ValueError before anything is applied.
         Transitions are serialized under the lock: they stop and
         start whole subsystems and must never interleave."""
+        if not internal:
+            # Sleep is entered only by the nightly cycle, never by
+            # hand, and while the cycle runs the mode is locked
+            # outright (memory build Phase 2). The dashboard grays
+            # both cases; these guards are the floor under it.
+            if self.locked:
+                raise ValueError(
+                    "mode is locked while the sleep cycle runs")
+            if mode == mode_store.SLEEP:
+                raise ValueError(
+                    "sleep is entered only by the nightly sleep cycle")
         async with self._lock:
             mode_store.write_mode(mode)
             await self.apply(mode)
@@ -233,6 +251,135 @@ async def _status_loop(session: VoiceSession, seat: _SupervisorSeat,
 
 
 
+# -- the sleep cycle (memory build Phase 2) ----------------------
+# At midnight (America/New_York) the core takes her into Sleep --
+# the one sleep, entered only here, locked until the pass
+# completes -- spins the voice stack down, starts the curator
+# model alone in VRAM, drains the curation queue day by day,
+# then spins the stack back up and wakes her to WakeGate. The
+# embedding service stays up throughout (the curator's index
+# rebuild needs it). The alarm is code-owned clockwork in this
+# same process and fires on schedule regardless; only the
+# spoken morning note waits for the stack. If the queue is
+# behind at boot (a crash mid-pass, a PC off at midnight), the
+# cycle runs shortly after startup and drains it before she is
+# usable; a core that finds sleep persisted with an empty queue
+# still runs the cycle, whose restore half wakes her -- she can
+# never be stranded asleep by an interrupted night.
+_SPINDOWN_UNITS = (
+    "lyra-llm.service",
+    "lyra-kokoro-tts.service",
+    "parakeet-server.service",
+    "lyra-whisper-stt.service",
+)
+_CURATOR_GGUF = Path(
+    "~/Documents/LyraOS/data/models/"
+    "NVIDIA-Nemotron-Nano-12B-v2-Q8_0.gguf").expanduser()
+_CURATOR_SERVER_BIN = Path(
+    "~/Documents/LyraOS/modules/llm/llama.cpp/build/bin/llama-server"
+).expanduser()
+_CYCLE_TZ = ZoneInfo("America/New_York")
+
+
+async def _systemctl(*args: str) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        "systemctl", "--user", *args,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL)
+    await proc.wait()
+
+
+async def _wait_http(url: str, timeout_s: float, proc=None) -> bool:
+    import urllib.request
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if proc is not None and proc.returncode is not None:
+            return False
+        def _get() -> int:
+            with urllib.request.urlopen(url, timeout=3) as resp:
+                return resp.status
+        try:
+            if await asyncio.to_thread(_get) == 200:
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(2.0)
+    return False
+
+
+async def _sleep_cycle(mode_mgr: _ModeManager, hub: StatusHub,
+                       memory_root: Path) -> None:
+    from .curator import pending_days, run_pass
+    mode_mgr.locked = True
+    hub.set_mode_locked(True)
+    curator_proc = None
+    try:
+        await mode_mgr.set_mode(mode_store.SLEEP, internal=True)
+        days = pending_days(memory_root)
+        if days and _CURATOR_GGUF.exists():
+            for unit in _SPINDOWN_UNITS:
+                await _systemctl("stop", unit)
+            curator_proc = await asyncio.create_subprocess_exec(
+                str(_CURATOR_SERVER_BIN), "-m", str(_CURATOR_GGUF),
+                "--host", "127.0.0.1", "--port", "8090",
+                "-ngl", "99", "-c", "65536",
+                "--alias", "nemotron-nano-12b-v2", "--jinja",
+                "--flash-attn", "on",
+                "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL)
+            if await _wait_http("http://127.0.0.1:8090/health", 240,
+                                curator_proc):
+                results = await run_pass(root=memory_root)
+                for r in results:
+                    _LOGGER.info(
+                        "sleep cycle: %s -> %s", r["day"],
+                        "complete" if r["ok"] else
+                        f"STOPPED: {r.get('errors')}")
+            else:
+                _LOGGER.error(
+                    "sleep cycle: curator server never came up; "
+                    "pass skipped, days stay pending")
+        elif days:
+            _LOGGER.error(
+                "sleep cycle: curator model missing at %s; "
+                "pass skipped, days stay pending", _CURATOR_GGUF)
+    except Exception:
+        _LOGGER.exception("sleep cycle failed; restoring the stack")
+    finally:
+        if curator_proc is not None and curator_proc.returncode is None:
+            curator_proc.terminate()
+            try:
+                await asyncio.wait_for(curator_proc.wait(), 15)
+            except Exception:
+                curator_proc.kill()
+        for unit in _SPINDOWN_UNITS:
+            await _systemctl("start", unit)
+        try:
+            await mode_mgr.set_mode(mode_store.WAKEGATE, internal=True)
+        finally:
+            mode_mgr.locked = False
+            hub.set_mode_locked(False)
+    _LOGGER.info("sleep cycle: done; she is awake")
+
+
+async def _sleep_cycle_loop(mode_mgr: _ModeManager, hub: StatusHub,
+                            memory_root: Path) -> None:
+    from .curator import pending_days
+    await asyncio.sleep(20)
+    if (pending_days(memory_root)
+            or mode_store.read_mode() == mode_store.SLEEP):
+        await _sleep_cycle(mode_mgr, hub, memory_root)
+    last_day = datetime.now(_CYCLE_TZ).date()
+    while True:
+        await asyncio.sleep(60)
+        today = datetime.now(_CYCLE_TZ).date()
+        if today != last_day:
+            last_day = today
+            if pending_days(memory_root):
+                await _sleep_cycle(mode_mgr, hub, memory_root)
+
+
 async def amain() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -262,7 +409,8 @@ async def amain() -> int:
     # channels (in-play list, memory_lookup, ambient injection).
     # Read-only in the core; the curator that writes claims is
     # Phase 2. An empty store reproduces pre-memory behavior.
-    memory = MemoryStore()
+    memory_root = Path("~/Documents/LyraOS/memory").expanduser()
+    memory = MemoryStore(memory_root)
     # -- kiosk status light (2026-11-18, lyra_core.status) --
     # The hub aggregates activity (turns + the speech clock +
     # RTC playback), the applied mode and dependency health into
@@ -495,9 +643,15 @@ async def amain() -> int:
     # server's janitor, in-core since the gate moved in).
     sweep_task = asyncio.create_task(
         run_detection_sweep(), name="lyra-wake-sweep")
+    # The sleep cycle (memory build Phase 2): midnight curation
+    # plus the startup drain. See _sleep_cycle above.
+    cycle_task = asyncio.create_task(
+        _sleep_cycle_loop(mode_mgr, hub, memory_root),
+        name="lyra-sleep-cycle")
     try:
         await _shutdown.wait()
     finally:
+        cycle_task.cancel()
         health_task.cancel()
         heartbeat_task.cancel()
         sweep_task.cancel()

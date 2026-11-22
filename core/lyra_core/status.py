@@ -85,6 +85,7 @@ class StatusHub:
         self._rtc_playing: set = set()
         self._listening: set = set()
         self._mode = "wakegate"
+        self._mode_locked = False
         self._rtc_connected = False
         self._health: dict[str, bool] = {}
         self._subs: list = []
@@ -150,6 +151,15 @@ class StatusHub:
             self._mode = mode
             self._recompute()
 
+    def set_mode_locked(self, locked: bool) -> None:
+        """The sleep-cycle lock (memory build Phase 2): while the
+        nightly curation runs, mode belongs to the cycle. The
+        dashboard reads this off the snapshot and grays every
+        mode button."""
+        if locked != self._mode_locked:
+            self._mode_locked = locked
+            self._recompute()
+
     def set_rtc_connected(self, connected: bool) -> None:
         """The RTC peer fact, reported by rtc.py on transitions.
         It rides this snapshot to lyra-web, whose merged page
@@ -196,6 +206,7 @@ class StatusHub:
             "label": label,
             "fault": fault,
             "mode": self._mode,
+            "mode_locked": self._mode_locked,
             "rtc_connected": self._rtc_connected,
             "activity": activity,
             "health": dict(self._health),
@@ -205,7 +216,8 @@ class StatusHub:
     def _recompute(self) -> None:
         snap = self.snapshot()
         shown = (snap["state"], snap["label"], snap["mode"],
-                 snap["fault"], snap["rtc_connected"])
+                 snap["fault"], snap["rtc_connected"],
+                 snap["mode_locked"])
         if shown == self._shown:
             return
         self._shown = shown

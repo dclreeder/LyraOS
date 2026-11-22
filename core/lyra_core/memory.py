@@ -129,17 +129,30 @@ class MemoryStore:
     # -- canonical files ------------------------------------------------
 
     def _read_claims(self) -> list[dict]:
-        claims = []
+        """The canonical claims, collapsed by id: the file is
+        append-only, and a later line with an existing id is the
+        claim's current state (that is how supersession is
+        recorded -- the curator appends the updated claim, never
+        edits in place). First-seen order is preserved."""
+        by_id: dict[str, dict] = {}
+        order: list[str] = []
         try:
             if self._claims_path.exists():
                 for line in self._claims_path.read_text(
                         encoding="utf-8").splitlines():
                     line = line.strip()
-                    if line:
-                        claims.append(json.loads(line))
+                    if not line:
+                        continue
+                    claim = json.loads(line)
+                    cid = claim.get("id")
+                    if not cid:
+                        continue
+                    if cid not in by_id:
+                        order.append(cid)
+                    by_id[cid] = claim
         except Exception as exc:
             _LOGGER.warning("claims read failed: %s", exc)
-        return claims
+        return [by_id[cid] for cid in order]
 
     def _read_entities(self) -> dict[str, dict]:
         """entity id -> {name, aliases}. Parsed from the pages;

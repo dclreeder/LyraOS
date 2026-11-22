@@ -70,6 +70,12 @@
   <div class="sub" id="modeSub">...</div>
 </div>
 
+<div class="card">
+  <div class="label">Memory</div>
+  <div class="sub">Nightly curation reports, latest first. Read-only: memory is written only by the sleep-cycle curator.</div>
+  <div id="memReports"><div class="sub">No nights curated yet.</div></div>
+</div>
+
 <div class="card" id="alarmCard">
   <div class="row spread">
     <div class="label">Alarm</div>
@@ -108,8 +114,8 @@
       <button class="switch" id="displayToggle" aria-label="Toggle Lyra display"></button>
     </div>
     <div class="row spread" style="margin-top:12px;">
-      <div class="tile-name" style="font-size:15px;">Sleep mode</div>
-      <button class="switch" id="sleepToggle" aria-label="Toggle Lyra sleep mode"></button>
+      <div class="tile-name" style="font-size:15px;">Sleep mode <span class="dim" style="font-size:12px;">(nightly, automatic)</span></div>
+      <button class="switch" id="sleepToggle" aria-label="Lyra sleep mode (automatic)" disabled></button>
     </div>
     <div style="margin-top:12px;">
       <div class="label">TV volume <span id="tvVolVal" class="dim"></span></div>
@@ -252,6 +258,7 @@ async function refresh() {
   }
   renderAudio(j.audio);
   renderMode(j.mode);
+  renderReports(j.memory_reports);
   renderMonitor(j.monitor);
   renderKiosk(j.monitor);
 }
@@ -465,16 +472,38 @@ async function setMonitorEnabled(on) {
 let modeSig = '';
 function renderMode(m) {
   if (!m || !m.mode) return;
-  const sig = m.mode + '|' + m.rtc_connected;
+  const sig = m.mode + '|' + m.rtc_connected + '|' + !!m.locked;
   if (sig === modeSig) return;
   modeSig = sig;
-  for (const [id, md] of [['modeWakegate','wakegate'],['modeRtc','rtc'],['modeSleep','sleep']])
-    $(id).classList.toggle('on', m.mode === md);
+  for (const [id, md] of [['modeWakegate','wakegate'],['modeRtc','rtc'],['modeSleep','sleep']]) {
+    const btn = $(id);
+    btn.classList.toggle('on', m.mode === md);
+    // Sleep belongs to the nightly cycle alone (memory build
+    // Phase 2): grayed while she is awake; while the cycle runs
+    // (locked), every mode button is grayed until it finishes.
+    btn.disabled = !!m.locked || md === 'sleep';
+    btn.style.opacity = btn.disabled ? '0.45' : '';
+  }
   $('modeSub').textContent =
+    m.locked ? 'Sleep cycle running - curating memory; mode is locked until it finishes' :
     m.mode === 'wakegate' ? 'Listening for the wake word' :
     m.mode === 'rtc' ? (m.rtc_connected ? 'Live on the TV page - talk freely, no wake word'
                                         : 'RTC selected - the TV page is connecting') :
     'In bed - not listening';
+}
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+let reportsSig = '';
+function renderReports(list) {
+  const el = $('memReports');
+  if (!el) return;
+  const sig = list ? list.map(r => r.day).join(',') : '';
+  if (sig === reportsSig) return;
+  reportsSig = sig;
+  if (!list || !list.length) { el.innerHTML = '<div class="sub">No nights curated yet.</div>'; return; }
+  el.innerHTML = list.map(r => {
+    const line = (r.text.split('\n').find(l => l.trim() && !l.startsWith('#')) || '').trim();
+    return '<div style="margin-top:8px;"><b>' + esc(r.day) + '</b> <span class="sub">' + esc(line.slice(0, 160)) + '</span></div>';
+  }).join('');
 }
 async function setMode(mode) {
   try {

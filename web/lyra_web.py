@@ -117,7 +117,7 @@ _sub_lock = threading.Lock()
 _subs = []
 _core_slice = {'state': 'idle', 'label': 'Idle', 'fault': None,
                'mode': 'wakegate', 'activity': 'idle', 'health': {},
-               'rtc_connected': False}
+               'rtc_connected': False, 'mode_locked': False}
 _core_seen_at = [0.0]
 _last_merged = [None]
 _alarm_cache = [0.0, None]
@@ -132,7 +132,7 @@ def _broadcast(kind, payload):
 def _accept_core_status(snap):
     if not isinstance(snap, dict): return
     with _sub_lock:
-        for k in ('state', 'label', 'fault', 'mode', 'activity', 'health', 'rtc_connected'):
+        for k in ('state', 'label', 'fault', 'mode', 'activity', 'health', 'rtc_connected', 'mode_locked'):
             if k in snap: _core_slice[k] = snap[k]
         _core_seen_at[0] = time.time()
     _refresh_state()
