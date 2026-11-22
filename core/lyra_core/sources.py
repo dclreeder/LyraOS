@@ -123,6 +123,33 @@ def load_chunks(sid: str) -> tuple[list[str], np.ndarray | None]:
     vecs = data["vec"] if "vec" in data else None
     return texts, vecs
 
+def digest_path(sid: str) -> Path:
+    return SOURCES_DIR / f"{sid}.digest.md"
+
+
+def notes_path(sid: str) -> Path:
+    return SOURCES_DIR / f"{sid}.notes.md"
+
+
+def digest_chunks_path(sid: str) -> Path:
+    return SOURCES_DIR / f"{sid}.digest.npz"
+
+
+def load_digest_chunks(sid: str) -> tuple[list[str], np.ndarray | None]:
+    path = digest_chunks_path(sid)
+    if not path.exists():
+        return [], None
+    data = np.load(path, allow_pickle=False)
+    texts = json.loads(str(data["texts"]))
+    vecs = data["vec"] if "vec" in data else None
+    return texts, vecs
+
+
+def save_digest_chunks(sid: str, texts: list[str], vecs) -> None:
+    arr = np.array(vecs, dtype=np.float32)
+    np.savez(digest_chunks_path(sid), vec=arr,
+             texts=np.array(json.dumps(texts)))
+
 
 def ingest(sid: str) -> dict:
     """Extract, chunk, and embed one source. Idempotent: a source

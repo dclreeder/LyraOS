@@ -333,7 +333,7 @@ async def _sleep_cycle(mode_mgr: _ModeManager, hub: StatusHub,
                 results = await run_pass(root=memory_root)
                 for r in results:
                     _LOGGER.info(
-                        "sleep cycle: %s -> %s", r["day"],
+                        "sleep cycle: %s -> %s", r.get("day") or r.get("source"),
                         "complete" if r["ok"] else
                         f"STOPPED: {r.get('errors')}")
             else:
