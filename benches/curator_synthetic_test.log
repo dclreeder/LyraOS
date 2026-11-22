@@ -1,0 +1,46 @@
+RESULT: {"day": "2026-02-09", "ok": true, "stats": {"added": ["c-20260209-001: Daniel's probation check-in is on Wednesdays", "c-20260209-002: Daniel drives a 2018 Silverado", "c-20260209-003: Daniel's new probation officer is Dana Whitfield", "c-20260209-004: Daniel is waiting on the tax office to mail his refund letter", "c-20260209-005: Daniel wants to remind to ask Dana about moving his check-in this week"], "superseded": ["c-seed-003", "c-seed-002", "c-seed-001"], "closed": [], "entities": ["jessica", "dana-whitfield"], "merges": [], "inplay": 0}, "wall_s": 252.6, "summary": "Daniel corrected his
+
+=== REPORT ===
+ # Curation — 2026-02-09
+
+Daniel corrected his probation check-in day to Wednesdays, updated his vehicle to a 2018 Silverado, and confirmed Dana Whitfield as his new probation officer. New open threads include waiting for a tax refund and following up with Dana about check-in changes.
+
+- claims added: 5
+  - c-20260209-001: Daniel's probation check-in is on Wednesdays
+  - c-20260209-002: Daniel drives a 2018 Silverado
+  - c-20260209-003: Daniel's new probation officer is Dana Whitfield
+  - c-20260209-004: Daniel is waiting on the tax office to mail his refund letter
+  - c-20260209-005: Daniel wants to remind to ask Dana about moving his check-in this week
+- claims superseded (corrected): 3
+- claims closed (changed): 0
+- in-play flags changed: 0
+- entities added: jessica, dana-whitfield
+- merges: none
+- corrections applied: 0
+- backup net: 1 flagged, 0 applied, 1 dismissed
+- redacted lines skipped: 0
+- unresolved: none
+
+Curator: nemotron-nano-12b-v2 (thinking on), attempts 1, tokens in 4061 / out 2544, 252.6s.
+
+=== ALL CLAIMS ===
+  c-seed-001 | alex-arciniega | is_probation_officer_of | Daniel | open=False inf=False sup_by=c-20260209-003 valid_to=None
+  c-seed-002 | daniel | vehicle | 2015 Silverado | open=False inf=False sup_by=c-20260209-002 valid_to=None
+  c-seed-003 | daniel | probation_check_in_day | Tuesdays | open=False inf=False sup_by=c-20260209-001 valid_to=None
+  c-20260209-001 | daniel | probation_check_in_day | Wednesdays | open=False inf=False sup_by=None valid_to=None
+  c-20260209-002 | daniel | vehicle | 2018 Silverado | open=False inf=False sup_by=None valid_to=None
+  c-20260209-003 | daniel | probation_officer | Dana Whitfield | open=False inf=False sup_by=None valid_to=None
+  c-20260209-004 | daniel | waiting_on | tax refund letter | open=True inf=False sup_by=None valid_to=None
+  c-20260209-005 | daniel | unfinished_plan | ask Dana about moving check-in | open=True inf=False sup_by=None valid_to=None
+ENTITIES: ['alex-arciniega', 'dana-whitfield', 'daniel', 'gisele', 'jessica']
+
+=== HARD CHECKS ===
+  PASS  no lyra-subject claims
+  PASS  no marcus entity
+  PASS  truck corrected (seed-002 superseded + 2018 live)
+  PASS  officer changed (seed-001 closed + Dana live)
+  PASS  notebook correction (seed-003 superseded + Wed live)
+  PASS  refund letter open
+  FAIL  landlord unresolved in report
+  PASS  joe only as inference
+  PASS  no weather/driveway claims

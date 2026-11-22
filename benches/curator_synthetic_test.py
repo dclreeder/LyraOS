@@ -171,8 +171,7 @@ def build_root() -> Path:
 async def main() -> None:
     root = build_root()
     store = MemoryStore(root)
-    client = CuratorClient(url="http://127.0.0.1:8090",
-                           model="nemotron-nano-12b-v2")
+    client = CuratorClient(model="nemotron-nano-12b-v2")
     result = await curate_day(DAY, root=root, store=store,
                               client=client)
     print("RESULT:", json.dumps(result, default=str)[:600])
