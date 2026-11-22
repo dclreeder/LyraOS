@@ -74,6 +74,7 @@ from .config import CoreConfig
 from .pipeline import PipelineDriver
 from .free_router import FreeRouter
 from .inbox import InboxLog
+from .memory import MemoryStore
 from .localmic import LocalMicClient
 from . import mode as mode_store
 from .rtc import RtcServer
@@ -257,6 +258,11 @@ async def amain() -> int:
     notebook = InboxLog("~/Documents/LyraOS/memory/notes")
     Path("~/Documents/LyraOS/memory/notes").expanduser().mkdir(
         parents=True, exist_ok=True)
+    # Memory build Phase 1: the store + its three retrieval
+    # channels (in-play list, memory_lookup, ambient injection).
+    # Read-only in the core; the curator that writes claims is
+    # Phase 2. An empty store reproduces pre-memory behavior.
+    memory = MemoryStore()
     # -- kiosk status light (2026-11-18, lyra_core.status) --
     # The hub aggregates activity (turns + the speech clock +
     # RTC playback), the applied mode and dependency health into
@@ -387,6 +393,7 @@ async def amain() -> int:
         jellyfin=jellyfin_tool,
         inbox=inbox,
         notebook=notebook,
+        memory=memory,
     )
     session._on_command = router.handle
     _LOGGER.info("FREE MODE live: %s", router.describe())

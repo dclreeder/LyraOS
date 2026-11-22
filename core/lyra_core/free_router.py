@@ -187,6 +187,7 @@ TOOL_SCHEMAS: list[dict] = [
     _fn("jellyfin_control", "Control the Jellyfin playback on the TV.", {"action": {"type": "string", "enum": ["pause", "resume", "stop", "skip_forward", "skip_back"], "description": "pause, resume, stop, skip_forward (30 seconds ahead), or skip_back (15 seconds back)."}}, ["action"]),
     _fn("jellyfin_status", "Report what Jellyfin is doing: what is playing on the TV and how far in, or what is in progress to continue watching.", {}, []),
     _fn("jellyfin_fullscreen", "Put the Jellyfin player fullscreen on the TV screen. Use when the user asks for fullscreen or the picture is windowed.", {}, []),
+    _fn("memory_lookup", "Look up what you remember about a person, a project, a place, or a topic -- things Daniel has told you or that came up before, beyond this conversation. Use it when an answer depends on something from the past rather than the live world.", {"query": {"type": "string", "description": "Who or what to look up, in plain words."}}, ["query"]),
 ]
 
 
@@ -504,6 +505,7 @@ class FreeRouter:
         jellyfin=None,
         inbox=None,
         notebook=None,
+        memory=None,
         client=None,
     ) -> None:
         self._cfg = cfg
@@ -532,6 +534,8 @@ class FreeRouter:
         self._history: list[list[dict]] = []
         self._inbox = inbox
         self._notebook = notebook
+        self._memory = memory
+        self._surfaced: set = set()
         self._last_slice: list = []
         self._last_turn_at: float | None = None
 
@@ -586,6 +590,41 @@ class FreeRouter:
             "reply": str(reply), "tools": tools,
         })
 
+    async def _memory_block(self, command: str) -> str:
+        """Memory build, Phase 1: the in-play list plus whatever
+        comes to mind for this turn, rendered quietly into her
+        context -- a view over the store, never a summary. An
+        empty store yields an empty string, which is exactly the
+        pre-memory behavior. Memory can never break a turn: any
+        failure returns ""."""
+        if self._memory is None:
+            return ""
+        try:
+            inplay = await asyncio.to_thread(self._memory.inplay)
+            inplay_ids = {c.get("id") for c in inplay if c.get("id")}
+            ambient = await asyncio.to_thread(
+                self._memory.ambient, command,
+                inplay_ids | self._surfaced)
+        except Exception as exc:
+            _LOGGER.warning("memory block failed: %s", exc)
+            return ""
+        sections = []
+        if inplay:
+            lines = "\n".join(
+                f"- {c.get('statement')} ({c.get('learned')})"
+                for c in inplay)
+            sections.append(
+                "Things currently in play between you and Daniel:\n"
+                + lines)
+        if ambient:
+            lines = "\n".join(
+                f"- {c.get('statement')} ({c.get('learned')})"
+                for c in ambient)
+            sections.append("Things that come to mind:\n" + lines)
+            self._surfaced.update(
+                c.get("id") for c in ambient if c.get("id"))
+        return "\n\n".join(sections)
+
     def log_note(self, entry: dict) -> None:
         """Notebook (memory build): the running brain's notes --
         proposals and corrections -- written by code to the
@@ -608,6 +647,7 @@ class FreeRouter:
         ):
             _LOGGER.info("free history cleared after idle gap")
             self._history.clear()
+            self._surfaced.clear()
         started = time.monotonic()
         raw_final = None
         turn_slice: list = []
@@ -699,6 +739,9 @@ class FreeRouter:
         suffix = getattr(self._cfg, "system_prompt_suffix", "")
         if suffix:
             system_content = f"{system_content}\n\n{suffix}"
+        mem_block = await self._memory_block(command)
+        if mem_block:
+            system_content = f"{system_content}\n\n{mem_block}"
         messages = [
             {"role": "system", "content": system_content},
             *history,
@@ -850,4 +893,36 @@ class FreeRouter:
                 return self._wrap(await self._jellyfin.status())
             if name == "jellyfin_fullscreen":
                 return self._wrap(await self._jellyfin.fullscreen())
+        if name == "memory_lookup":
+            if self._memory is None:
+                return {"ok": False,
+                        "result": "Memory is not wired in this core.",
+                        "state": {}}
+            query = str(args.get("query", ""))
+            found = await asyncio.to_thread(self._memory.lookup, query)
+            lines = []
+            for note in found["corrections"]:
+                lines.append(
+                    f"Daniel corrected this: {note.get('text')} "
+                    f"(noted {str(note.get('ts') or '')[:10]}, "
+                    "pending curation -- trust this over older memory)")
+            for c in found["claims"]:
+                line = (f"{c.get('statement')} "
+                        f"(learned {c.get('learned')}, "
+                        f"confidence {c.get('confidence')}")
+                if c.get("quote"):
+                    line += f"; his words: \"{c['quote']}\""
+                line += ")"
+                if c.get("valid_to"):
+                    line += f" [window ended {c['valid_to']}]"
+                if c.get("corrected"):
+                    line += " [a correction about this is pending]"
+                lines.append(line)
+            if not lines:
+                return {"ok": True,
+                        "result": f"Nothing in memory about {query}.",
+                        "state": {}}
+            return {"ok": True,
+                    "result": "From memory:\n" + "\n".join(lines),
+                    "state": {}}
         return {"ok": False, "result": f"Unknown tool: {name}", "state": {}}

@@ -41,6 +41,16 @@ modules/wakeword/data/clips/
 # conversations) -- like the wake clip pool, they never enter the repo.
 memory/inbox/
 memory/notes/
+memory/claims.jsonl
+memory/entities/
+memory/index.sqlite
+memory/sources/
+memory/reports/
+memory/cursor.json
+modules/embed/hf/
+modules/embed/venv/
+modules/embed/*.done
+modules/embed/*.log
 
 # llama.cpp checkout + build artifacts (re-clone to rebuild; see modules/llm/README.md)
 modules/llm/llama.cpp/
