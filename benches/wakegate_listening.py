@@ -192,7 +192,7 @@ async def main():
                 listen_span = nxt - t[0]
                 break
         good2 = (done and subseq(["idle"] + p2s, ["listening", "thinking", "speaking", "idle"])
-                 and "idle" not in p2s[:p2s.index("thinking")] and listen_span >= 4.0)
+                 and "idle" not in p2s[:p2s.index("thinking")] and listen_span >= 2.5)  # the span tracks the no-speech timeout: 3.0 s since 2026-11-21 (Daniel's order); the old 4.0 dated from the 6.0 s era and flagged her correct behavior
         log("PHASE 2: pink held %.1f s ->" % listen_span, "PASS" if good2 else "FAIL")
         ok = ok and good2
 

@@ -46,6 +46,7 @@ import json
 import logging
 import math
 import sqlite3
+import threading
 import urllib.request
 from datetime import date, datetime
 from pathlib import Path
@@ -125,6 +126,13 @@ class MemoryStore:
         self._embedder = embedder or Embedder()
         self._claims_sig: tuple | None = None  # (size, mtime) indexed
         self._db: sqlite3.Connection | None = None
+        # Retrieval runs on thread-pool threads (the router calls
+        # in via asyncio.to_thread) while the connection is cached
+        # on the store: one lock serializes all index access, and
+        # the connection is opened check_same_thread=False. Before
+        # this, cross-thread use raised sqlite3.ProgrammingError
+        # and the fail-silent channels quietly returned nothing.
+        self._lock = threading.RLock()
 
     # -- canonical files ------------------------------------------------
 
@@ -215,6 +223,10 @@ class MemoryStore:
             return None
 
     def _ensure_index(self) -> sqlite3.Connection | None:
+        with self._lock:
+            return self._ensure_index_locked()
+
+    def _ensure_index_locked(self) -> sqlite3.Connection | None:
         """Open the index, rebuilding it when the canonical file
         moved or the embedding stamp changed. Returns None when
         there is nothing to index or the index cannot be built --
@@ -226,7 +238,8 @@ class MemoryStore:
             return self._db
         try:
             self._root.mkdir(parents=True, exist_ok=True)
-            db = sqlite3.connect(str(self._index_path))
+            db = sqlite3.connect(str(self._index_path),
+                                 check_same_thread=False)
             db.execute("""CREATE TABLE IF NOT EXISTS claims (
                 id TEXT PRIMARY KEY, subject TEXT, relation TEXT,
                 object TEXT, statement TEXT, learned TEXT,
@@ -409,7 +422,9 @@ class MemoryStore:
             if db is not None:
                 qv = self._embedder.embed(q, query=True)
                 if qv is not None:
-                    for cid, s in self._vector_scores(db, qv).items():
+                    with self._lock:
+                        _scores = self._vector_scores(db, qv)
+                    for cid, s in _scores.items():
                         if cid in by_id:
                             scores[cid] = max(scores.get(cid, 0.0), s)
             ranked = sorted(scores.items(), key=lambda kv: kv[1],
@@ -452,7 +467,9 @@ class MemoryStore:
                 if note.get("corrects"):
                     withheld.add(note["corrects"])
             scored = []
-            for cid, s in self._vector_scores(db, qv).items():
+            with self._lock:
+                _scores = self._vector_scores(db, qv)
+            for cid, s in _scores.items():
                 if s < AMBIENT_MIN_SCORE:
                     continue
                 if cid in exclude_ids or cid in withheld:
