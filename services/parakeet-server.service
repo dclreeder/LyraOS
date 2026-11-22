@@ -1,5 +1,5 @@
 [Unit]
-Description=Parakeet TDT 0.6B v2 transcription server (standalone eval, not part of LyraOS)
+Description=Parakeet TDT 0.6B v2 transcription server (Lyra RTC-path STT, :8096)
 After=network.target
 
 [Service]
