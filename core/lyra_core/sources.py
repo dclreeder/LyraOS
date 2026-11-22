@@ -97,9 +97,8 @@ def chunk_text(text: str) -> list[str]:
     chunks: list[str] = []
     cur = ""
     for para in paras:
-        pieces = [para]
-        while len(pieces[0]) > CHUNK_CHARS:
-            pieces = [pieces[0][:CHUNK_CHARS], pieces[0][CHUNK_CHARS:]] + pieces[1:]
+        pieces = [para[i:i + CHUNK_CHARS]
+                  for i in range(0, len(para), CHUNK_CHARS)]
         for piece in pieces:
             if cur and len(cur) + 2 + len(piece) > CHUNK_CHARS:
                 chunks.append(cur)
@@ -143,8 +142,14 @@ def ingest(sid: str) -> dict:
         from .memory import Embedder
         embedder = Embedder()
         vecs = [embedder.embed(chunk, query=False) for chunk in chunks]
-        arr = (np.array(vecs, dtype=np.float32)
-               if all(v is not None for v in vecs) else np.zeros((0,)))
+        if not all(v is not None for v in vecs):
+            missing = sum(1 for v in vecs if v is None)
+            update_status(sid, status="ingest_failed",
+                          error=f"embedding failed for {missing} of "
+                                f"{len(vecs)} chunks")
+            return {"ok": False,
+                    "error": f"embedding failed for {missing} chunks"}
+        arr = np.array(vecs, dtype=np.float32)
         np.savez(chunks_path(sid), vec=arr,
                  texts=np.array(json.dumps(chunks)))
         update_status(sid, status="ready", chunks_total=len(chunks),
