@@ -542,7 +542,7 @@ def memory_upload(filename: str, data: bytes) -> dict:
             ["systemd-run", "--user", "--collect",
              "--setenv", "PYTHONPATH=/home/dclreeder/Documents/LyraOS/core",
              "--unit", f"lyra-source-ingest-{sid}",
-             "/home/dclreeder/Documents/esphome-probe/venv/bin/python",
+             "/home/dclreeder/Documents/LyraOS/core/venv/bin/python",
              "-m", "lyra_core.sources", "ingest", sid],
             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:

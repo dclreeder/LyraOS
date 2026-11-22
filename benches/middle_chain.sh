@@ -1,7 +1,7 @@
 #!/bin/bash
 export XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 LLAMA=$HOME/Documents/LyraOS/modules/llm/llama.cpp/build/bin/llama-server
-PY=$HOME/Documents/esphome-probe/venv/bin/python
+PY=$HOME/Documents/LyraOS/core/venv/bin/python
 TEST=$HOME/Documents/LyraOS/benches/curator_synthetic_test.py
 OUT=$HOME/Documents/LyraOS/benches
 M=$HOME/Documents/LyraOS/data/models

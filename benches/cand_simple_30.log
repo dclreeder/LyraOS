@@ -1,0 +1,60 @@
+RESULT: {"day": "2026-02-09", "ok": true, "stats": {"added": ["c-20260209-001: Daniel's probation check-in day is Wednesdays.", "c-20260209-002: Daniel drives a 2018 Silverado.", "c-20260209-003: Daniel's current probation officer is Dana Whitfield.", "c-20260209-004: Daniel's sister is Jessica.", "c-20260209-005: Jessica lives in Tampa.", "c-20260209-006: Jessica works at a hospital.", "c-20260209-007: Daniel's rent will stay the same next month.", "c-20260209-008: Daniel will work only day shifts from now on.", "c-20260209-009: Daniel is awaiting his tax refund letter."], "superseded": [], "closed":
+
+=== REPORT ===
+ # Curation — 2026-02-09
+
+Updated Daniel's probation check‑in day to Wednesdays, corrected his vehicle to a 2018 Silverado, introduced his new probation officer Dana Whitfield, recorded his sister Jessica's move to Tampa and employment at a hospital, noted that rent will stay the same, confirmed his shift to day shifts only, and flagged his pending tax‑refund letter as an open thread; also captured landlord rent statement and resolved contradictions around landlord identity.
+
+- claims added: 9
+  - c-20260209-001: Daniel's probation check-in day is Wednesdays.
+  - c-20260209-002: Daniel drives a 2018 Silverado.
+  - c-20260209-003: Daniel's current probation officer is Dana Whitfield.
+  - c-20260209-004: Daniel's sister is Jessica.
+  - c-20260209-005: Jessica lives in Tampa.
+  - c-20260209-006: Jessica works at a hospital.
+  - c-20260209-007: Daniel's rent will stay the same next month.
+  - c-20260209-008: Daniel will work only day shifts from now on.
+  - c-20260209-009: Daniel is awaiting his tax refund letter.
+- claims superseded (corrected): 0
+- claims closed (changed): 3
+- in-play flags changed: 0
+- entities added: dana-whitfield, jessica, tampa
+- merges: none
+- corrections applied: 1
+- backup net: 1 flagged, 0 applied, 1 dismissed
+- redacted lines skipped: 0
+- unresolved: Landlord identity conflict: Mr. Chen vs Mrs. Alvarez
+
+Curator: nemotron-nano-12b-v2 (thinking on), attempts 1, tokens in 3615 / out 11774, 641.3s.
+
+=== ALL CLAIMS ===
+  c-seed-001 | alex-arciniega | is_probation_officer_of | Daniel | open=False inf=False sup_by=None valid_to=2026-02-09
+  c-seed-002 | daniel | vehicle | 2015 Silverado | open=False inf=False sup_by=None valid_to=2026-02-09
+  c-seed-003 | daniel | probation_check_in_day | Tuesdays | open=False inf=False sup_by=None valid_to=2026-02-09
+  c-20260209-001 | daniel | probation_check_in_day | Wednesdays | open=False inf=False sup_by=None valid_to=None
+  c-20260209-002 | daniel | vehicle | 2018 Silverado | open=False inf=False sup_by=None valid_to=None
+  c-20260209-003 | daniel | probation_officer | dana-whitfield | open=False inf=False sup_by=None valid_to=None
+  c-20260209-004 | daniel | sibling | jessica | open=False inf=False sup_by=None valid_to=None
+  c-20260209-005 | jessica | lives_in | tampa | open=False inf=False sup_by=None valid_to=None
+  c-20260209-006 | jessica | works_at | hospital | open=False inf=False sup_by=None valid_to=None
+  c-20260209-007 | daniel | rent_next_month | same | open=False inf=False sup_by=None valid_to=None
+  c-20260209-008 | daniel | work_schedule | day_shifts | open=False inf=False sup_by=None valid_to=None
+  c-20260209-009 | daniel | awaiting | tax_refund_letter | open=True inf=False sup_by=None valid_to=None
+ENTITIES: ['alex-arciniega', 'dana-whitfield', 'daniel', 'gisele', 'jessica', 'tampa']
+
+=== HARD CHECKS ===
+  PASS  no lyra-subject claims
+  PASS  no marcus entity
+  FAIL  truck corrected (seed-002 superseded + 2018 live)
+  FAIL  officer changed (seed-001 closed + Dana live)
+  FAIL  notebook correction (seed-003 superseded + Wed live)
+  PASS  officer closed as change (valid_to = day)
+  PASS  refund letter open
+  PASS  landlord unresolved in report
+  PASS  landlord not stored as fact
+  PASS  jessica claims stored
+  PASS  shift preference stored
+  PASS  no mood/state claim
+  PASS  no lyra entity
+  PASS  joe only as inference
+  PASS  no weather/driveway claims

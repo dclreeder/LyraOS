@@ -3,4 +3,4 @@
 # instance on :8199 with a fake announce recorder. Read-only real
 # hardware checks (light/monitor state, live weather). Never touches
 # the production service, its alarm state, or the speaker box.
-exec env PYTHONPATH="$HOME/lyra-core" "$HOME/Documents/esphome-probe/venv/bin/python" -m lyra_core.phase4_bench "$@"
+exec env PYTHONPATH="$HOME/Documents/LyraOS/core" "$HOME/Documents/LyraOS/core/venv/bin/python" -m lyra_core.phase4_bench "$@"

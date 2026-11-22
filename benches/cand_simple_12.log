@@ -1,0 +1,34 @@
+RESULT: {"day": "2026-02-09", "ok": false, "errors": ["c-weather-001: subject 'saturday' is not an entity"], "wall_s": 540.9}
+
+=== REPORT ===
+ # Curation — 2026-02-09
+
+**FAILED — the day was not committed and the pass stopped here.**
+
+Validation errors:
+- c-weather-001: subject 'saturday' is not an entity
+
+Curator: nemotron-nano-12b-v2, attempts 2, 540.9s.
+
+=== ALL CLAIMS ===
+  c-seed-001 | alex-arciniega | is_probation_officer_of | Daniel | open=False inf=False sup_by=None valid_to=None
+  c-seed-002 | daniel | vehicle | 2015 Silverado | open=False inf=False sup_by=None valid_to=None
+  c-seed-003 | daniel | probation_check_in_day | Tuesdays | open=False inf=False sup_by=None valid_to=None
+ENTITIES: ['alex-arciniega', 'daniel', 'gisele']
+
+=== HARD CHECKS ===
+  PASS  no lyra-subject claims
+  PASS  no marcus entity
+  FAIL  truck corrected (seed-002 superseded + 2018 live)
+  FAIL  officer changed (seed-001 closed + Dana live)
+  FAIL  notebook correction (seed-003 superseded + Wed live)
+  FAIL  officer closed as change (valid_to = day)
+  FAIL  refund letter open
+  FAIL  landlord unresolved in report
+  PASS  landlord not stored as fact
+  FAIL  jessica claims stored
+  FAIL  shift preference stored
+  PASS  no mood/state claim
+  PASS  no lyra entity
+  PASS  joe only as inference
+  PASS  no weather/driveway claims

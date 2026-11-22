@@ -1,0 +1,60 @@
+RESULT: {"day": "2026-02-09", "ok": true, "stats": {"added": ["c-20260209-001: Daniel's probation check-in is on Wednesdays.", "c-20260209-002: Daniel drives a 2018 Silverado.", "c-20260209-003: Dana Whitfield is Daniel's probation officer.", "c-20260209-004: Daniel will only work day shifts from now on.", "c-20260209-005: Daniel is waiting for the tax office to mail his refund letter.", "c-20260209-006: Daniel has a sister named Jessica.", "c-20260209-007: Jessica lives in Tampa.", "c-20260209-008: Jessica works at a hospital in Tampa.", "c-20260209-009: Daniel will ask Dana about moving his check-in
+
+=== REPORT ===
+ # Curation — 2026-02-09
+
+On 2026-02-09 Daniel’s probation check‑in day was corrected to Wednesdays, his 2015 Silverado was updated to a 2018 model, Alex is no longer his probation officer and Dana Whitfield is now the officer, his shift schedule changed to day‑only, he is awaiting a tax‑refund letter, his sister Jessica was introduced as living in Tampa and working at a hospital, and two open threads were created about the pending tax‑refund and asking Dana to adjust his check‑in.
+
+- claims added: 9
+  - c-20260209-001: Daniel's probation check-in is on Wednesdays.
+  - c-20260209-002: Daniel drives a 2018 Silverado.
+  - c-20260209-003: Dana Whitfield is Daniel's probation officer.
+  - c-20260209-004: Daniel will only work day shifts from now on.
+  - c-20260209-005: Daniel is waiting for the tax office to mail his refund letter.
+  - c-20260209-006: Daniel has a sister named Jessica.
+  - c-20260209-007: Jessica lives in Tampa.
+  - c-20260209-008: Jessica works at a hospital in Tampa.
+  - c-20260209-009: Daniel will ask Dana about moving his check-in this week.
+- claims superseded (corrected): 1
+- claims closed (changed): 2
+- in-play flags changed: 0
+- entities added: jessica, dana-whitfield
+- merges: none
+- corrections applied: 1
+- backup net: 1 flagged, 0 applied, 1 dismissed
+- redacted lines skipped: 0
+- unresolved: Daniel refers to both Mr. Chen and Mrs. Alvarez as his landlord, with no indication they are the same person.
+
+Curator: nemotron-nano-12b-v2 (thinking on), attempts 2, tokens in 5034 / out 13607, 1622.5s.
+
+=== ALL CLAIMS ===
+  c-seed-001 | alex-arciniega | is_probation_officer_of | Daniel | open=False inf=False sup_by=None valid_to=2026-02-09
+  c-seed-002 | daniel | vehicle | 2015 Silverado | open=False inf=False sup_by=c-20260209-002 valid_to=None
+  c-seed-003 | daniel | probation_check_in_day | Tuesdays | open=False inf=False sup_by=None valid_to=2026-02-09
+  c-20260209-001 | daniel | probation_check_in_day | Wednesdays | open=False inf=False sup_by=None valid_to=None
+  c-20260209-002 | daniel | vehicle | 2018 Silverado | open=False inf=False sup_by=None valid_to=None
+  c-20260209-003 | dana-whitfield | is_probation_officer_of | daniel | open=False inf=False sup_by=None valid_to=None
+  c-20260209-004 | daniel | shift_schedule | day_shifts_only | open=False inf=False sup_by=None valid_to=None
+  c-20260209-005 | daniel | awaiting | tax_refund_letter | open=True inf=False sup_by=None valid_to=None
+  c-20260209-006 | daniel | sibling | jessica | open=False inf=False sup_by=None valid_to=None
+  c-20260209-007 | jessica | lives_in | Tampa | open=False inf=False sup_by=None valid_to=None
+  c-20260209-008 | jessica | works_at | hospital | open=False inf=False sup_by=None valid_to=None
+  c-20260209-009 | daniel | pending_action | ask_dana_about_check_in_move | open=True inf=False sup_by=None valid_to=None
+ENTITIES: ['alex-arciniega', 'dana-whitfield', 'daniel', 'gisele', 'jessica']
+
+=== HARD CHECKS ===
+  PASS  no lyra-subject claims
+  PASS  no marcus entity
+  PASS  truck corrected (seed-002 superseded + 2018 live)
+  PASS  officer changed (seed-001 closed + Dana live)
+  FAIL  notebook correction (seed-003 superseded + Wed live)
+  PASS  officer closed as change (valid_to = day)
+  PASS  refund letter open
+  PASS  landlord unresolved in report
+  PASS  landlord not stored as fact
+  PASS  jessica claims stored
+  PASS  shift preference stored
+  PASS  no mood/state claim
+  PASS  no lyra entity
+  PASS  joe only as inference
+  PASS  no weather/driveway claims

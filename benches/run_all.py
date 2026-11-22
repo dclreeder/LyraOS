@@ -28,7 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BENCH_DIR = ROOT / "benches"
 CORE_DIR = ROOT / "core"
-VENV_PY = Path.home() / "Documents/esphome-probe/venv/bin/python"
+VENV_PY = Path.home() / "Documents/LyraOS/core/venv/bin/python"
 ALARM_STATE = CORE_DIR / "alarm_state.json"
 LOG_DIR = Path("/tmp/lyra-bench-logs")
 

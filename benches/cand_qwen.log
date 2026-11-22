@@ -1,0 +1,34 @@
+RESULT: {"day": "2026-02-09", "ok": false, "errors": ["curator call/parse failed: no JSON object in curator reply"], "wall_s": 1054.1}
+
+=== REPORT ===
+ # Curation — 2026-02-09
+
+**FAILED — the day was not committed and the pass stopped here.**
+
+Validation errors:
+- curator call/parse failed: no JSON object in curator reply
+
+Curator: nemotron-nano-12b-v2, attempts 2, 1054.1s.
+
+=== ALL CLAIMS ===
+  c-seed-001 | alex-arciniega | is_probation_officer_of | Daniel | open=False inf=False sup_by=None valid_to=None
+  c-seed-002 | daniel | vehicle | 2015 Silverado | open=False inf=False sup_by=None valid_to=None
+  c-seed-003 | daniel | probation_check_in_day | Tuesdays | open=False inf=False sup_by=None valid_to=None
+ENTITIES: ['alex-arciniega', 'daniel', 'gisele']
+
+=== HARD CHECKS ===
+  PASS  no lyra-subject claims
+  PASS  no marcus entity
+  FAIL  truck corrected (seed-002 superseded + 2018 live)
+  FAIL  officer changed (seed-001 closed + Dana live)
+  FAIL  notebook correction (seed-003 superseded + Wed live)
+  FAIL  officer closed as change (valid_to = day)
+  FAIL  refund letter open
+  FAIL  landlord unresolved in report
+  PASS  landlord not stored as fact
+  FAIL  jessica claims stored
+  FAIL  shift preference stored
+  PASS  no mood/state claim
+  PASS  no lyra entity
+  PASS  joe only as inference
+  PASS  no weather/driveway claims

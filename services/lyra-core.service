@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=/home/dclreeder/Documents/LyraOS/core
 Environment=PYTHONPATH=/home/dclreeder/Documents/LyraOS/core
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/dclreeder/Documents/esphome-probe/venv/bin/python -m lyra_core.production_main
+ExecStart=/home/dclreeder/Documents/LyraOS/core/venv/bin/python -m lyra_core.production_main
 Restart=on-failure
 RestartSec=5
 

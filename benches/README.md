@@ -7,7 +7,7 @@ here, in git, and runs through one runner:
     benches/run_all.py NAME [...]   # just the named benches
 
 Each bench is a subprocess under the core's venv python
-(`~/Documents/esphome-probe/venv/bin/python`, PYTHONPATH=core:benches)
+(`~/Documents/LyraOS/core/venv/bin/python`, PYTHONPATH=core:benches)
 and reports its verdict as a printed marker plus exit code. The
 runner prints a per-bench table and snapshots
 `core/alarm_state.json`'s sha256 before/after: no bench may touch
