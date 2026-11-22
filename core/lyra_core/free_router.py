@@ -73,15 +73,7 @@ MAX_TOOL_CALLS = 6
 _TZ = ZoneInfo("America/New_York")
 
 
-def _speaker_label(verify) -> str:
-    """The turn's speaker label from its verify result, sanitized.
-    Only the two positive identifications survive; everything else
-    (no gate, RTC, a failure) is 'unknown'."""
-    label = getattr(verify, "speaker", None)
-    return label if label in ("daniel", "guest") else "unknown"
-
-
-def _stamped(command: str, speaker: str = "unknown") -> str:
+def _stamped(command: str, speaker: str = "daniel") -> str:
     """Prefix a user turn with the moment it was spoken, e.g.
     '[10:32 AM, Sun Nov 15] what time is it?'. Added 2026-11-15
     after the model answered a time question with zero tool calls
@@ -89,7 +81,11 @@ def _stamped(command: str, speaker: str = "unknown") -> str:
     attached to THIS turn, and because the turn slice is what
     history stores, every past turn keeps its own stamp — an old
     time reads as an old moment, not as now."""
-    who = {"daniel": " · Daniel", "guest": " · Guest"}.get(speaker, "")
+    # Every turn is Daniel's (Daniel, 2026-11-22): the voiceprint
+    # who's-who labeling was removed, and the stamp always carries
+    # his name. The speaker argument is accepted for call-site
+    # compatibility and no longer changes the stamp.
+    who = " · Daniel"
     return f"[{datetime.now(_TZ):%I:%M %p, %a %b %d}{who}] {command}"
 
 
@@ -562,19 +558,16 @@ class FreeRouter:
     # -- the hook ------------------------------------------------------
 
     async def handle(self, command: str, verify=None, on_sentence=None, via: str = "box") -> object:
-        speaker = _speaker_label(verify)
-        if speaker == "unknown" and via == "rtc":
-            # RTC is Daniel's own client (Daniel, 2026-11-22):
-            # his turns carry his name stamp, same as a voiceprint
-            # match on the room path. Guests are a room-path
-            # thing, where the voiceprint stamp separates them.
-            speaker = "daniel"
+        # All turns are Daniel's (Daniel, 2026-11-22): the
+        # voiceprint who's-who labeling is removed; every path
+        # stamps his name.
+        speaker = "daniel"
         reply = await self._handle_impl(command, verify=verify, on_sentence=on_sentence, speaker=speaker)
         self._log_turn(command, reply, via, speaker)
         return reply
 
     def _log_turn(self, command: str, reply: object, via: str,
-                  speaker: str = "unknown") -> None:
+                  speaker: str = "daniel") -> None:
         """Phase 0 inbox (memory build): one entry per completed
         turn, with the turn's tool calls and their results lifted
         from the turn slice. Written by code from what actually
@@ -652,7 +645,7 @@ class FreeRouter:
         if self._notebook is not None:
             self._notebook.log({"type": "note", **entry})
 
-    async def _handle_impl(self, command: str, verify=None, on_sentence=None, speaker: str | None = None) -> object:
+    async def _handle_impl(self, command: str, verify=None, on_sentence=None, speaker: str = "daniel") -> object:
         normalized = normalize(command)
         if looks_garbled(normalized):
             _LOGGER.info("garbled command %r -> didn't catch", command)
@@ -666,8 +659,6 @@ class FreeRouter:
             self._history.clear()
             self._surfaced.clear()
         started = time.monotonic()
-        if speaker is None:
-            speaker = _speaker_label(verify)
         raw_final = None
         turn_slice: list = []
         self._last_slice = []
@@ -709,7 +700,7 @@ class FreeRouter:
     # -- conversation context (no turn limit; see _trim_history) --------------------------------
 
     def _remember(self, command: str, spoken: str,
-                  speaker: str = "unknown") -> None:
+                  speaker: str = "daniel") -> None:
         """Record a turn whose model exchange failed (a fallback
         line was spoken) in its honest minimal form."""
         self._history.append([

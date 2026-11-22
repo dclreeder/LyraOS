@@ -95,7 +95,6 @@ from .tools import (
 )
 from .supervisor import CoreSupervisor
 from .verify import VerifyGate, finalize_pending_detection
-from .speaker import SpeakerGate
 from .wake import run_detection_sweep
 
 _LOGGER = logging.getLogger("lyra_core.production")
@@ -477,7 +476,7 @@ async def amain() -> int:
                     _session_processing[0] = False
                     hub.turn_end()
 
-    session = VoiceSession(cfg, driver, http, verify_gate=gate, speaker_gate=SpeakerGate(), on_event=_status_event_hook)
+    session = VoiceSession(cfg, driver, http, verify_gate=gate, on_event=_status_event_hook)
 
     if cfg.transport != "localmic":
         raise ValueError(
