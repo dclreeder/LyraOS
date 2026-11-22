@@ -150,6 +150,10 @@ class VerifyResult:
     filed_path: str             # dest file_clip returned (would-be in dry-run)
     would_ledger: dict | None   # ledger kwargs captured in dry-run
     audio_seconds: float
+    # Speaker marking (2026-11-22): filled by the session's speaker
+    # gate after a PASS; 'unknown' whenever no judgment was made.
+    speaker: str = "unknown"
+    speaker_score: float = 0.0
 
 
 class VerifyGate:

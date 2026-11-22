@@ -73,7 +73,15 @@ MAX_TOOL_CALLS = 6
 _TZ = ZoneInfo("America/New_York")
 
 
-def _stamped(command: str) -> str:
+def _speaker_label(verify) -> str:
+    """The turn's speaker label from its verify result, sanitized.
+    Only the two positive identifications survive; everything else
+    (no gate, RTC, a failure) is 'unknown'."""
+    label = getattr(verify, "speaker", None)
+    return label if label in ("daniel", "guest") else "unknown"
+
+
+def _stamped(command: str, speaker: str = "unknown") -> str:
     """Prefix a user turn with the moment it was spoken, e.g.
     '[10:32 AM, Sun Nov 15] what time is it?'. Added 2026-11-15
     after the model answered a time question with zero tool calls
@@ -81,7 +89,8 @@ def _stamped(command: str) -> str:
     attached to THIS turn, and because the turn slice is what
     history stores, every past turn keeps its own stamp — an old
     time reads as an old moment, not as now."""
-    return f"[{datetime.now(_TZ):%I:%M %p, %a %b %d}] {command}"
+    who = {"daniel": " · Daniel", "guest": " · Guest"}.get(speaker, "")
+    return f"[{datetime.now(_TZ):%I:%M %p, %a %b %d}{who}] {command}"
 
 
 _SOUL_PATH = Path(__file__).resolve().parent.parent / "SOUL.md"
@@ -553,10 +562,11 @@ class FreeRouter:
 
     async def handle(self, command: str, verify=None, on_sentence=None, via: str = "box") -> object:
         reply = await self._handle_impl(command, verify=verify, on_sentence=on_sentence)
-        self._log_turn(command, reply, via)
+        self._log_turn(command, reply, via, _speaker_label(verify))
         return reply
 
-    def _log_turn(self, command: str, reply: object, via: str) -> None:
+    def _log_turn(self, command: str, reply: object, via: str,
+                  speaker: str = "unknown") -> None:
         """Phase 0 inbox (memory build): one entry per completed
         turn, with the turn's tool calls and their results lifted
         from the turn slice. Written by code from what actually
@@ -586,7 +596,7 @@ class FreeRouter:
                 tools.append(entry)
         tools.extend(pending)
         self._inbox.log({
-            "type": "turn", "via": via, "user": command,
+            "type": "turn", "via": via, "speaker": speaker, "user": command,
             "reply": str(reply), "tools": tools,
         })
 
@@ -649,12 +659,13 @@ class FreeRouter:
             self._history.clear()
             self._surfaced.clear()
         started = time.monotonic()
+        speaker = _speaker_label(verify)
         raw_final = None
         turn_slice: list = []
         self._last_slice = []
         try:
             raw_final, calls, turn_slice = await asyncio.wait_for(
-                self._run_turn(command, on_sentence),
+                self._run_turn(command, on_sentence, speaker),
                 timeout=self._turn_deadline_s(),
             )
         except asyncio.TimeoutError:
@@ -662,13 +673,13 @@ class FreeRouter:
                 "FREE_FAIL timeout after %.1fs for %r raw=%r",
                 self._turn_deadline_s(), command, raw_final,
             )
-            self._remember(command, "Sorry, something went wrong.")
+            self._remember(command, "Sorry, something went wrong.", speaker)
             return "Sorry, something went wrong."
         except Exception as exc:
             _LOGGER.error(
                 "FREE_FAIL %s for %r raw=%r", exc, command, raw_final
             )
-            self._remember(command, "Sorry, something went wrong.")
+            self._remember(command, "Sorry, something went wrong.", speaker)
             return "Sorry, something went wrong."
         self._last_slice = turn_slice
         text = sanitize_spoken(raw_final or "")
@@ -677,7 +688,7 @@ class FreeRouter:
                 "FREE_FAIL empty/garbled final text for %r raw=%r",
                 command, raw_final,
             )
-            self._remember(command, NOT_UNDERSTOOD)
+            self._remember(command, NOT_UNDERSTOOD, speaker)
             return NOT_UNDERSTOOD
         self._remember_turn(turn_slice, text)
         _LOGGER.info(
@@ -689,11 +700,12 @@ class FreeRouter:
 
     # -- conversation context (no turn limit; see _trim_history) --------------------------------
 
-    def _remember(self, command: str, spoken: str) -> None:
+    def _remember(self, command: str, spoken: str,
+                  speaker: str = "unknown") -> None:
         """Record a turn whose model exchange failed (a fallback
         line was spoken) in its honest minimal form."""
         self._history.append([
-            {"role": "user", "content": _stamped(command)},
+            {"role": "user", "content": _stamped(command, speaker)},
             {"role": "assistant", "content": spoken},
         ])
         self._last_turn_at = time.monotonic()
@@ -726,7 +738,8 @@ class FreeRouter:
         while len(self._history) > 1 and self._history_tokens() > HISTORY_MAX_TOKENS:
             self._history.pop(0)
 
-    async def _run_turn(self, command: str, on_sentence=None):
+    async def _run_turn(self, command: str, on_sentence=None,
+                        speaker: str = "unknown"):
         client = self._client
         deadline = time.monotonic() + FREE_DEADLINE_S
         history = [m for turn in self._history for m in turn]
@@ -745,7 +758,7 @@ class FreeRouter:
         messages = [
             {"role": "system", "content": system_content},
             *history,
-            {"role": "user", "content": _stamped(command)},
+            {"role": "user", "content": _stamped(command, speaker)},
         ]
         slice_at = len(messages) - 1
         calls_made: list[str] = []

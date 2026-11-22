@@ -165,6 +165,7 @@ class VoiceSession:
         no_speech_timeout_s: float = 3.0,
         max_capture_s: float = 30.0,
         verify_gate=None,
+        speaker_gate=None,
         on_command: Callable[[str], object] | None = None,
         clip_ring_s: float = 2.5,
     ) -> None:
@@ -184,6 +185,9 @@ class VoiceSession:
         # clip_ring_s of idle audio; at a Detection it is snapshotted as
         # the combined clip's wake prefix — the collector's clip shape.
         self._verify_gate = verify_gate
+        # Speaker marking (2026-11-22): duck-typed speaker.SpeakerGate;
+        # labels each PASS turn's voice. None in benches.
+        self._speaker_gate = speaker_gate
         # The accepted Detection's registry entry; set in
         # _on_detection, consumed by _verify_stage.
         self._detection_entry: PendingDetection | None = None
@@ -569,6 +573,16 @@ class VoiceSession:
                 )
                 self._emit_box("run_end", box.evt_run_end)
             return None
+        if self._speaker_gate is not None:
+            # Whose voice is this? Label the result before the hook
+            # (and the record) see it. Never blocks the turn.
+            try:
+                _label, _score = await asyncio.to_thread(
+                    self._speaker_gate.label, bytes(combined))
+                result.speaker = _label
+                result.speaker_score = _score
+            except Exception:
+                _LOGGER.exception("speaker labeling failed")
         reply = self._reply_text
         if self._on_command is not None:
             # Phase 3: the hook is the router. It is called on every

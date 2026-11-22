@@ -160,8 +160,11 @@ def _render_record_line(entry: dict) -> str:
             f"{t.get('name')}({json.dumps(t.get('args') or {})}) -> "
             f"{'ok' if t.get('ok') else 'FAILED'}: {t.get('result') or ''}"
             for t in entry.get("tools") or [])
+        who = {"daniel": "Daniel", "guest": "Guest",
+               "unknown": "Unknown speaker"}.get(
+                   entry.get("speaker") or "daniel", "Daniel")
         text = (f"[{entry.get('ts', '')}] ({entry.get('via', 'box')}) "
-                f"Daniel: {entry.get('user', '')} | Lyra: "
+                f"{who}: {entry.get('user', '')} | Lyra: "
                 f"{entry.get('reply', '')}")
         return text + (f" | tools: {tools}" if tools else "")
     if kind == "event":
