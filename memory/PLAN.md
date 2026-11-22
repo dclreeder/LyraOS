@@ -72,7 +72,7 @@ Memory does not have to *live* in her context to be hers. Three channels:
 
 Requirements: a clear step up from the 9B in reasoning; large context; must run on the night-time GPU budget (16 GB VRAM, with system-RAM offload acceptable — it is a batch job, speed is secondary).
 
-- **The field (narrowed by Daniel, 2026-11-21): two thinking-enabled candidates.** (a) The same model she runs live — Nemotron Nano 9B v2 — with thinking ENABLED for the night shift: live runs it with thinking off for speed; the curator trades that speed for reasoning, which is this option's "move up" step. (b) A 12B-class model, thinking enabled [the specific 12B is OPEN — decision 1 below]. Both fit the 16 GB card outright, so the GPU swap may shrink to a context-size change rather than a model swap with offload. Decided by bake-off, not by spec sheet — and because thinking traces are long, the bake-off also scores tokens-per-night and wall-clock: there is no hard deadline, but a curator that routinely runs into the morning leaves her unusable, so speed still counts.
+- **The field (narrowed by Daniel, 2026-11-21): two thinking-enabled candidates.** (a) The same model she runs live — Nemotron Nano 9B v2 — with thinking ENABLED for the night shift: live runs it with thinking off for speed; the curator trades that speed for reasoning, which is this option's "move up" step. (b) NVIDIA Nemotron Nano 12B v2, thinking enabled (Daniel, 2026-11-21) — the 12B version of her own model; her 9B v2 was compressed from it, so the bake-off is her model thinking-on against its own parent, same tooling dialect. Both fit the 16 GB card outright, so the GPU swap may shrink to a context-size change rather than a model swap with offload. Decided by bake-off, not by spec sheet — and because thinking traces are long, the bake-off also scores tokens-per-night and wall-clock: there is no hard deadline, but a curator that routinely runs into the morning leaves her unusable, so speed still counts.
 - **Bake-off protocol.** Once the inbox has real days in it, run each candidate over the same days of actual conversation logs. Grade: extraction precision (no invented facts), recall of durable facts, entity merges done correctly, corrections superseded correctly, and a planted two-hop connection (Stuart Jones test) found. Winner curates.
 - **The pipeline is model-agnostic** (an OpenAI-compatible endpoint plus a context size). On the future Strix Halo box (128 GB unified), the curator becomes a 70B-class model with 128K context with no redesign — the swap is a config change.
 - Model sourcing rule stands: official publisher repos (Daniel's Unsloth waiver was for the current 9B; a curator pick gets its own decision).
@@ -97,13 +97,12 @@ Explicitly **not** in this plan: the live model curating itself; fine-tuning/LoR
 
 _The sweep list. Each gets decided, folded into the body above, and struck from here. When this list is empty, the plan is ready to build — and building still waits for Daniel's word._
 
-1. **The 12B curator candidate:** which specific model joins the bake-off against the thinking-enabled 9B?
-2. **Embedding model pick** (small, local, served beside the stack).
-3. **Graph:** a dedicated graph structure for the claim triples, or walks over the claim index + entity pages?
-4. **Claim-store machinery:** how much to borrow from Muse's stack vs keep simpler and files-first.
-5. **State card budget:** is ~800 tokens the right cap?
-6. **Ambient injection tuning:** the relevance bar and the per-turn cap — set values now, or calibrate at build time against real claims?
-7. **Curation report:** where Daniel reads it — a file, the dashboard, a spoken morning summary?
-8. **Memory on the Muse brain:** when the dashboard brain switch is set to Muse, do the state card, ambient injection, and lookup apply to those turns too — and how, given that path takes no tool calls?
-9. **Correction-detection backup:** the running brain's judgment files the correction notes — should code also flag candidate corrections from the day's transcript for the curator to check, as a safety net?
-10. **Upload limits:** file types and size caps for the source spot.
+1. **Embedding model pick** (small, local, served beside the stack).
+2. **Graph:** a dedicated graph structure for the claim triples, or walks over the claim index + entity pages?
+3. **Claim-store machinery:** how much to borrow from Muse's stack vs keep simpler and files-first.
+4. **State card budget:** is ~800 tokens the right cap?
+5. **Ambient injection tuning:** the relevance bar and the per-turn cap — set values now, or calibrate at build time against real claims?
+6. **Curation report:** where Daniel reads it — a file, the dashboard, a spoken morning summary?
+7. **Memory on the Muse brain:** when the dashboard brain switch is set to Muse, do the state card, ambient injection, and lookup apply to those turns too — and how, given that path takes no tool calls?
+8. **Correction-detection backup:** the running brain's judgment files the correction notes — should code also flag candidate corrections from the day's transcript for the curator to check, as a safety net?
+9. **Upload limits:** file types and size caps for the source spot.
