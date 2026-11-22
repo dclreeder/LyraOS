@@ -120,3 +120,15 @@ Explicitly **not** in this plan: the live model curating itself; fine-tuning/LoR
 ## Open decisions
 
 _None — the sweep closed on 2026-11-21; the audit the same night reopened and re-closed its two items (sleep is the existing Sleep mode, grayed out while she is awake; the core runs the pass, with a catch-up on startup); an independent architectural review that night added safeguards Daniel accepted (conflict resolution, transactional curation with integrity checks, source prompt-injection protection, reversible merges, backups, embedding versioning, and a retrieval evaluation set); and the last open item, forgetting, was settled as redaction at Daniel's word. The plan is ready to build — and building still waits for Daniel's word._
+
+## Amendment — 2026-11-22 (evening): uploads are read whole; digest first
+
+Daniel's principle, set the day the first real upload arrived: **if he uploads a file, it is read whole** — the 10-chunks-per-night pacing is retired. The source stage now runs in one sitting until the source is curated (a failed step still stops the stage and retries next pass).
+
+The pipeline is digest-first ("both," Daniel's pick):
+
+1. **Notes** — the curator reads every chunk in slices and writes compact markdown notes per slice, verbatim quotes preserved with global chunk numbers. Checkpointed in the manifest (`notes_done`) and in `memory/sources/<id>.notes.md`.
+2. **Digest** — the notes are consolidated (in waves when they exceed one call) into a single markdown digest at `memory/sources/<id>.digest.md`: overview, per-person sections, timeline, open threads, unresolved contradictions. The digest is chunked and embedded (`<id>.digest.npz`). It is the inspectable artifact: what the digest drops is forgotten.
+3. **Claims** — mined from the digest's chunks by the existing source pass (same validator, same transaction discipline, source provenance; pointers cite digest chunks, and the digest's quotes carry (chunk N) citations back to the original document's own words).
+
+Raw-chunk mining is retired. The raw file and its chunk embeddings remain on disk as the evidence layer.
