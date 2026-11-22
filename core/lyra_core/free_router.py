@@ -503,6 +503,7 @@ class FreeRouter:
         tv_volume=None,
         jellyfin=None,
         inbox=None,
+        notebook=None,
         client=None,
     ) -> None:
         self._cfg = cfg
@@ -530,6 +531,7 @@ class FreeRouter:
         self._client = client
         self._history: list[list[dict]] = []
         self._inbox = inbox
+        self._notebook = notebook
         self._last_slice: list = []
         self._last_turn_at: float | None = None
 
@@ -583,6 +585,16 @@ class FreeRouter:
             "type": "turn", "via": via, "user": command,
             "reply": str(reply), "tools": tools,
         })
+
+    def log_note(self, entry: dict) -> None:
+        """Notebook (memory build): the running brain's notes --
+        proposals and corrections -- written by code to the
+        per-day notes stream the moment they happen. The caller
+        is the memory_note tool (Phase 3). The notebook is what
+        supersedes (PLAN.md): this write is the record, never
+        best-effort prose riding in context."""
+        if self._notebook is not None:
+            self._notebook.log({"type": "note", **entry})
 
     async def _handle_impl(self, command: str, verify=None, on_sentence=None) -> object:
         normalized = normalize(command)

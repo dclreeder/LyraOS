@@ -65,6 +65,7 @@ import asyncio
 import logging
 import signal
 import sys
+from pathlib import Path
 
 from .alarm import Alarm, ShellyLight
 from .api import CoreApi
@@ -72,6 +73,7 @@ from .audio_http import AudioHttpServer
 from .config import CoreConfig
 from .pipeline import PipelineDriver
 from .free_router import FreeRouter
+from .inbox import InboxLog
 from .localmic import LocalMicClient
 from . import mode as mode_store
 from .rtc import RtcServer
@@ -241,10 +243,20 @@ async def amain() -> int:
     http.start()
     driver = PipelineDriver(cfg)
     gate = VerifyGate(dry_run=False)
-    # Daily conversation logging (Phase 0 inbox) REMOVED
-    # 2026-11-17 at Daniel's order: no InboxLog is constructed
-    # or wired anywhere -- the router and the alarm both
-    # default to no inbox, so no daily log is written.
+    # Daily conversation logging (Phase 0 of the memory build,
+    # LyraOS/memory/PLAN.md): the code-owned record. The inbox
+    # logs every completed turn plus alarm events; the notebook
+    # is the parallel per-day stream for the running brain's
+    # notes (proposals + corrections -- the memory_note tool
+    # that writes them is Phase 3). Both are append-only,
+    # fail-silent, and read by nothing yet: the sleep curator
+    # that consumes them is Phase 2. Removed 2026-11-17 at
+    # Daniel's order; rebuilt 2026-11-21 at his order as the
+    # first phase of the approved memory plan.
+    inbox = InboxLog()
+    notebook = InboxLog("~/Documents/LyraOS/memory/notes")
+    Path("~/Documents/LyraOS/memory/notes").expanduser().mkdir(
+        parents=True, exist_ok=True)
     # -- kiosk status light (2026-11-18, lyra_core.status) --
     # The hub aggregates activity (turns + the speech clock +
     # RTC playback), the applied mode and dependency health into
@@ -342,6 +354,7 @@ async def amain() -> int:
     # itself through Fedora's default sink, at the sink's own
     # volume; no device volume is touched.
     alarm.set_ringer(SinkRinger(cfg.alarm.tone_path))
+    alarm._inbox = inbox
     # Item F (dial-in 2026-11-11): validate the alarm's required
     # assets BEFORE any background service starts. A missing tone
     # degrades the alarm only -- it must never crash-loop the voice
@@ -372,6 +385,8 @@ async def amain() -> int:
         tv=tv_tool,
         tv_volume=tv_volume_tool,
         jellyfin=jellyfin_tool,
+        inbox=inbox,
+        notebook=notebook,
     )
     session._on_command = router.handle
     _LOGGER.info("FREE MODE live: %s", router.describe())
