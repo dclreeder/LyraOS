@@ -51,6 +51,8 @@ Three mechanisms cover three timescales, and they must not bleed into each other
 
 **Compaction never enters the record (Daniel, 2026-11-15) — this is what makes it safe.** The summary exists only inside the live model's open context window, as a context-management device. It is never written to the inbox: the log contains turns and events only, appended by code from what actually happened, and the curator reads that log — so the curator never sees a summary at all, and there is nothing to label or police. Durable facts are minted in exactly one place: the curator, working from the full raw log. A summary can therefore be wrong without consequence beyond the conversation it serves, and the leak — a live-model summary hardening into a durable "fact" — cannot happen, because the summary never crosses into anything the durable side reads. Corrections are the sharp case, and they are safe by the same construction: a correction never lives only in context — code writes it to the notebook the moment it happens, on the record side of the seal — so no summary can carry it, mangle it, or drop it; the notebook, not the context, is what supersedes.
 
+**Scope: the memory system serves the local brain (Daniel, 2026-11-21).** On the Muse path (the dashboard brain switch) the core sends the bare turn, as it does today — no in-play list, no injection, no lookup; Muse answers from its own memory. The inbox still records Muse-brain turns like any other: the record is brain-agnostic, so what Daniel tells either brain enters the same record and the same nightly curation. Only the *use* of the store is local-only.
+
 ## Retrieval — how the store reaches her
 
 Memory does not have to *live* in her context to be hers. Three channels:
@@ -96,6 +98,5 @@ Explicitly **not** in this plan: the live model curating itself; fine-tuning/LoR
 
 _The sweep list. Each gets decided, folded into the body above, and struck from here. When this list is empty, the plan is ready to build — and building still waits for Daniel's word._
 
-1. **Memory on the Muse brain:** when the dashboard brain switch is set to Muse, do the in-play list, ambient injection, and lookup apply to those turns too — and how, given that path takes no tool calls?
-2. **Correction-detection backup:** the running brain's judgment files the correction notes — should code also flag candidate corrections from the day's transcript for the curator to check, as a safety net?
-3. **Upload limits:** file types and size caps for the source spot.
+1. **Correction-detection backup:** the running brain's judgment files the correction notes — should code also flag candidate corrections from the day's transcript for the curator to check, as a safety net?
+2. **Upload limits:** file types and size caps for the source spot.
