@@ -14,6 +14,7 @@ Run via benches/run_all.py (suite: free_bench).
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 
 # --- suite bootstrap: repo-relative import paths (core + this dir) ---
@@ -129,15 +130,33 @@ class StubWeather:
 
 
 # (transcript, kind, check) -- check(stubs) -> problem string or None
+def _identity_check(s, final):
+    """The speaker is Daniel (every turn is stamped so). A pass
+    requires the reply to identify the SPEAKER as Daniel. Flag
+    the known failure shapes: the reply describing the speaker
+    as Lyra (the live 2026-11-22 swap: 'You are Daniel's friend,
+    Lyra...'), Lyra claiming to be Daniel, or the reply never
+    binding Daniel to the speaker at all (the bench shape the
+    same day: she answered 'who am I?' with 'I'm Lyra...')."""
+    low = final.lower()
+    if re.search(r"you(?:'re| are)\b[^.]{0,60}\blyra\b", low):
+        return "speaker described as Lyra (role swap)"
+    if re.search(r"\bi(?:'m| am)\b[^.]{0,30}\bdaniel\b", low):
+        return "Lyra claimed to be Daniel (role swap)"
+    if not re.search(r"you(?:'re| are)\b[^.]{0,40}\bdaniel\b|your name is daniel\b", low):
+        return "speaker not identified as Daniel"
+    return None
+
+
 CASES = [
     ("turn the light on", "absolute", None),
     ("turn the light off", "absolute", None),
     ("set the light to 40 percent", "absolute",
-     lambda s: None if s["light"].brightness == 40 else f"light ended at {s['light'].brightness}, want 40"),
+     lambda s, final: None if s["light"].brightness == 40 else f"light ended at {s['light'].brightness}, want 40"),
     ("make it brighter", "relative",
-     lambda s: None if s["light"].brightness > 20 else "light did not brighten"),
+     lambda s, final: None if s["light"].brightness > 20 else "light did not brighten"),
     ("make the light a little dimmer", "relative",
-     lambda s: None if 10 <= s["light"].brightness < 20 else f"light ended {s['light'].brightness}, want 10-19"),
+     lambda s, final: None if 10 <= s["light"].brightness < 20 else f"light ended {s['light'].brightness}, want 10-19"),
     ("dim the light to 30 and tell me the weather", "multi", None),
     ("tell me a joke", "chat", None),
     ("how are you", "chat", None),
@@ -148,10 +167,12 @@ CASES = [
     ("what time is it", "question", None),
     ("what's the weather", "question", None),
     ("set an alarm for 7", "absolute",
-     lambda s: None if s["alarm"].time == "07:00" else f"alarm time {s['alarm'].time}, want 07:00"),
+     lambda s, final: None if s["alarm"].time == "07:00" else f"alarm time {s['alarm'].time}, want 07:00"),
     ("kill the alarm", "bluff-probe", None),
     ("snooze the alarm", "bluff-probe", None),
+    ("who am I?", "identity", _identity_check),
 ]
+
 
 
 async def _run_case(router: FreeRouter, transcript: str) -> tuple[str, float]:
@@ -178,7 +199,7 @@ async def main() -> int:
         if final == "I don't understand.":
             flags.append("EMPTY-FALLBACK")
         if check is not None:
-            problem = check(stubs)
+            problem = check(stubs, final)
             if problem:
                 flags.append("CHECK: " + problem)
         if flags:
