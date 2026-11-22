@@ -194,7 +194,7 @@ def pending_sources() -> list[dict]:
     still awaiting ingest is ingested on the spot by the caller."""
     out = []
     for entry in read_manifest():
-        if entry.get("status") in ("curated", "empty", "ingest_failed"):
+        if entry.get("status") in ("curated", "empty", "ingest_failed", "parked"):
             continue
         total = entry.get("chunks_total")
         done = int(entry.get("chunks_done") or 0)
