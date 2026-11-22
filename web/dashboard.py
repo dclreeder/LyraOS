@@ -443,36 +443,6 @@ def mode_set(mode: str) -> dict:
     return mode_state()
 
 
-BRAINS = ("local", "muse")
-
-
-def brain_state() -> dict:
-    brain, ok = "local", False
-    if _state_provider is not None:
-        try:
-            snap = _state_provider()
-            brain = snap.get("brain") or "local"
-            ok = bool(snap.get("core_seen"))
-        except Exception:
-            brain, ok = "local", False
-    if brain not in BRAINS:
-        brain = "local"
-    return {"brain": brain, "ok": ok}
-
-
-def brain_set(brain: str) -> dict:
-    if brain not in BRAINS:
-        raise ValueError(f"unknown brain {brain!r}")
-    body = json.dumps({"brain": brain}).encode()
-    _req(f"{CORE}/brain?t={TOKEN}", data=body, timeout=15.0)
-    # Same read-back discipline as mode_set: wait for the core's
-    # pushed state to show the brain just set.
-    end = time.time() + 3.0
-    while time.time() < end:
-        if brain_state()["brain"] == brain:
-            break
-        time.sleep(0.1)
-    return brain_state()
 
 
 def sleep_state() -> dict:
@@ -510,7 +480,6 @@ def full_state() -> dict:
     state["monitor"] = monitor_state()
     state["sleep"] = sleep_state()
     state["mode"] = mode_state()
-    state["brain"] = brain_state()
     return state
 
 
@@ -577,13 +546,6 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self._json(200, {"ok": True,
                                  "mode": mode_set(str(payload.get("mode", "")))})
-            except Exception as exc:
-                self._json(400, {"ok": False, "error": str(exc)})
-            return
-        if self.path == "/api/brain":
-            try:
-                self._json(200, {"ok": True,
-                                 "brain": brain_set(str(payload.get("brain", "")))})
             except Exception as exc:
                 self._json(400, {"ok": False, "error": str(exc)})
             return

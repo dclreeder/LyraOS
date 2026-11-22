@@ -72,8 +72,6 @@ from .audio_http import AudioHttpServer
 from .config import CoreConfig
 from .pipeline import PipelineDriver
 from .free_router import FreeRouter
-from .brain import read_brain, write_brain
-from .muse_client import MuseClient
 from .localmic import LocalMicClient
 from . import mode as mode_store
 from .rtc import RtcServer
@@ -337,7 +335,7 @@ async def amain() -> int:
     # suspended -- in Sleep she is not listening at all).
     seat = _SupervisorSeat(cfg, session, _localmic_factory)
     _LOGGER.info(
-        "transport: localmic (raw ReSpeaker source, pinned by node name; no satellite box)"
+        "transport: localmic (echo-cancelled source, pinned by node name; no satellite box)"
     )
     alarm = Alarm(cfg, http=http)
     # Default-sink sounder (2026-11-19): the core plays the tone
@@ -367,7 +365,6 @@ async def amain() -> int:
     jellyfin_tool = JellyfinTool()
     router = FreeRouter(
         cfg.router,
-        muse_client=MuseClient(),
         light=light_tool,
         alarm_tool=alarm_tool,
         clock=clock_tool,
@@ -383,7 +380,6 @@ async def amain() -> int:
     # The RTC server runs the same router (via="rtc"); the mode
     # manager owns when it may accept offers and when the room
     # capture runs. See lyra_core.mode for the state contract.
-    hub.set_brain(read_brain())
     rtc_server = RtcServer(driver, router.handle)
     rtc_server.status = hub
     mode_mgr = _ModeManager(seat, rtc_server)
@@ -415,19 +411,6 @@ async def amain() -> int:
         """GET /mode: the currently applied mode."""
         return mode_mgr.current or mode_store.DEFAULT_MODE
 
-    async def _brain_set(brain_name: str) -> str:
-        """POST /brain: persist the brain choice and mirror it
-        to the status hub; the router reads the same state at
-        the start of every turn, so the flip lands on the next
-        sentence she hears."""
-        applied = write_brain(brain_name)
-        hub.set_brain(applied)
-        _LOGGER.info("brain switch: %s", applied)
-        return applied
-
-    def _brain_get() -> str:
-        """GET /brain: the currently selected brain."""
-        return read_brain()
 
     api = CoreApi(
         http=http,
@@ -440,8 +423,6 @@ async def amain() -> int:
         rtc_offer=_rtc_offer,
         mode_set=_mode_set,
         mode_get=_mode_get,
-        brain_set=_brain_set,
-        brain_get=_brain_get,
         tv=tv_tool,
         tv_volume=tv_volume_tool,
         jellyfin=jellyfin_tool,

@@ -132,7 +132,7 @@ def _broadcast(kind, payload):
 def _accept_core_status(snap):
     if not isinstance(snap, dict): return
     with _sub_lock:
-        for k in ('state', 'label', 'fault', 'mode', 'brain', 'activity', 'health', 'rtc_connected'):
+        for k in ('state', 'label', 'fault', 'mode', 'activity', 'health', 'rtc_connected'):
             if k in snap: _core_slice[k] = snap[k]
         _core_seen_at[0] = time.time()
     _refresh_state()
@@ -161,7 +161,6 @@ def _merged_state():
     return {
         'state': core.get('state'), 'label': core.get('label'),
         'fault': core.get('fault'), 'mode': mode,
-        'brain': core.get('brain') or 'local',
         'activity': core.get('activity'),
         'health': core.get('health') or {},
         'sleep': mode == 'sleep',
@@ -185,7 +184,6 @@ def _dashboard_state():
     core has been heard from inside the stale window (its 'ok')."""
     with _sub_lock: core = dict(_core_slice)
     return {'mode': core.get('mode') or 'wakegate',
-            'brain': core.get('brain') or 'local',
             'rtc_connected': bool(core.get('rtc_connected')),
             'core_seen': bool(_core_seen_at[0] and
                               time.time() - _core_seen_at[0] <= CORE_STALE_S)}

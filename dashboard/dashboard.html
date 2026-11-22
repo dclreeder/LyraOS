@@ -70,15 +70,6 @@
   <div class="sub" id="modeSub">...</div>
 </div>
 
-<div class="card">
-  <div class="label">Brain</div>
-  <div class="row" style="gap:10px;">
-    <button class="modebtn" id="brainLocal">Local model</button>
-    <button class="modebtn" id="brainMuse">Muse</button>
-  </div>
-  <div class="sub" id="brainSub">...</div>
-</div>
-
 <div class="card" id="alarmCard">
   <div class="row spread">
     <div class="label">Alarm</div>
@@ -261,7 +252,6 @@ async function refresh() {
   }
   renderAudio(j.audio);
   renderMode(j.mode);
-  renderBrain(j.brain);
   renderMonitor(j.monitor);
   renderKiosk(j.monitor);
 }
@@ -500,30 +490,6 @@ async function setMode(mode) {
 $('modeWakegate').onclick = () => setMode('wakegate');
 $('modeRtc').onclick = () => setMode('rtc');
 $('modeSleep').onclick = () => setMode('sleep');
-let brainSig = '';
-function renderBrain(b) {
-  if (!b || !b.brain) return;
-  if (b.brain === brainSig) return;
-  brainSig = b.brain;
-  $('brainLocal').classList.toggle('on', b.brain === 'local');
-  $('brainMuse').classList.toggle('on', b.brain === 'muse');
-  $('brainSub').textContent =
-    b.brain === 'muse' ? 'Muse is thinking for her - everything else works the same' :
-    'The local model on the Fedora is thinking for her';
-}
-async function setBrain(brain) {
-  try {
-    const r = await fetch('/api/brain', { method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({brain}) });
-    const j = await r.json();
-    if (!j.ok) throw new Error(j.error || 'failed');
-    toast('Brain: ' + brain);
-  } catch (e) { toast('Brain change failed'); }
-  refresh();
-}
-$('brainLocal').onclick = () => setBrain('local');
-$('brainMuse').onclick = () => setBrain('muse');
 $('micMuteToggle').onclick = () => {
   const muted = !(S.audio && S.audio.source_muted);
   setAudioMute(muted);
