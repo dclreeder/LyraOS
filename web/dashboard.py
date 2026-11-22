@@ -478,6 +478,78 @@ def memory_reports() -> list:
     return out
 
 
+def memory_sources() -> list:
+    """Uploaded sources with mining status (Phase 4), folded
+    from the sources manifest, latest first. Read-only here."""
+    folded: dict = {}
+    try:
+        manifest = Path("~/Documents/LyraOS/memory/sources/manifest.jsonl").expanduser()
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            if entry.get("id"):
+                folded.setdefault(entry["id"], {}).update(entry)
+    except Exception:
+        return []
+    rows = [{"id": e.get("id"), "name": e.get("name"),
+             "uploaded": str(e.get("uploaded") or e.get("ts") or "")[:10],
+             "size": e.get("size"), "status": e.get("status"),
+             "chunks_done": e.get("chunks_done") or 0,
+             "chunks_total": e.get("chunks_total")}
+            for e in folded.values()]
+    return list(reversed(rows))
+
+
+def memory_upload(filename: str, data: bytes) -> dict:
+    """The mailbox (memory Phase 4): an upload lands in
+    memory/sources/ as an immutable original plus a manifest
+    line, and chunking/embedding is kicked off detached. This
+    is the only write the dashboard makes into memory, and it
+    writes raw material -- never curated memory."""
+    import hashlib
+    from datetime import datetime, timezone
+    name = Path(filename).name
+    ext = Path(name).suffix.lower()
+    if ext not in (".txt", ".md", ".log", ".json", ".csv", ".pdf"):
+        return {"ok": False, "error": "text files and PDFs only"}
+    if not data:
+        return {"ok": False, "error": "empty file"}
+    if len(data) > 50 * 1024 * 1024:
+        return {"ok": False, "error": "over the 50 MB limit"}
+    if ext == ".pdf" and not data.startswith(b"%PDF"):
+        return {"ok": False, "error": "that file is not a PDF"}
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name) or "upload.txt"
+    digest = hashlib.sha256(data).hexdigest()
+    sid = (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+           + "-" + digest[:6])
+    dest_dir = Path("~/Documents/LyraOS/memory/sources").expanduser()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    stored = f"{sid}__{safe}"
+    (dest_dir / stored).write_bytes(data)
+    entry = {"id": sid, "name": name, "file": stored,
+             "uploaded": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+             "size": len(data), "sha256": digest,
+             "status": "pending", "chunks_done": 0}
+    with open(dest_dir / "manifest.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+    try:
+        env = dict(os.environ,
+                   XDG_RUNTIME_DIR="/run/user/1000",
+                   DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus",
+                   PYTHONPATH="/home/dclreeder/Documents/LyraOS/core")
+        subprocess.Popen(
+            ["systemd-run", "--user", "--collect",
+             "--setenv", "PYTHONPATH=/home/dclreeder/Documents/LyraOS/core",
+             "--unit", f"lyra-source-ingest-{sid}",
+             "/home/dclreeder/Documents/esphome-probe/venv/bin/python",
+             "-m", "lyra_core.sources", "ingest", sid],
+            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass  # the curator pass ingests on demand if the spawn failed
+    return {"ok": True, "id": sid, "name": name, "size": len(data)}
+
+
 def full_state() -> dict:
     state: dict = {"core_online": core_health()}
     for key, tool, action in (
@@ -496,6 +568,7 @@ def full_state() -> dict:
     state["sleep"] = sleep_state()
     state["mode"] = mode_state()
     state["memory_reports"] = memory_reports()
+    state["memory_sources"] = memory_sources()
     return state
 
 
@@ -534,6 +607,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
+        if self.path == "/api/memory-upload":
+            try:
+                data = self.rfile.read(length) if length else b""
+                self._json(200, memory_upload(
+                    self.headers.get("X-Filename") or "upload.txt", data))
+            except Exception as exc:
+                self._json(400, {"ok": False, "error": str(exc)})
+            return
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
         except Exception:

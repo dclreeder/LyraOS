@@ -72,7 +72,13 @@
 
 <div class="card">
   <div class="label">Memory</div>
-  <div class="sub">Nightly curation reports, latest first. Read-only: memory is written only by the sleep-cycle curator.</div>
+  <div class="sub">Nightly curation reports, latest first. Read-only: memory is written only by the sleep-cycle curator. The upload box is a mailbox, not an editor: documents dropped here are mined by the curator at night (text or PDF, up to 50 MB).</div>
+  <div class="row" style="margin-top:10px; gap:10px;">
+    <input type="file" id="memFile" accept=".txt,.md,.log,.json,.csv,.pdf">
+    <button id="memUploadBtn" onclick="uploadSource()">Upload</button>
+  </div>
+  <div class="sub" id="memUploadMsg"></div>
+  <div id="memSources"></div>
   <div id="memReports"><div class="sub">No nights curated yet.</div></div>
 </div>
 
@@ -259,6 +265,7 @@ async function refresh() {
   renderAudio(j.audio);
   renderMode(j.mode);
   renderReports(j.memory_reports);
+  renderSources(j.memory_sources);
   renderMonitor(j.monitor);
   renderKiosk(j.monitor);
 }
@@ -504,6 +511,24 @@ function renderReports(list) {
     const line = (r.text.split('\n').find(l => l.trim() && !l.startsWith('#')) || '').trim();
     return '<div style="margin-top:8px;"><b>' + esc(r.day) + '</b> <span class="sub">' + esc(line.slice(0, 160)) + '</span></div>';
   }).join('');
+}
+function renderSources(list) {
+  const el = $('memSources');
+  if (!el) return;
+  if (!list || !list.length) { el.innerHTML = ''; return; }
+  el.innerHTML = list.map(x => '<div style="margin-top:6px;"><b>' + esc(x.name) + '</b> <span class="sub">' + esc(x.status || '') + (x.chunks_total ? ' - ' + x.chunks_done + '/' + x.chunks_total + ' chunks' : '') + ' - ' + esc(x.uploaded || '') + '</span></div>').join('');
+}
+async function uploadSource() {
+  const inp = $('memFile'), msg = $('memUploadMsg');
+  if (!inp.files || !inp.files.length) { msg.textContent = 'Choose a file first.'; return; }
+  const f = inp.files[0];
+  msg.textContent = 'Uploading ' + f.name + '...';
+  try {
+    const r = await fetch('/api/memory-upload', { method: 'POST', headers: { 'X-Filename': f.name }, body: f });
+    const j = await r.json();
+    msg.textContent = j.ok ? ('Filed ' + j.name + ' - the curator will mine it tonight.') : ('Upload failed: ' + (j.error || r.status));
+    if (j.ok) { inp.value = ""; refresh(); }
+  } catch (e) { msg.textContent = 'Upload failed: ' + e; }
 }
 async function setMode(mode) {
   try {
