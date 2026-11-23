@@ -132,3 +132,33 @@ The pipeline is digest-first ("both," Daniel's pick):
 3. **Claims** — mined from the digest's chunks by the existing source pass (same validator, same transaction discipline, source provenance; pointers cite digest chunks, and the digest's quotes carry (chunk N) citations back to the original document's own words).
 
 Raw-chunk mining is retired. The raw file and its chunk embeddings remain on disk as the evidence layer.
+
+## V2 redesign -- decided 2026-11-22 (supersedes the L1 claim shape above where they conflict)
+
+Status: designed in a one-question-at-a-time sweep and prompt-tested the same day on a synthetic day. NOT yet built; building waits for Daniel's explicit word. The v1 system above is what runs in production until then.
+
+Design:
+- Facts are plain statements, grouped in per-entity lists (one list per person or thing). No triples, no verbatim quote attached to a fact; the day log on disk remains the evidence.
+- Only durable facts are embedded. Day logs and sources are not embedded as memory (a source's raw chunks keep their evidence-layer embeddings per the digest-first amendment above).
+- The authority timestamp is when a statement was said (per-turn time in the day log), when Daniel added or edited it in the dashboard, or the in-document date for source-derived facts -- never curation time. The later timestamp wins the same slot.
+- A CHANGE supersedes the current fact and mints a past-tense history fact ("Daniel works at Stuart Jones" plus "Daniel previously worked at Lyn's Electric"). A CORRECTION supersedes with no history; it was never true.
+- The curator may record inferences it draws, unmarked. A wrong inference is corrected later in conversation, and the correction supersedes by timestamp.
+- Open items (appointments, waiting-ons) never auto-close at their date; they close only on confirmation in conversation. Closed items linger about a week, then are deleted; the linger window exists so later facts can still connect to them. Durable facts never enter the open/closed track. Past-due unmentioned items stay open; she can ask how it went.
+- CONNECTIONS ARE NOT THE CURATOR'S JOB (Daniel, 2026-11-22): the curator records a new item as a standalone memory and never writes facts that connect two memories. Connecting is the live brain's work in conversation, via ambient surfacing, where Daniel can confirm or dismiss it on the spot; a confirmed connection enters a later day log as a statement and is curated as a normal fact.
+- The dashboard gains a memory tab to view, add, edit, and remove memories (this reverses the 2026-11-21 no-control decision).
+- Ambient surfacing stays: relevant facts surface in her context mid-conversation on their own.
+- Uploads: read whole, digest first (amendment above), facts minted from the digest.
+
+Plumbing rules proven in testing:
+- Entity matching is case-insensitive in code; a model must never fail to address a list because of capitalization (the 12B lost a whole run to "Daniel" vs "daniel").
+- The harness always saves the raw model output AND the reasoning text for every attempt (Daniel's rule after an early run failed with no evidence kept).
+- A reasoning budget is the fix for verification-loop burnouts; the per-request reasoning_budget field is IGNORED by our llama.cpp build (proven 2026-11-22), so a cap must go in the server launch flags (untested) or be left to the validate-and-retry loop, whose error feedback reliably breaks the loop on attempt 2.
+- Grammar-constrained JSON (response_format json_schema) and reasoning separation (--reasoning-format deepseek) are available and safe, but in testing they did not improve scores.
+
+Curator model: UNDECIDED. Fake-day series 2026-11-22 (synthetic Mon 2026-02-09, 16 hard checks, merged prompt): Qwen3.5-9B unaided 15/16 strict -- the best single run; with the plumbing fixes it scored 14, 13, 13 across three more runs. The 12B was the cleanest bookkeeper (flawless maintenance, sparse new-fact capture, ~3 minutes). The 30B was the richest capturer but loose discipline and about 6x slower, with one fully empty attempt. No tested model is deterministic; run-to-run variance of 1-2 judgment checks is normal, and the design's correction loop is what absorbs it. Daniel's standing lean: do not answer a bigger model's failure by choosing a smaller one.
+
+Known model behavior: a thinking curator's first attempt can burn the entire token budget re-verifying a checklist it already answered correctly (proven from saved reasoning: one identical checklist cycle repeated about 56 times, 487 duplicate lines of 702, JSON never drafted).
+
+Open questions:
+1. Does a dashboard edit that Daniel himself overrides the same day deserve a history fact? (The models keep voting yes; Daniel has not decided.)
+2. Final curator model pick.
